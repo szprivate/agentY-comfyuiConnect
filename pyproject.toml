@@ -1,0 +1,14 @@
+[project]
+name = "agentY-comfyuiConnect"
+version = "1.0.0"
+description = "The agentY UI for ComfyUI — a sidebar chat panel + auto-open canvas that connects ComfyUI to the agentY agent."
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/szprivate/agentY-comfyuiConnect"
+
+[tool.comfy]
+DisplayName = "agentY connect"
+Repository = "https://github.com/szprivate/agentY-comfyuiConnect"
