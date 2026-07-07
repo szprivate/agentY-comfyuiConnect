@@ -55,6 +55,9 @@ class AgentChat {
     this.threadId = null;
     this.streaming = false;
     this.activeAsk = null; // request_id awaiting a reply
+    this.curRequestId = null; // request_id of the in-flight turn (for Stop)
+    this.abortController = null; // aborts the SSE fetch on Stop
+    this._stopping = false; // set while a user-initiated stop is in progress
     this.attachments = []; // [{path,name}]
     this.commands = SLASH_FALLBACK;
     this.curAssistant = null; // DOM node currently streaming assistant text
@@ -79,6 +82,8 @@ class AgentChat {
     .ay-bar select{flex:1;background:#26263a;color:#ddd;border:1px solid #3a3a5c;border-radius:6px;padding:4px;}
     .ay-btn{background:#2d2d50;color:#cfd2ff;border:1px solid #3a3a5c;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;}
     .ay-btn:hover{background:#3a3a63;}
+    .ay-btn.ay-stop{background:#5b2b2b;color:#ffd2d2;border-color:#7a3a3a;}
+    .ay-btn.ay-stop:hover{background:#6d3333;}
     .ay-log{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
     .ay-msg{padding:8px 10px;border-radius:8px;max-width:100%;word-wrap:break-word;line-height:1.4;}
     .ay-user{background:#2b3a5b;align-self:flex-end;}
@@ -135,7 +140,7 @@ class AgentChat {
     attachBtn.addEventListener("click", () => this.fileInput.click());
 
     this.sendBtn = el("button", { className: "ay-btn", textContent: "Send", style: { padding: "8px 14px" } });
-    this.sendBtn.addEventListener("click", () => this.send());
+    this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
     const inwrap = el("div", { className: "ay-inwrap" }, [this.pop, this.attachEl, inrow, this.fileInput]);
@@ -377,6 +382,7 @@ class AgentChat {
       case "ask":
         this.curAssistant = null;
         this.activeAsk = ev.request_id;
+        this._setBusy(true); // awaiting a reply → button reverts to Send
         this.logEl.append(el("div", { className: "ay-msg ay-ask", innerHTML: mdToHtml("⏸️ " + ev.prompt) }));
         this._scroll();
         this.input.focus();
@@ -399,12 +405,15 @@ class AgentChat {
 
   async _stream(body) {
     this.streaming = true;
+    this._stopping = false;
+    this.abortController = new AbortController();
     this._setBusy(true);
     try {
       const resp = await fetch(backendBase() + "/agentY/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: this.abortController.signal,
       });
       if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
       const reader = resp.body.getReader();
@@ -426,16 +435,53 @@ class AgentChat {
         }
       }
     } catch (e) {
-      this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`run_agent.ps1\`, ${backendBase()})`);
+      // A user-initiated Stop aborts the fetch → don't show it as an error.
+      if (!this._stopping && e.name !== "AbortError") {
+        this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`run_agent.ps1\`, ${backendBase()})`);
+      }
     } finally {
       this.streaming = false;
+      this.abortController = null;
       this._setBusy(false);
     }
   }
 
+  // Button doubles as Send / Stop depending on state.
+  _onSendBtn() {
+    if (this.streaming && !this.activeAsk) this._stop();
+    else this.send();
+  }
+
+  async _stop() {
+    if (!this.streaming) return;
+    this._stopping = true;
+    this._status("⏹ Stopping…");
+    // Ask the backend to cancel the run (halts the agent loop + interrupts ComfyUI).
+    try {
+      await fetch(backendBase() + "/agentY/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: this.curRequestId, thread_id: this.threadId }),
+      });
+    } catch (_) {}
+    // Stop consuming the SSE stream client-side.
+    try { if (this.abortController) this.abortController.abort(); } catch (_) {}
+    this._clearStatus();
+    this._sys("⏹ Stopped.");
+    this.curAssistant = null;
+    this.curStep = null;
+    this.streaming = false;
+    this._setBusy(false);
+    this._savePanel();
+  }
+
   _setBusy(b) {
-    this.sendBtn.disabled = b && !this.activeAsk;
-    this.sendBtn.textContent = b ? "…" : "Send";
+    // While a turn is running (and not waiting on a reply) the button becomes a
+    // Stop button; otherwise it's the Send/reply button. Always clickable.
+    const stopMode = b && !this.activeAsk;
+    this.sendBtn.disabled = false;
+    this.sendBtn.textContent = stopMode ? "⏹ Stop" : "Send";
+    this.sendBtn.classList.toggle("ay-stop", stopMode);
   }
 
   // ── sending ──────────────────────────────────────────────────────────────────
@@ -448,6 +494,7 @@ class AgentChat {
     if (this.activeAsk) {
       const rid = this.activeAsk;
       this.activeAsk = null;
+      this._setBusy(this.streaming); // reply sent → back to Stop while it continues
       this._userMsg(text || "(continue)");
       this.input.value = "";
       this._autosize();
