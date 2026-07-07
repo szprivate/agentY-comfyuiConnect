@@ -625,7 +625,9 @@ class AgentChat {
   async send() {
     const text = this.input.value.trim();
     const canvasInputs = this._collectCanvasInputs();
-    if (!text && this.attachments.length === 0 && canvasInputs.length === 0) return;
+    const canvasHooks = this._collectCanvasHooks();
+    if (!text && this.attachments.length === 0 && canvasInputs.length === 0 &&
+        canvasHooks.length === 0) return;
 
     // Answering an interactive ask → side-channel reply; the SSE stream continues.
     if (this.activeAsk) {
@@ -657,6 +659,7 @@ class AgentChat {
       if (nv) bits.push(`${nv} video`);
       noteParts.push(`${bits.join(" + ")} from canvas`);
     }
+    if (canvasHooks.length) noteParts.push(`${canvasHooks.length} canvas hook(s)`);
     this._userMsg(text + (noteParts.length ? `  \n_(${noteParts.join(", ")})_` : ""));
     this.input.value = "";
     this._autosize();
@@ -666,11 +669,16 @@ class AgentChat {
     // Mark these canvas files as consumed so an unchanged, still-selected node
     // isn't re-sent on the next message.
     for (const ci of canvasInputs) if (ci._nodeId != null) this._consumed[ci._nodeId] = ci.value;
+    // Hooks are the signal to run the on-canvas graph — capture it as an API
+    // prompt only when hooks are present (avoids overhead on normal turns).
+    const canvasPrompt = canvasHooks.length ? await this._captureCanvasGraph() : null;
     await this._stream({
       thread_id: this.threadId,
       message: text,
       image_paths: imgs,
       canvas_inputs: canvasInputs.map((c) => ({ value: c.value, kind: c.kind })),
+      canvas_hooks: canvasHooks,
+      canvas_prompt: canvasPrompt,
     });
   }
 
@@ -774,6 +782,70 @@ class AgentChat {
       out.push(info);
     }
     return out;
+  }
+
+  // ── canvas hooks (AgentYHook nodes) ──────────────────────────────────────────
+  _hookNodes() {
+    const graph = app.graph;
+    if (!graph || !graph._nodes) return [];
+    return graph._nodes.filter(
+      (n) => n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook")
+    );
+  }
+
+  // Follow a hook's "anchor" input link back to the node it's attached to.
+  _anchorFor(hookNode) {
+    const graph = app.graph;
+    if (!graph) return null;
+    const inputs = hookNode.inputs || [];
+    let idx = inputs.findIndex((i) => i && i.name === "anchor");
+    if (idx < 0) idx = 0;
+    const inp = inputs[idx];
+    if (!inp || inp.link == null) return null;
+    const link = graph.links ? graph.links[inp.link] : null;
+    if (!link) return null;
+    return graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+  }
+
+  // Scalar widget values of a node (numbers/strings), for the [CANVAS HOOKS] block.
+  _widgetSnapshot(node) {
+    const out = {};
+    for (const w of node.widgets || []) {
+      if (w && w.name != null && w.value != null && typeof w.value !== "object")
+        out[w.name] = w.value;
+    }
+    return out;
+  }
+
+  _collectCanvasHooks() {
+    const hooks = [];
+    for (const hn of this._hookNodes()) {
+      const w = this._widgetSnapshot(hn);
+      const directive = String(w.directive || "").trim();
+      if (!directive) continue; // an empty hook is a no-op
+      const anchor = this._anchorFor(hn);
+      hooks.push({
+        hook_node_id: String(hn.id),
+        directive,
+        mode: String(w.mode || "auto"),
+        anchor_node_id: anchor ? String(anchor.id) : null,
+        anchor_type: anchor ? String(anchor.type || anchor.comfyClass || "") : null,
+        anchor_title: anchor ? String(anchor.title || "") : null,
+        anchor_widgets: anchor ? this._widgetSnapshot(anchor) : {},
+      });
+    }
+    return hooks;
+  }
+
+  // Capture the current graph as an API-format prompt (node-id keyed). Async in
+  // recent ComfyUI (returns a promise); awaiting a plain object is also fine.
+  async _captureCanvasGraph() {
+    try {
+      const p = await app.graphToPrompt();
+      return p && p.output ? p.output : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   // ── slash-command popup ──────────────────────────────────────────────────────
