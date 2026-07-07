@@ -49,6 +49,27 @@ const SLASH_FALLBACK = [
   { name: "/remove_workflow", description: "Remove a workflow by name" },
 ];
 
+// Model presets for the quick-switch dropdown (grouped by provider). Each entry
+// is [ "<provider>,<model>", "Display name" ] — the provider,model string is
+// exactly what /switch_model expects. Edit this list to add your own models.
+const MODEL_PRESETS = {
+  Anthropic: [
+    ["claude,claude-haiku-4-5", "Claude Haiku 4.5"],
+    ["claude,claude-sonnet-4-5", "Claude Sonnet 4.5"],
+  ],
+  "Alibaba (DashScope)": [
+    ["dashscope,qwen-plus", "Qwen Plus"],
+    ["dashscope,qwen3.7-plus", "Qwen3.7 Plus"],
+    ["dashscope,qwen-max", "Qwen Max"],
+  ],
+};
+
+// Which agent(s) the model switch targets.
+const MODEL_TARGETS = [
+  ["all", "All agents"],
+  ["orchestrator", "Orchestrator"],
+];
+
 class AgentChat {
   constructor(root) {
     this.root = root;
@@ -77,34 +98,60 @@ class AgentChat {
   _injectStyles() {
     if (document.getElementById("agentY-chat-styles")) return;
     const css = `
-    .ay-wrap{display:flex;flex-direction:column;height:100%;font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--fg-color,#ddd);background:var(--comfy-menu-bg,#1e1e2e);}
-    .ay-bar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #33344a;flex-shrink:0;}
-    .ay-bar select{flex:1;background:#26263a;color:#ddd;border:1px solid #3a3a5c;border-radius:6px;padding:4px;}
-    .ay-btn{background:#2d2d50;color:#cfd2ff;border:1px solid #3a3a5c;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;}
-    .ay-btn:hover{background:#3a3a63;}
-    .ay-btn.ay-stop{background:#5b2b2b;color:#ffd2d2;border-color:#7a3a3a;}
-    .ay-btn.ay-stop:hover{background:#6d3333;}
-    .ay-log{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
-    .ay-msg{padding:8px 10px;border-radius:8px;max-width:100%;word-wrap:break-word;line-height:1.4;}
-    .ay-user{background:#2b3a5b;align-self:flex-end;}
-    .ay-assistant{background:#26263a;}
-    .ay-system{background:#2a2320;color:#e8d9b0;font-size:12px;}
-    .ay-ask{background:#3a2a10;color:#ffd27d;border:1px solid #6a4a10;}
-    .ay-code{white-space:pre-wrap;font-family:monospace;background:#15151f;padding:2px 4px;border-radius:4px;}
-    .ay-step{border:1px solid #33344a;border-radius:6px;background:#1b1b28;}
-    .ay-step>summary{cursor:pointer;padding:6px 8px;color:#9da5ff;font-weight:600;}
-    .ay-step .ay-step-body{padding:6px 10px;white-space:pre-wrap;font-family:monospace;font-size:11px;color:#9aa;max-height:220px;overflow:auto;}
-    .ay-status{font-size:11px;color:#8a8;padding:2px 10px;font-family:monospace;}
-    .ay-inwrap{border-top:1px solid #33344a;padding:8px;display:flex;flex-direction:column;gap:6px;flex-shrink:0;position:relative;}
-    .ay-attach{display:flex;flex-wrap:wrap;gap:4px;}
-    .ay-chip{background:#2d2d50;border:1px solid #3a3a5c;border-radius:4px;padding:2px 6px;font-size:11px;}
-    .ay-inrow{display:flex;gap:6px;align-items:flex-end;}
-    .ay-input{flex:1;resize:none;min-height:36px;max-height:140px;background:#26263a;color:#ddd;border:1px solid #3a3a5c;border-radius:8px;padding:8px;font-family:inherit;font-size:13px;}
-    .ay-pop{position:absolute;bottom:100%;left:8px;right:8px;background:#1e1e2e;border:1px solid #3a3a5c;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:50;max-height:260px;overflow:auto;display:none;}
-    .ay-pop-item{padding:7px 10px;cursor:pointer;display:flex;gap:10px;}
-    .ay-pop-item.sel{background:#2d2d50;border-left:3px solid #7c83ff;}
-    .ay-pop-name{font-family:monospace;color:#9da5ff;min-width:130px;}
-    .ay-pop-desc{color:#888;font-size:12px;}
+    .ay-wrap{
+      --ay-bg:#262624; --ay-surface:#302f2c; --ay-surface2:#3b3936;
+      --ay-border:rgba(240,235,225,.10); --ay-text:#f2f0ea; --ay-muted:#a8a39a;
+      --ay-accent:#d97757; --ay-accent2:#c56647; --ay-accent-soft:rgba(217,119,87,.15);
+      display:flex;flex-direction:column;height:100%;
+      font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+      font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
+    }
+    .ay-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--ay-border);flex-shrink:0;}
+    .ay-bar select{flex:1;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
+    .ay-btn{background:var(--ay-surface2);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
+    .ay-btn:hover{background:#464440;}
+    .ay-btn:active{transform:translateY(1px);}
+    .ay-btn.ay-send{background:var(--ay-accent);color:#2a1810;border-color:transparent;border-radius:999px;padding:9px 18px;font-weight:600;}
+    .ay-btn.ay-send:hover{background:var(--ay-accent2);}
+    .ay-btn.ay-stop{background:#8a4034;color:#ffe1d9;border-color:transparent;border-radius:999px;}
+    .ay-btn.ay-stop:hover{background:#9c4a3c;}
+    .ay-log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+    .ay-msg{padding:10px 13px;border-radius:16px;max-width:92%;word-wrap:break-word;line-height:1.5;}
+    .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(217,119,87,.28);align-self:flex-end;border-bottom-right-radius:5px;}
+    .ay-assistant{background:var(--ay-surface);align-self:flex-start;border-bottom-left-radius:5px;}
+    .ay-system{background:transparent;color:var(--ay-muted);font-size:12px;align-self:center;text-align:center;max-width:100%;padding:2px 8px;}
+    .ay-ask{background:rgba(217,119,87,.10);color:#f0d9c2;border:1px solid rgba(217,119,87,.35);align-self:stretch;max-width:100%;}
+    .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
+    .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
+    .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
+    .ay-step>summary::-webkit-details-marker{display:none;}
+    .ay-step>summary::before{content:"▸ ";opacity:.7;}
+    .ay-step[open]>summary::before{content:"▾ ";}
+    .ay-step .ay-step-body{padding:8px 12px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:240px;overflow:auto;word-break:break-word;border-top:1px solid var(--ay-border);}
+    .ay-step.ay-tool{border-color:rgba(127,212,160,.22);}
+    .ay-step.ay-tool>summary{color:#8fd6ab;}
+    .ay-status{font-size:11px;color:var(--ay-muted);padding:2px 12px;font-family:ui-monospace,monospace;align-self:center;}
+    .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
+    .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
+    .ay-chip{background:var(--ay-surface2);border:1px solid var(--ay-border);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--ay-text);}
+    .ay-inrow{display:flex;gap:8px;align-items:flex-end;}
+    .ay-input{flex:1;resize:none;min-height:40px;max-height:150px;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:10px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
+    .ay-input:focus{border-color:rgba(217,119,87,.55);}
+    .ay-input::placeholder{color:var(--ay-muted);}
+    .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
+    .ay-mlabel{color:var(--ay-muted);font-size:11.5px;flex-shrink:0;}
+    .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:9px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
+    .ay-modelbar select:hover{border-color:rgba(217,119,87,.45);}
+    .ay-modelbar select:disabled{opacity:.45;cursor:not-allowed;}
+    .ay-mmodel{flex:1;min-width:0;}
+    .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
+    .ay-pop-item{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;}
+    .ay-pop-item:hover,.ay-pop-item.sel{background:var(--ay-surface2);}
+    .ay-pop-item.sel{box-shadow:inset 3px 0 0 var(--ay-accent);}
+    .ay-pop-name{font-family:ui-monospace,monospace;color:var(--ay-accent);min-width:130px;font-size:12.5px;}
+    .ay-pop-desc{color:var(--ay-muted);font-size:12px;}
+    .ay-log::-webkit-scrollbar,.ay-step-body::-webkit-scrollbar,.ay-pop::-webkit-scrollbar{width:8px;height:8px;}
+    .ay-log::-webkit-scrollbar-thumb,.ay-step-body::-webkit-scrollbar-thumb,.ay-pop::-webkit-scrollbar-thumb{background:var(--ay-surface2);border-radius:8px;}
     `;
     document.head.append(el("style", { id: "agentY-chat-styles", textContent: css }));
   }
@@ -139,14 +186,59 @@ class AgentChat {
     this.fileInput.addEventListener("change", () => this._onFiles());
     attachBtn.addEventListener("click", () => this.fileInput.click());
 
-    this.sendBtn = el("button", { className: "ay-btn", textContent: "Send", style: { padding: "8px 14px" } });
+    this.sendBtn = el("button", { className: "ay-btn ay-send", textContent: "Send" });
     this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
     const inwrap = el("div", { className: "ay-inwrap" }, [this.pop, this.attachEl, inrow, this.fileInput]);
     wrap.append(inwrap);
 
+    // model quick-switch bar (bottom)
+    wrap.append(this._buildModelBar());
+
     this.root.append(wrap);
+  }
+
+  // ── model quick-switch bar ───────────────────────────────────────────────────
+  _buildModelBar() {
+    this.targetSel = el("select", { className: "ay-mtarget", title: "Which agent(s) to switch" });
+    for (const [val, label] of MODEL_TARGETS) {
+      this.targetSel.append(el("option", { value: val, textContent: label }));
+    }
+    this.modelSel = el("select", { className: "ay-mmodel", title: "Switch model" });
+    this.modelSel.append(el("option", { value: "", textContent: "🔀 Switch model…" }));
+    for (const [group, models] of Object.entries(MODEL_PRESETS)) {
+      const og = el("optgroup", { label: group });
+      for (const [spec, label] of models) og.append(el("option", { value: spec, textContent: label }));
+      this.modelSel.append(og);
+    }
+    this.modelSel.addEventListener("change", () => this._applyModel());
+    return el("div", { className: "ay-modelbar" }, [
+      el("span", { className: "ay-mlabel", textContent: "Model" }),
+      this.modelSel,
+      this.targetSel,
+    ]);
+  }
+
+  async _applyModel() {
+    const spec = this.modelSel.value;
+    if (!spec) return;
+    if (this.streaming) { this.modelSel.value = ""; return; } // don't switch mid-turn
+    const target = this.targetSel.value || "all";
+    this.modelSel.value = ""; // reset to placeholder
+    try {
+      const r = await fetch(backendBase() + "/agentY/switch_model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, spec }),
+      });
+      const j = await r.json();
+      (j.messages && j.messages.length ? j.messages : [(j.ok ? "✅ Model switched." : "❌ Switch failed.")])
+        .forEach((m) => this._sys(m));
+    } catch (e) {
+      this._sys("❌ Switch failed: " + e);
+    }
+    this._savePanel();
   }
 
   // ── backend calls ───────────────────────────────────────────────────────────
@@ -274,7 +366,7 @@ class AgentChat {
   _stepStart(name) {
     const details = el("details", { className: "ay-step", open: false });
     const body = el("div", { className: "ay-step-body" });
-    details.append(el("summary", { textContent: "▸ " + name }), body);
+    details.append(el("summary", { textContent: name }), body);
     this.logEl.append(details);
     this.curStep = { details, body, name };
     this._scroll();
@@ -285,6 +377,34 @@ class AgentChat {
     this._scroll();
   }
   _stepEnd() { this.curStep = null; }
+  // Render an agent tool call / result as a collapsible block, inline in the
+  // chat log (so it persists via _savePanel like every other block).
+  _toolBlock(ev) {
+    this.curAssistant = null; // close the current text bubble; keep ordering
+    this._toolBlocks = this._toolBlocks || {};
+    const id = ev.id || "";
+    if (ev.phase === "call") {
+      const details = el("details", { className: "ay-step ay-tool", open: false });
+      const body = el("div", { className: "ay-step-body" });
+      body.textContent = ev.input ? "input: " + ev.input : "(no input)";
+      details.append(el("summary", { textContent: "🔧 " + (ev.name || "tool") }), body);
+      this.logEl.append(details);
+      if (id) this._toolBlocks[id] = { details, body };
+    } else {
+      const blk = id && this._toolBlocks[id];
+      if (blk) {
+        blk.body.textContent += "\n\n→ " + (ev.result || "(done)");
+      } else {
+        const details = el("details", { className: "ay-step ay-tool", open: false });
+        details.append(
+          el("summary", { textContent: "🔧 " + (ev.name || "tool") }),
+          el("div", { className: "ay-step-body", textContent: "→ " + (ev.result || "(done)") }),
+        );
+        this.logEl.append(details);
+      }
+    }
+    this._scroll();
+  }
   _status(text) {
     if (!this._statusEl || !this._statusEl.isConnected) {
       this._statusEl = el("div", { className: "ay-status" });
@@ -343,9 +463,19 @@ class AgentChat {
         this._appendAssistant(ev.data);
         break;
       case "think":
-        // fold reasoning into a collapsible thinking step
-        if (!this._thinkStep) { this._stepStart("💭 thinking"); this._thinkStep = this.curStep; }
+        // fold reasoning into a collapsible thinking step, inline in the chat
+        this.curAssistant = null;
+        if (!this._thinkStep || !this._thinkStep.details.isConnected) {
+          this._stepStart("💭 thinking");
+          this._thinkStep = this.curStep;
+          this.curStep = null;
+        }
         this._thinkStep.body.textContent += ev.data;
+        this._scroll();
+        break;
+      case "tool":
+        // render the agent's tool call / result as an inline collapsible block
+        this._toolBlock(ev);
         break;
       case "step_start":
         this.curAssistant = null;
@@ -395,6 +525,8 @@ class AgentChat {
         this._clearStatus();
         this.curStep = null;
         this.curAssistant = null;
+        this._thinkStep = null;
+        this._toolBlocks = {};
         this.streaming = false;
         this._setBusy(false);
         this._savePanel();  // persist the rendered panel so blocks survive reloads
@@ -406,6 +538,8 @@ class AgentChat {
   async _stream(body) {
     this.streaming = true;
     this._stopping = false;
+    this._thinkStep = null;
+    this._toolBlocks = {};
     this.abortController = new AbortController();
     this._setBusy(true);
     try {
@@ -482,6 +616,9 @@ class AgentChat {
     this.sendBtn.disabled = false;
     this.sendBtn.textContent = stopMode ? "⏹ Stop" : "Send";
     this.sendBtn.classList.toggle("ay-stop", stopMode);
+    // Don't allow a model switch mid-turn.
+    if (this.modelSel) this.modelSel.disabled = b;
+    if (this.targetSel) this.targetSel.disabled = b;
   }
 
   // ── sending ──────────────────────────────────────────────────────────────────
