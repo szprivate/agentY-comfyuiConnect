@@ -195,7 +195,9 @@ class AgentChat {
     newBtn.addEventListener("click", () => this.newThread());
     const delBtn = el("button", { className: "ay-btn", textContent: "🗑", title: "Delete this conversation" });
     delBtn.addEventListener("click", () => this.deleteThread());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn]));
+    const usageBtn = el("button", { className: "ay-btn", textContent: "📊", title: "Token usage overview" });
+    usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
+    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
