@@ -42,6 +42,14 @@ function money(n) {
   if (n === 0) return "$0.00";
   return "$" + (n < 1 ? n.toFixed(4) : n.toFixed(2));
 }
+function pct(x) { return (100 * (x || 0)).toFixed(1) + "%"; }
+// Prompt-cache hit rate: cache reads over ALL input-side tokens (fresh input +
+// cache reads + cache writes). Anthropic reports these three as disjoint parts
+// of the input, so this is the share of input served cheaply from cache.
+function hitRate(r) {
+  const denom = (r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0);
+  return denom > 0 ? (r.cache_read || 0) / denom : 0;
+}
 function fmtTs(sec) {
   if (!sec) return "—";
   const d = new Date(sec * 1000);
@@ -88,6 +96,9 @@ function injectStyles() {
   .atu-tile.in .v{color:#8fd6ab;}
   .atu-tile.out{border-color:rgba(217,119,87,.28);}
   .atu-tile.out .v{color:#e9955f;}
+  .atu-tile.cache{border-color:rgba(120,170,220,.28);}
+  .atu-tile.cache .v{color:#8fb8e0;}
+  .atu-table td.cache{color:#8fb8e0;}
   .atu-tablewrap{overflow-x:auto;border:1px solid rgba(240,235,225,.10);border-radius:12px;}
   table.atu-table{border-collapse:collapse;width:100%;font-size:12.5px;}
   .atu-table th,.atu-table td{padding:8px 12px;text-align:right;white-space:nowrap;}
@@ -101,6 +112,11 @@ function injectStyles() {
   .atu-table tfoot td{border-top:2px solid rgba(240,235,225,.16);font-weight:680;background:#2b2a28;}
   .atu-note{font-size:11.5px;color:#a8a39a;margin-top:12px;}
   .atu-empty{color:#a8a39a;text-align:center;padding:30px 0;font-size:13px;}
+  .atu-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid rgba(240,235,225,.10);}
+  .atu-msg{flex:1;font-size:12px;color:#a8a39a;}
+  .atu-btn.danger{background:#8a4034;color:#ffe1d9;border-color:transparent;}
+  .atu-btn.danger:hover{background:#9c4a3c;}
+  .atu-btn.armed{background:#b5482f;color:#fff;border-color:transparent;font-weight:650;}
   `;
   document.head.append(el("style", { id: "agentY-tokusage-styles", textContent: css }));
 }
@@ -155,12 +171,19 @@ async function openTokenUsageModal() {
   const note = el("div", { className: "atu-note" });
 
   const body = el("div", { className: "atu-body" }, [filters, tiles, tableHost, note]);
+
+  // ── footer: purge the token log (two-click confirm, auto-disarms) ──
+  const clearMsg = el("div", { className: "atu-msg" });
+  const clearBtn = el("button", { className: "atu-btn danger", textContent: "🗑 Clear log" });
+  const foot = el("div", { className: "atu-foot" }, [clearMsg, clearBtn]);
+
   const card = el("div", { className: "atu-card" }, [
     el("div", { className: "atu-head" }, [
       el("h2", { textContent: "agentY — Token Usage" }),
       (() => { const b = el("button", { className: "atu-x", textContent: "✕", title: "Close" }); b.addEventListener("click", close); return b; })(),
     ]),
     body,
+    foot,
   ]);
   overlay.append(card);
   document.body.append(overlay);
@@ -186,14 +209,17 @@ async function openTokenUsageModal() {
     for (const r of rows) for (const k of Object.keys(t)) t[k] += r[k] || 0;
 
     tiles.innerHTML = "";
+    const rate = hitRate(t);
     const inV = el("div", { className: "v", textContent: compact(t.input), title: full(t.input) + " tokens" });
     const outV = el("div", { className: "v", textContent: compact(t.output), title: full(t.output) + " tokens" });
     tiles.append(
       tile("in", "Input tokens", inV, full(t.input)),
       tile("out", "Output tokens", outV, full(t.output)),
       tile("", "Total tokens", el("div", { className: "v", textContent: compact(t.input + t.output), title: full(t.input + t.output) }), full(t.input + t.output)),
+      tile("cache", "Cache read (hits)", el("div", { className: "v", textContent: compact(t.cache_read), title: full(t.cache_read) + " tokens" }), `${compact(t.cache_write)} written`),
+      tile("cache", "Cache hit rate", el("div", { className: "v", textContent: pct(rate) }), "of input from cache"),
       tile("", "Est. cost", el("div", { className: "v", textContent: money(t.cost) }), t.cost === 0 ? "model unpriced" : "USD"),
-      tile("", "Calls", el("div", { className: "v", textContent: full(t.calls) }), `cache ${compact(t.cache_read)} / ${compact(t.cache_write)}`),
+      tile("", "Calls", el("div", { className: "v", textContent: full(t.calls) }), `${compact(t.input + t.output + t.cache_read + t.cache_write)} tokens total`),
     );
 
     // per-model table
@@ -205,7 +231,9 @@ async function openTokenUsageModal() {
         el("th", { textContent: "Model" }),
         el("th", { textContent: "Input" }),
         el("th", { textContent: "Output" }),
-        el("th", { textContent: "Cache (r/w)" }),
+        el("th", { textContent: "Cache read" }),
+        el("th", { textContent: "Cache write" }),
+        el("th", { textContent: "Hit rate" }),
         el("th", { textContent: "Cost" }),
         el("th", { textContent: "Calls" }),
       ])]);
@@ -215,7 +243,9 @@ async function openTokenUsageModal() {
           el("td", { textContent: r.model }),
           el("td", { className: "in", textContent: full(r.input), title: full(r.input) }),
           el("td", { className: "out", textContent: full(r.output) }),
-          el("td", { textContent: `${compact(r.cache_read)} / ${compact(r.cache_write)}` }),
+          el("td", { className: "cache", textContent: full(r.cache_read) }),
+          el("td", { textContent: full(r.cache_write) }),
+          el("td", { textContent: pct(hitRate(r)) }),
           el("td", { textContent: money(r.cost) }),
           el("td", { textContent: full(r.calls) }),
         ]));
@@ -224,7 +254,9 @@ async function openTokenUsageModal() {
         el("td", { textContent: "Total" }),
         el("td", { textContent: full(t.input) }),
         el("td", { textContent: full(t.output) }),
-        el("td", { textContent: `${compact(t.cache_read)} / ${compact(t.cache_write)}` }),
+        el("td", { textContent: full(t.cache_read) }),
+        el("td", { textContent: full(t.cache_write) }),
+        el("td", { textContent: pct(hitRate(t)) }),
         el("td", { textContent: money(t.cost) }),
         el("td", { textContent: full(t.calls) }),
       ])]);
@@ -237,6 +269,7 @@ async function openTokenUsageModal() {
     note.textContent =
       `Log spans ${fmtTs(lr.min)} → ${fmtTs(lr.max)}. ` +
       `Summed from per-call deltas in .logs/tokens_usage.log. ` +
+      `Hit rate = cache reads ÷ all input tokens (fresh + cache read + cache write). ` +
       `Lines logged before model tracking are grouped as "role:<agent>".`;
   }
 
@@ -279,6 +312,45 @@ async function openTokenUsageModal() {
   toInp.addEventListener("change", () => { if (rangeSel.value === "custom") load(); });
   modelSel.addEventListener("change", render);
   refreshBtn.addEventListener("click", load);
+
+  // Purge the token log. First click arms (and warns); a second click within 5s
+  // confirms. This wipes the whole log, not just the current filter — say so.
+  let armed = false, armTimer = null;
+  const disarm = () => {
+    armed = false;
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    clearBtn.classList.remove("armed");
+    clearBtn.textContent = "🗑 Clear log";
+    clearMsg.textContent = "";
+  };
+  clearBtn.addEventListener("click", async () => {
+    if (!armed) {
+      armed = true;
+      clearBtn.classList.add("armed");
+      clearBtn.textContent = "Click again to confirm";
+      clearMsg.textContent = "This permanently deletes ALL token usage history (every model, every date).";
+      armTimer = setTimeout(disarm, 5000);
+      return;
+    }
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    armed = false;
+    clearBtn.disabled = true;
+    clearBtn.classList.remove("armed");
+    clearBtn.textContent = "Clearing…";
+    clearMsg.textContent = "";
+    try {
+      const r = await fetch(backendBase() + "/agentY/token_usage/clear", { method: "POST" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "clear failed");
+      clearMsg.textContent = `✅ Cleared ${full(j.cleared_lines || 0)} log entries.`;
+      await load();
+    } catch (e) {
+      clearMsg.textContent = "❌ " + e;
+    } finally {
+      clearBtn.disabled = false;
+      clearBtn.textContent = "🗑 Clear log";
+    }
+  });
 
   load();
 }
