@@ -138,7 +138,11 @@ class AgentChat {
     .ay-btn.ay-send:hover{background:var(--ay-accent2);}
     .ay-btn.ay-stop{background:#8a4034;color:#ffe1d9;border-color:transparent;border-radius:999px;}
     .ay-btn.ay-stop:hover{background:#9c4a3c;}
-    .ay-log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+    .ay-log{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+    /* Log children are flex items in a column; without this they shrink to fit the
+       panel (collapsing tool/step boxes to a sliver) instead of overflowing into
+       the scroll area. Pin their height so the log scrolls as it grows. */
+    .ay-log>*{flex-shrink:0;}
     .ay-msg{padding:10px 13px;border-radius:16px;max-width:92%;word-wrap:break-word;line-height:1.5;}
     .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(217,119,87,.28);align-self:flex-end;border-bottom-right-radius:5px;}
     .ay-assistant{background:var(--ay-surface);align-self:flex-start;border-bottom-left-radius:5px;}
