@@ -12,7 +12,9 @@ app.registerExtension({
       this.color = "#5c3a28";
       this.bgcolor = "#3a2a20";
       if (!this.title || this.title === "AgentYHook") this.title = "agentY hook";
-      this.size = [280, 210];
+      // Only seed the size on a fresh node; a restored node keeps its saved size,
+      // and the auto-growing anchor inputs resize the node as they're wired.
+      if (!this.size || (this.size[0] === 0 && this.size[1] === 0)) this.size = [300, 260];
       return r;
     };
   },

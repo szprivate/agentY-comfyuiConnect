@@ -915,18 +915,22 @@ class AgentChat {
     );
   }
 
-  // Follow a hook's "anchor" input link back to the node it's attached to.
-  _anchorFor(hookNode) {
+  // Follow every "anchor" input link back to the node(s) feeding this hook. The
+  // anchor input auto-grows (anchor, anchor0, anchor1, …), so a hook may gather
+  // several inputs; returns the origin nodes in slot order.
+  _anchorsFor(hookNode) {
     const graph = app.graph;
-    if (!graph) return null;
-    const inputs = hookNode.inputs || [];
-    let idx = inputs.findIndex((i) => i && i.name === "anchor");
-    if (idx < 0) idx = 0;
-    const inp = inputs[idx];
-    if (!inp || inp.link == null) return null;
-    const link = graph.links ? graph.links[inp.link] : null;
-    if (!link) return null;
-    return graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+    if (!graph) return [];
+    const out = [];
+    for (const inp of hookNode.inputs || []) {
+      if (!inp || inp.link == null) continue;
+      if (!/^anchor\d*$/.test(String(inp.name || ""))) continue;
+      const link = graph.links ? graph.links[inp.link] : null;
+      if (!link) continue;
+      const node = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+      if (node) out.push(node);
+    }
+    return out;
   }
 
   // Scalar widget values of a node (numbers/strings), for the [CANVAS HOOKS] block.
@@ -946,24 +950,35 @@ class AgentChat {
       if (w.ignore === true || w.ignore === "true") continue; // hook disabled — skip it
       const directive = String(w.directive || "").trim();
       if (!directive) continue; // an empty hook is a no-op
-      const anchor = this._anchorFor(hn);
+      const anchors = this._anchorsFor(hn);
+      const isHook = (n) =>
+        !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
       // A hook wired FROM another hook is a downstream stage in a chain: its
-      // input is the predecessor's output (resolved at run time), so record
-      // prev_hook_id and leave anchor_node_id null. When the anchor is a real
-      // node (the common case) behavior is unchanged.
-      const anchorIsHook = !!anchor &&
-        (anchor.type === "AgentYHook" || anchor.comfyClass === "AgentYHook");
-      const realAnchor = anchor && !anchorIsHook ? anchor : null;
+      // input is the predecessor's output (resolved at run time), so record it in
+      // prev_hook_id(s). A hook wired from a real node anchors a directive/standin.
+      // With auto-grow a hook can carry several of each; the singular fields keep
+      // the first of each (unchanged behavior for the common single-input case)
+      // and the plural fields carry every wired input.
+      const realAnchors = anchors.filter((n) => !isHook(n));
+      const hookAnchors = anchors.filter(isHook);
+      const first = realAnchors[0] || null;
       hooks.push({
         hook_node_id: String(hn.id),
         directive,
         purpose: String(w.purpose || "directive"),
         mode: String(w.mode || "auto"),
-        prev_hook_id: anchorIsHook ? String(anchor.id) : null,
-        anchor_node_id: realAnchor ? String(realAnchor.id) : null,
-        anchor_type: realAnchor ? String(realAnchor.type || realAnchor.comfyClass || "") : null,
-        anchor_title: realAnchor ? String(realAnchor.title || "") : null,
-        anchor_widgets: realAnchor ? this._widgetSnapshot(realAnchor) : {},
+        prev_hook_id: hookAnchors.length ? String(hookAnchors[0].id) : null,
+        anchor_node_id: first ? String(first.id) : null,
+        anchor_type: first ? String(first.type || first.comfyClass || "") : null,
+        anchor_title: first ? String(first.title || "") : null,
+        anchor_widgets: first ? this._widgetSnapshot(first) : {},
+        prev_hook_ids: hookAnchors.map((n) => String(n.id)),
+        anchors: realAnchors.map((n) => ({
+          node_id: String(n.id),
+          type: String(n.type || n.comfyClass || ""),
+          title: String(n.title || ""),
+          widgets: this._widgetSnapshot(n),
+        })),
       });
     }
     return hooks;
