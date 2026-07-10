@@ -8,6 +8,10 @@ import { app } from "../../scripts/app.js";
 // mirror what the old Chainlit UI offered.
 
 const DEFAULT_PORT = 5000;
+// Remember which conversation was open so switching away from the sidebar tab
+// and back (ComfyUI unmounts/remounts the panel) reopens it instead of a blank
+// new chat.
+const ACTIVE_THREAD_KEY = "agentY_active_thread";
 
 function backendBase() {
   return (
@@ -91,9 +95,27 @@ class AgentChat {
     this._build();
     this._loadCommands();
     this._loadModels();
-    this._loadThreads();
-    this.newThread();
+    this._restoreSession();
   }
+
+  // Reopen the conversation that was active last (survives the panel being
+  // unmounted/remounted when the user switches sidebar tabs); fall back to a
+  // fresh chat when there's nothing to restore or the thread is gone.
+  async _restoreSession() {
+    await this._loadThreads();
+    let saved = null;
+    try { saved = localStorage.getItem(ACTIVE_THREAD_KEY); } catch (_) {}
+    const exists = saved && Array.from(this.threadSel.options).some((o) => o.value === saved);
+    if (exists) {
+      await this.openThread(saved);
+      this.threadSel.value = saved;
+    } else {
+      this.newThread();
+    }
+  }
+
+  _saveActive(id) { try { if (id) localStorage.setItem(ACTIVE_THREAD_KEY, id); } catch (_) {} }
+  _clearActive() { try { localStorage.removeItem(ACTIVE_THREAD_KEY); } catch (_) {} }
 
   // ── styling ────────────────────────────────────────────────────────────────
   _injectStyles() {
@@ -136,7 +158,11 @@ class AgentChat {
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
     .ay-chip{background:var(--ay-surface2);border:1px solid var(--ay-border);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--ay-text);}
     .ay-inrow{display:flex;gap:8px;align-items:flex-end;}
-    .ay-input{flex:1;resize:none;min-height:40px;max-height:150px;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:10px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
+    /* Keep the composer buttons the same height as a single-line message field so
+       nothing sits higher than its neighbours; when the textarea grows the
+       buttons stay pinned to the bottom (align-items:flex-end). */
+    .ay-inrow .ay-btn{height:40px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
+    .ay-input{flex:1;resize:none;min-height:40px;max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:10px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
     .ay-input:focus{border-color:rgba(217,119,87,.55);}
     .ay-input::placeholder{color:var(--ay-muted);}
     .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
@@ -312,6 +338,7 @@ class AgentChat {
   newThread() {
     this._saveCurrentDom();
     this.threadId = null;
+    this._clearActive(); // no persisted thread until the first message assigns one
     this.logEl.innerHTML = "";
     this._sys("New conversation. Ask me to generate or edit an image/video — results drop onto the graph as nodes.");
   }
@@ -332,6 +359,7 @@ class AgentChat {
     if (!id || id === this.threadId) return;
     this._saveCurrentDom();
     this.threadId = id;
+    this._saveActive(id);
     // Restore the live-rendered panel if we've shown this thread already this
     // session (keeps the thinking/step blocks); otherwise rebuild from the
     // persisted messages, which store only the final user/assistant text.
@@ -482,6 +510,7 @@ class AgentChat {
     switch (ev.type) {
       case "thread":
         if (ev.id && ev.id !== this.threadId) { this.threadId = ev.id; this._loadThreads(); }
+        if (ev.id) this._saveActive(ev.id);
         break;
       case "request":
         this.curRequestId = ev.request_id;
