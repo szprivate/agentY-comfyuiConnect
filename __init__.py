@@ -65,8 +65,17 @@ class AgentYHook(io.ComfyNode):
       input if any are connected, else treating the prompt as text-to-media), and
       stages the result onto the canvas as loader nodes.
 
-    The ``anchor`` input auto-grows: each time you wire one, a new empty slot
-    appears, so a single hook can gather several inputs.
+    Both the ``anchor`` **input** and the ``passthrough`` **output** auto-grow:
+    each time you wire one, a new empty slot appears, so a single hook can gather
+    several inputs and export several outputs (of any type — image, video, but
+    also string / int / float) to the next hook in a chain.
+
+    ``bake_to_canvas`` (workflow-standin only) — when on, the agent doesn't just
+    run the workflow it generates for this hook: it nests that workflow into a
+    ComfyUI **subgraph**, exposes inputs/outputs matching this hook's slots, drops
+    the subgraph onto the same canvas, and wires the subgraphs to mirror the hook
+    chain — "baking" the multi-step task into a reusable native workflow that runs
+    next time without the agent.
 
     Toggle ``ignore`` to disable a hook without deleting it — the agent skips it.
 
@@ -123,15 +132,29 @@ class AgentYHook(io.ComfyNode):
                     label_on="ignored",
                     label_off="active",
                 ),
+                io.Boolean.Input(
+                    "bake_to_canvas",
+                    default=False,
+                    label_on="bake subgraph",
+                    label_off="run only",
+                    tooltip=(
+                        "workflow-standin only: also bake the generated workflow onto the "
+                        "canvas as a nested subgraph wired to mirror the hook chain."
+                    ),
+                ),
                 io.Autogrow.Input("anchors", template=anchors),
             ],
             outputs=[
+                # First output is fixed by the V3 schema; the frontend auto-grows
+                # additional AnyType outputs (V3 has no dynamic-output primitive),
+                # so a standin can export several results to the next hook.
                 io.AnyType.Output(display_name="passthrough"),
             ],
         )
 
     @classmethod
-    def execute(cls, directive="", purpose="directive", mode="auto", ignore=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
+    def execute(cls, directive="", purpose="directive", mode="auto", ignore=False,
+                bake_to_canvas=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).
@@ -140,9 +163,81 @@ class AgentYHook(io.ComfyNode):
         return io.NodeOutput(first)
 
 
+# Number of (fixed) output slots on the Python node. Executable nodes can't
+# auto-grow outputs (the count is fixed at registration), so we declare a small
+# set of any-type outs; a snippet typically fills just out0.
+_N_PY_OUT = 4
+
+
+class AgentYPython(io.ComfyNode):
+    """Run an agent-authored Python snippet as a real ComfyUI node.
+
+    This is the companion to ``bake_to_canvas``: at runtime the orchestrator
+    computes derived values (e.g. a video's length) with a Python script; to make
+    such a value a **native** output of a baked subgraph — so re-running the
+    workflow reproduces it *without the agent* — the same snippet is placed in this
+    node. The bake step wires the relevant inner outputs into this node's inputs
+    and exposes its output as a subgraph output.
+
+    Contract: the ``in`` input auto-grows (in0, in1, … — any type). The snippet
+    runs with those bound as ``in0``, ``in1``, … and as a list ``inputs``; assign
+    a list named ``outputs`` (``outputs[0]`` → this node's first output slot, etc.).
+
+    SECURITY: this executes arbitrary Python embedded in the workflow whenever the
+    graph runs. It is intended for your own, self-hosted, agent-built workflows —
+    do NOT run baked workflows from untrusted sources. Set the env var
+    ``AGENTY_PYTHON_NODE_DISABLED=1`` to make the node a no-op (returns Nones).
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        ins = io.Autogrow.TemplatePrefix(
+            input=io.AnyType.Input("in"), prefix="in", min=0, max=_MAX_ANCHORS,
+        )
+        return io.Schema(
+            node_id="AgentYPython",
+            display_name="agentY python",
+            category="agentY",
+            description=(
+                "Run an agent-authored Python snippet as a node (used when baking computed "
+                "values into subgraphs). Inputs bind as in0, in1, …; set a list `outputs`. "
+                "Executes arbitrary Python on run — self-hosted, agent-built workflows only."
+            ),
+            inputs=[
+                io.String.Input(
+                    "code",
+                    multiline=True,
+                    default="# inputs bound as in0, in1, …  |  set: outputs = [value, …]\noutputs = []",
+                    placeholder="outputs = [ ... ]",
+                ),
+                io.Autogrow.Input("inputs", template=ins),
+            ],
+            outputs=[io.AnyType.Output(display_name=f"out{i}") for i in range(_N_PY_OUT)],
+        )
+
+    @classmethod
+    def execute(cls, code="", inputs=None) -> io.NodeOutput:  # noqa: ANN001
+        import os
+        import builtins
+        if os.environ.get("AGENTY_PYTHON_NODE_DISABLED") in ("1", "true", "True"):
+            return io.NodeOutput(*([None] * _N_PY_OUT))
+        vals = list((inputs or {}).values())
+        ns: dict = {"__builtins__": builtins, "inputs": vals, "outputs": []}
+        for i, v in enumerate(vals):
+            ns[f"in{i}"] = v
+        try:
+            exec(code or "", ns)  # noqa: S102 — deliberate; see SECURITY note above
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"AgentYPython snippet error: {exc}") from exc
+        outs = ns.get("outputs")
+        outs = list(outs) if isinstance(outs, (list, tuple)) else [outs]
+        outs = outs[:_N_PY_OUT] + [None] * (_N_PY_OUT - len(outs))
+        return io.NodeOutput(*outs)
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook]
+        return [AgentYHook, AgentYPython]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

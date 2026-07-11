@@ -917,7 +917,9 @@ class AgentChat {
 
   // Follow every "anchor" input link back to the node(s) feeding this hook. The
   // anchor input auto-grows (anchor, anchor0, anchor1, …), so a hook may gather
-  // several inputs; returns the origin nodes in slot order.
+  // several inputs; returns, in slot order, the origin node plus the source
+  // output slot and target input name so the exact wiring (which output feeds
+  // which input) survives into the baked subgraph chain.
   _anchorsFor(hookNode) {
     const graph = app.graph;
     if (!graph) return [];
@@ -928,7 +930,7 @@ class AgentChat {
       const link = graph.links ? graph.links[inp.link] : null;
       if (!link) continue;
       const node = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
-      if (node) out.push(node);
+      if (node) out.push({ node, fromSlot: link.origin_slot | 0, toName: String(inp.name) });
     }
     return out;
   }
@@ -950,34 +952,46 @@ class AgentChat {
       if (w.ignore === true || w.ignore === "true") continue; // hook disabled — skip it
       const directive = String(w.directive || "").trim();
       if (!directive) continue; // an empty hook is a no-op
-      const anchors = this._anchorsFor(hn);
+      const links = this._anchorsFor(hn);
       const isHook = (n) =>
         !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
       // A hook wired FROM another hook is a downstream stage in a chain: its
       // input is the predecessor's output (resolved at run time), so record it in
-      // prev_hook_id(s). A hook wired from a real node anchors a directive/standin.
-      // With auto-grow a hook can carry several of each; the singular fields keep
-      // the first of each (unchanged behavior for the common single-input case)
-      // and the plural fields carry every wired input.
-      const realAnchors = anchors.filter((n) => !isHook(n));
-      const hookAnchors = anchors.filter(isHook);
-      const first = realAnchors[0] || null;
+      // prev_hook_id(s)/prev_links. A hook wired from a real node anchors a
+      // directive/standin. With auto-grow a hook can carry several of each; the
+      // singular fields keep the first of each (unchanged behavior for the common
+      // single-input case) and the plural, slot-aware fields carry every wired
+      // input so the bake step can reproduce the exact wiring.
+      const realLinks = links.filter((l) => !isHook(l.node));
+      const hookLinks = links.filter((l) => isHook(l.node));
+      const first = realLinks[0] ? realLinks[0].node : null;
+      const outs = hn.outputs || [];
       hooks.push({
         hook_node_id: String(hn.id),
         directive,
         purpose: String(w.purpose || "directive"),
         mode: String(w.mode || "auto"),
-        prev_hook_id: hookAnchors.length ? String(hookAnchors[0].id) : null,
+        bake: w.bake_to_canvas === true || w.bake_to_canvas === "true",
+        output_count: outs.length,
+        outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
+        prev_hook_id: hookLinks.length ? String(hookLinks[0].node.id) : null,
         anchor_node_id: first ? String(first.id) : null,
         anchor_type: first ? String(first.type || first.comfyClass || "") : null,
         anchor_title: first ? String(first.title || "") : null,
         anchor_widgets: first ? this._widgetSnapshot(first) : {},
-        prev_hook_ids: hookAnchors.map((n) => String(n.id)),
-        anchors: realAnchors.map((n) => ({
-          node_id: String(n.id),
-          type: String(n.type || n.comfyClass || ""),
-          title: String(n.title || ""),
-          widgets: this._widgetSnapshot(n),
+        prev_hook_ids: hookLinks.map((l) => String(l.node.id)),
+        prev_links: hookLinks.map((l) => ({
+          from_hook_id: String(l.node.id),
+          from_output_slot: l.fromSlot,
+          to_input: l.toName,
+        })),
+        anchors: realLinks.map((l) => ({
+          node_id: String(l.node.id),
+          type: String(l.node.type || l.node.comfyClass || ""),
+          title: String(l.node.title || ""),
+          widgets: this._widgetSnapshot(l.node),
+          from_output_slot: l.fromSlot,
+          to_input: l.toName,
         })),
       });
     }
