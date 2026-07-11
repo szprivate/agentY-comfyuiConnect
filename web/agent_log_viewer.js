@@ -26,8 +26,30 @@ function el(tag, props = {}, children = []) {
   return n;
 }
 
-function openLogViewer() {
-  window.open(backendBase() + "/agentY/log_viewer", "_blank", "noopener");
+async function openLogViewer() {
+  const base = backendBase();
+  // Check the host is up first: opening a new tab straight at a down host shows a
+  // cryptic browser "site can't be reached" page. The health probe is a local,
+  // near-instant call, so the healthy path still opens within the click gesture.
+  let up = false;
+  try { up = (await fetch(base + "/agentY/health", { cache: "no-store" })).ok; } catch (_) {}
+  if (up) {
+    window.open(base + "/agentY/log_viewer", "_blank", "noopener");
+    return;
+  }
+  const w = window.open("", "_blank");
+  if (w) {
+    w.document.write(
+      '<meta charset="utf-8"><title>agentY log viewer</title>' +
+      '<body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#262624;' +
+      'color:#f2f0ea;padding:44px;max-width:640px;margin:auto;line-height:1.6">' +
+      "<h2 style=\"color:#d97757\">agentY host isn't reachable</h2>" +
+      "<p>The message-history log viewer is served by the agentY chat host at <code>" + base +
+      "</code>, which doesn't appear to be running right now.</p>" +
+      "<p>Start it with <code>run_agent.ps1</code> (or <code>python -m src.agenty_ui_server</code>), " +
+      "then reopen this viewer from the 📜 button.</p></body>");
+    w.document.close();
+  }
 }
 
 // Expose for the chat panel's 📜 button (web/agent_chat.js).

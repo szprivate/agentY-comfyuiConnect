@@ -56,12 +56,17 @@ const SLASH_FALLBACK = [
 // Model presets for the quick-switch dropdown (grouped by provider). Each entry
 // is [ "<provider>,<model>", "Display name" ] — the provider,model string is
 // exactly what /switch_model expects. Edit this list to add your own models.
+// These mirror the host's _ANTHROPIC_MODELS / _DASHSCOPE_MODELS so the dropdown
+// is still usable when the host is briefly unreachable (e.g. mid-restart) and the
+// live /agentY/models list can't be fetched. Ollama models can't be known offline
+// — they appear once the host answers again (see _loadModels' retry/reconnect).
 const MODEL_PRESETS = {
   Anthropic: [
     ["claude,claude-haiku-4-5", "Claude Haiku 4.5"],
     ["claude,claude-sonnet-4-5", "Claude Sonnet 4.5"],
   ],
   "Alibaba (DashScope)": [
+    ["dashscope,qwen3.6-flash", "Qwen3.6 Flash"],
     ["dashscope,qwen-plus", "Qwen Plus"],
     ["dashscope,qwen3.7-plus", "Qwen3.7 Plus"],
     ["dashscope,qwen-max", "Qwen Max"],
@@ -75,8 +80,13 @@ const MODEL_TARGETS = [
 ];
 
 class AgentChat {
-  constructor(root) {
-    this.root = root;
+  constructor() {
+    // The panel DOM (this.wrap) is built once and kept alive for the life of the
+    // page. ComfyUI unmounts/remounts a sidebar tab every time you switch away and
+    // back; a single persistent instance (see the singleton in registerExtension)
+    // re-parents this same DOM into each fresh mount point via mount(), so an
+    // in-flight turn keeps streaming into the same log instead of being orphaned
+    // in a discarded instance (which is what "swallowed" messages).
     this.threadId = null;
     this.streaming = false;
     this.activeAsk = null; // request_id awaiting a reply
@@ -91,11 +101,61 @@ class AgentChat {
     this._selOrder = []; // node ids in the order they were selected on the canvas
     this._consumed = {}; // nodeId -> value already sent as an input (skip re-sending unchanged)
     this.domCache = new Map(); // threadId -> {html, scroll}: live-rendered panel (thinking/step blocks) kept across conversation switches
+    this._hostUp = true;
     this._injectStyles();
     this._build();
-    this._loadCommands();
-    this._loadModels();
-    this._restoreSession();
+    this._bootstrap();
+  }
+
+  // Attach the persistent panel DOM to the current mount point. Called on every
+  // sidebar (re)mount. Re-parenting moves the live DOM (append relocates a node),
+  // so a running turn's streaming text and rendered blocks survive a tab switch.
+  mount(elm) {
+    if (!elm) return;
+    this.mountEl = elm;
+    elm.innerHTML = "";
+    elm.appendChild(this.wrap);
+    // Cheap, non-destructive refresh: repopulate the thread dropdown (in case a
+    // conversation was created/deleted elsewhere) without touching the open log.
+    if (this._hostUp) this._loadThreads();
+  }
+
+  // Load everything the panel needs. If the host isn't up yet (e.g. it was just
+  // restarted), fall into the reconnect watcher so the panel self-heals instead of
+  // silently showing a stale/empty list until a manual hard-reload.
+  async _bootstrap() {
+    if (await this._hostReachable()) { await this._afterConnect(true); }
+    else this._startReconnect(true);
+  }
+
+  async _hostReachable() {
+    try {
+      const r = await fetch(backendBase() + "/agentY/health", { cache: "no-store" });
+      return r.ok;
+    } catch (_) { return false; }
+  }
+
+  async _afterConnect(firstBoot) {
+    this._hostUp = true;
+    await this._loadCommands();
+    await this._loadModels();
+    if (firstBoot && !this.threadId) await this._restoreSession();
+    else await this._loadThreads();
+  }
+
+  // Poll the host until it answers again, then reload the bits that go stale on a
+  // restart (commands, model list, thread list). Only runs while the host is down,
+  // so there's no steady-state polling. Triggered on startup-if-down and whenever a
+  // stream fetch fails with a connection error.
+  _startReconnect(firstBoot) {
+    if (this._reconnectTimer) return;
+    this._hostUp = false;
+    this._reconnectTimer = setInterval(async () => {
+      if (!(await this._hostReachable())) return;
+      clearInterval(this._reconnectTimer);
+      this._reconnectTimer = null;
+      this._afterConnect(!!firstBoot);
+    }, 2500);
   }
 
   // Reopen the conversation that was active last (survives the panel being
@@ -189,7 +249,6 @@ class AgentChat {
 
   // ── DOM ────────────────────────────────────────────────────────────────────
   _build() {
-    this.root.innerHTML = "";
     const wrap = el("div", { className: "ay-wrap" });
 
     // top bar: thread selector + new + delete
@@ -231,7 +290,8 @@ class AgentChat {
     // model quick-switch bar (bottom)
     wrap.append(this._buildModelBar());
 
-    this.root.append(wrap);
+    // Keep the built DOM detached; mount() re-parents it into the live sidebar.
+    this.wrap = wrap;
   }
 
   // ── model quick-switch bar ───────────────────────────────────────────────────
@@ -272,12 +332,14 @@ class AgentChat {
   // Fetch the live vendor/model list from the host; fall back to static presets.
   async _loadModels() {
     try {
-      const r = await fetch(backendBase() + "/agentY/models");
+      const r = await fetch(backendBase() + "/agentY/models", { cache: "no-store" });
       if (r.ok) {
         const groups = await r.json();
         if (groups && Object.keys(groups).length) { this._populateModelSelect(groups); return; }
       }
-    } catch (_) {}
+    } catch (_) { this._startReconnect(false); }
+    // Host unreachable or returned nothing — show the offline presets for now; the
+    // reconnect watcher swaps in the live list (incl. Ollama) once the host answers.
     this._populateModelSelect(MODEL_PRESETS);
   }
 
@@ -305,14 +367,14 @@ class AgentChat {
   // ── backend calls ───────────────────────────────────────────────────────────
   async _loadCommands() {
     try {
-      const r = await fetch(backendBase() + "/agentY/commands");
+      const r = await fetch(backendBase() + "/agentY/commands", { cache: "no-store" });
       if (r.ok) this.commands = await r.json();
     } catch (_) {}
   }
 
   async _loadThreads() {
     try {
-      const r = await fetch(backendBase() + "/agentY/threads");
+      const r = await fetch(backendBase() + "/agentY/threads", { cache: "no-store" });
       const list = r.ok ? await r.json() : [];
       const cur = this.threadId;
       this.threadSel.innerHTML = "";
@@ -379,7 +441,7 @@ class AgentChat {
     }
     this.logEl.innerHTML = "";
     try {
-      const r = await fetch(backendBase() + "/agentY/threads/" + id);
+      const r = await fetch(backendBase() + "/agentY/threads/" + id, { cache: "no-store" });
       if (!r.ok) return;
       const t = await r.json();
       // Prefer the persisted rendered panel — collapsible think/step blocks
@@ -601,6 +663,14 @@ class AgentChat {
         this._loadThreads();
         break;
     }
+    // Persist the in-progress panel periodically (throttled) so a reload or a host
+    // restart mid-turn restores what was shown, rather than the pre-turn snapshot.
+    if (ev.type !== "done") this._savePanelThrottled();
+  }
+
+  _savePanelThrottled() {
+    if (this._saveTimer || !this.threadId) return;
+    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._savePanel(); }, 1500);
   }
 
   async _stream(body) {
@@ -640,6 +710,7 @@ class AgentChat {
       // A user-initiated Stop aborts the fetch → don't show it as an error.
       if (!this._stopping && e.name !== "AbortError") {
         this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`run_agent.ps1\`, ${backendBase()})`);
+        this._startReconnect(false); // auto-recover the panel when the host is back
       }
     } finally {
       this.streaming = false;
@@ -1062,6 +1133,13 @@ class AgentChat {
 }
 
 // ── register the sidebar tab ────────────────────────────────────────────────────
+// One persistent AgentChat for the whole page. ComfyUI destroys and recreates the
+// sidebar panel element on every tab switch; constructing a fresh AgentChat each
+// time (the old behavior) orphaned any in-flight turn — its SSE stream kept writing
+// to a discarded DOM, so messages "disappeared" when you looked away. Instead we
+// keep a single instance and just re-parent its DOM into each new mount point.
+let _AGENTY_CHAT = null;
+
 app.registerExtension({
   name: "agentY.chat.sidebar",
   async setup() {
@@ -1073,7 +1151,10 @@ app.registerExtension({
         title: "agentY",
         tooltip: "Chat with agentY — generate/edit media as graph nodes",
         type: "custom",
-        render: (elm) => { new AgentChat(elm); },
+        render: (elm) => {
+          if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();
+          _AGENTY_CHAT.mount(elm);
+        },
       });
       console.log("[agentY] chat sidebar tab registered");
       return true;
