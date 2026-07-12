@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
@@ -184,7 +185,7 @@ class AgentChat {
     .ay-wrap{
       --ay-bg:#262624; --ay-surface:#302f2c; --ay-surface2:#3b3936;
       --ay-border:rgba(240,235,225,.10); --ay-text:#f2f0ea; --ay-muted:#a8a39a;
-      --ay-accent:#d97757; --ay-accent2:#c56647; --ay-accent-soft:rgba(217,119,87,.15);
+      --ay-accent:#5b9bf5; --ay-accent2:#4785e6; --ay-accent-soft:rgba(91,155,245,.15);
       display:flex;flex-direction:column;height:100%;
       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
       font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
@@ -194,7 +195,10 @@ class AgentChat {
     .ay-btn{background:var(--ay-surface2);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
     .ay-btn:hover{background:#464440;}
     .ay-btn:active{transform:translateY(1px);}
-    .ay-btn.ay-send{background:var(--ay-accent);color:#2a1810;border-color:transparent;border-radius:999px;padding:9px 18px;font-weight:600;}
+    .ay-btn.ay-send{background:var(--ay-accent);color:#0a1a30;border-color:transparent;border-radius:999px;padding:9px 18px;font-weight:600;}
+    .ay-icon-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;}
+    .ay-icon-btn svg{width:17px;height:17px;display:block;flex-shrink:0;}
+    .ay-btn-label{font-size:12.5px;line-height:1;}
     .ay-btn.ay-send:hover{background:var(--ay-accent2);}
     .ay-btn.ay-stop{background:#8a4034;color:#ffe1d9;border-color:transparent;border-radius:999px;}
     .ay-btn.ay-stop:hover{background:#9c4a3c;}
@@ -204,10 +208,10 @@ class AgentChat {
        the scroll area. Pin their height so the log scrolls as it grows. */
     .ay-log>*{flex-shrink:0;}
     .ay-msg{padding:10px 13px;border-radius:16px;max-width:92%;word-wrap:break-word;line-height:1.5;}
-    .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(217,119,87,.28);align-self:flex-end;border-bottom-right-radius:5px;}
+    .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(91,155,245,.28);align-self:flex-end;border-bottom-right-radius:5px;}
     .ay-assistant{background:var(--ay-surface);align-self:flex-start;border-bottom-left-radius:5px;}
     .ay-system{background:transparent;color:var(--ay-muted);font-size:12px;align-self:center;text-align:center;max-width:100%;padding:2px 8px;}
-    .ay-ask{background:rgba(217,119,87,.10);color:#f0d9c2;border:1px solid rgba(217,119,87,.35);align-self:stretch;max-width:100%;}
+    .ay-ask{background:rgba(91,155,245,.10);color:#f0d9c2;border:1px solid rgba(91,155,245,.35);align-self:stretch;max-width:100%;}
     .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
     .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
     .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
@@ -227,12 +231,12 @@ class AgentChat {
        buttons stay pinned to the bottom (align-items:flex-end). */
     .ay-inrow .ay-btn{height:40px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
     .ay-input{flex:1;resize:none;min-height:40px;max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:10px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
-    .ay-input:focus{border-color:rgba(217,119,87,.55);}
+    .ay-input:focus{border-color:rgba(91,155,245,.55);}
     .ay-input::placeholder{color:var(--ay-muted);}
     .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
     .ay-mlabel{color:var(--ay-muted);font-size:11.5px;flex-shrink:0;}
     .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:9px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
-    .ay-modelbar select:hover{border-color:rgba(217,119,87,.45);}
+    .ay-modelbar select:hover{border-color:rgba(91,155,245,.45);}
     .ay-modelbar select:disabled{opacity:.45;cursor:not-allowed;}
     .ay-mmodel{flex:1;min-width:0;}
     .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
@@ -251,18 +255,25 @@ class AgentChat {
   _build() {
     const wrap = el("div", { className: "ay-wrap" });
 
-    // top bar: thread selector + new + delete
+    // top bar: thread selector + new + delete. Button glyphs are Lucide SVGs
+    // assigned in iconsUI.json; the emoji passed to setButtonIcon is the fallback
+    // shown until the icons load (or if that fetch fails).
     this.threadSel = el("select", { title: "Conversation" });
     this.threadSel.addEventListener("change", () => this.openThread(this.threadSel.value));
-    const newBtn = el("button", { className: "ay-btn", textContent: "+ New", title: "New chat" });
+    const newBtn = el("button", { className: "ay-btn", title: "New chat" });
+    setButtonIcon(newBtn, "newChat", "＋");
     newBtn.addEventListener("click", () => this.newThread());
-    const delBtn = el("button", { className: "ay-btn", textContent: "🗑", title: "Delete this conversation" });
+    const delBtn = el("button", { className: "ay-btn", title: "Delete this conversation" });
+    setButtonIcon(delBtn, "deleteChat", "🗑");
     delBtn.addEventListener("click", () => this.deleteThread());
-    const usageBtn = el("button", { className: "ay-btn", textContent: "📊", title: "Token usage overview" });
+    const usageBtn = el("button", { className: "ay-btn", title: "Token usage overview" });
+    setButtonIcon(usageBtn, "tokenUsage", "📊");
     usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
-    const logBtn = el("button", { className: "ay-btn", textContent: "📜", title: "Message-history log viewer" });
+    const logBtn = el("button", { className: "ay-btn", title: "Message-history log viewer" });
+    setButtonIcon(logBtn, "logViewer", "📜");
     logBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
-    const memBtn = el("button", { className: "ay-btn", textContent: "🧠", title: "Long-term memory viewer" });
+    const memBtn = el("button", { className: "ay-btn", title: "Long-term memory viewer" });
+    setButtonIcon(memBtn, "memoryViewer", "🧠");
     memBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
     wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, logBtn, memBtn]));
 
@@ -277,12 +288,14 @@ class AgentChat {
     this.input.addEventListener("input", () => this._onInput());
     this.input.addEventListener("keydown", (e) => this._onKeydown(e));
 
-    const attachBtn = el("button", { className: "ay-btn", textContent: "📎", title: "Attach image" });
+    const attachBtn = el("button", { className: "ay-btn", title: "Attach image" });
+    setButtonIcon(attachBtn, "attach", "📎");
     this.fileInput = el("input", { type: "file", accept: "image/*", multiple: true, style: { display: "none" } });
     this.fileInput.addEventListener("change", () => this._onFiles());
     attachBtn.addEventListener("click", () => this.fileInput.click());
 
-    this.sendBtn = el("button", { className: "ay-btn ay-send", textContent: "Send" });
+    this.sendBtn = el("button", { className: "ay-btn ay-send", title: "Send" });
+    setButtonIcon(this.sendBtn, "send", "Send");
     this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
@@ -291,6 +304,10 @@ class AgentChat {
 
     // model quick-switch bar (bottom)
     wrap.append(this._buildModelBar());
+
+    // Once iconsUI.json loads, swap every button's fallback glyph for its Lucide
+    // SVG (no-op if already applied synchronously above / if the fetch failed).
+    iconsReady.then(() => applyIcons(wrap));
 
     // Keep the built DOM detached; mount() re-parents it into the live sidebar.
     this.wrap = wrap;
@@ -755,7 +772,7 @@ class AgentChat {
     // Stop button; otherwise it's the Send/reply button. Always clickable.
     const stopMode = b && !this.activeAsk;
     this.sendBtn.disabled = false;
-    this.sendBtn.textContent = stopMode ? "⏹ Stop" : "Send";
+    setButtonIcon(this.sendBtn, stopMode ? "stop" : "send", stopMode ? "⏹ Stop" : "Send");
     this.sendBtn.classList.toggle("ay-stop", stopMode);
     // Don't allow a model switch mid-turn.
     if (this.modelSel) this.modelSel.disabled = b;

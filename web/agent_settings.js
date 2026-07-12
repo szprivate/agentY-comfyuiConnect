@@ -43,8 +43,8 @@ function injectStyles() {
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#d7d2c8;word-break:break-word;font-family:ui-monospace,monospace;}
   .ays-input{flex:1;min-width:0;background:#302f2c;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);
     border-radius:8px;padding:6px 9px;font-size:12.5px;outline:none;}
-  .ays-input:focus{border-color:rgba(217,119,87,.6);}
-  input.ays-input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#d97757;}
+  .ays-input:focus{border-color:rgba(91,155,245,.6);}
+  input.ays-input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#5b9bf5;}
   .ays-group{border:1px solid rgba(240,235,225,.10);border-radius:10px;margin:8px 0;overflow:hidden;}
   .ays-grouphead{background:#302f2c;padding:7px 12px;font-size:12px;font-weight:600;color:#e9c9b6;
     font-family:ui-monospace,monospace;cursor:pointer;}
@@ -52,8 +52,8 @@ function injectStyles() {
   .ays-btn{background:#3b3936;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-radius:9px;
     padding:8px 16px;cursor:pointer;font-size:12.5px;}
   .ays-btn:hover{background:#464440;}
-  .ays-btn.primary{background:#d97757;color:#2a1810;border-color:transparent;font-weight:650;}
-  .ays-btn.primary:hover{background:#c56647;}
+  .ays-btn.primary{background:#5b9bf5;color:#0a1a30;border-color:transparent;font-weight:650;}
+  .ays-btn.primary:hover{background:#4785e6;}
   .ays-note{font-size:11.5px;color:#a8a39a;margin:2px 0 10px;}
   .ays-msg{font-size:12px;margin-right:auto;align-self:center;}
   .ays-toggle{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#a8a39a;margin-bottom:8px;cursor:pointer;}

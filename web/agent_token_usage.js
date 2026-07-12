@@ -83,7 +83,7 @@ function injectStyles() {
   .atu-field>label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#a8a39a;}
   .atu-sel,.atu-dt{background:#302f2c;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-radius:8px;
     padding:6px 9px;font-size:12.5px;outline:none;min-width:150px;}
-  .atu-sel:focus,.atu-dt:focus{border-color:rgba(217,119,87,.6);}
+  .atu-sel:focus,.atu-dt:focus{border-color:rgba(91,155,245,.6);}
   .atu-btn{background:#3b3936;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-radius:9px;
     padding:7px 14px;cursor:pointer;font-size:12.5px;}
   .atu-btn:hover{background:#464440;}
