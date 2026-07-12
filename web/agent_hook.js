@@ -2,41 +2,15 @@ import { app } from "../../scripts/app.js";
 
 // agentY hook node frontend:
 //  • a distinct warm colour so it's obvious it's an agent annotation, not part
-//    of the executing pipeline;
-//  • auto-growing OUTPUT slots. The V3 schema auto-grows the anchor *inputs*
-//    (Autogrow), but V3 has no dynamic-output primitive, so we grow the outputs
-//    here: whenever the last output gets wired, a fresh empty AnyType output
-//    appears, letting a workflow-standin export several results (image, video,
-//    string, int, float — the slots are type-agnostic "*") to the next hook.
-
-function hasLinks(slot) {
-  return !!(slot && slot.links && slot.links.length);
-}
-
-// Keep exactly one trailing empty output so the user can always wire one more,
-// without leaving a growing tail of empties behind.
-function growOutputs(node) {
-  if (!node || node._agentYGrowing) return;
-  node._agentYGrowing = true;
-  try {
-    node.outputs = node.outputs || [];
-    // Trim: while the last two outputs are both empty, drop the last (keep one).
-    while (
-      node.outputs.length > 1 &&
-      !hasLinks(node.outputs[node.outputs.length - 1]) &&
-      !hasLinks(node.outputs[node.outputs.length - 2])
-    ) {
-      node.removeOutput(node.outputs.length - 1);
-    }
-    // Ensure a trailing empty slot exists.
-    const n = node.outputs.length;
-    if (n === 0 || hasLinks(node.outputs[n - 1])) node.addOutput("out", "*");
-  } catch (e) {
-    console.error("[agentY-comfyuiConnect] output auto-grow failed:", e);
-  } finally {
-    node._agentYGrowing = false;
-  }
-}
+//    of the executing pipeline.
+// The hook has a single, type-agnostic "out" output (declared in the V3 schema).
+// The anchor *inputs* still auto-grow (a proper V3 Autogrow primitive); the
+// outputs no longer do — a stage that yields several results forwards them all
+// to the next hook via the agent (from the run_workflow_now result), and a baked
+// subgraph's output count comes from the agent's exposed-outputs spec, not from
+// extra slots on this node. The old output auto-grow added a confusing second
+// output and mutated the slot array mid-connection; a single fixed output is
+// simpler and unambiguous to wire.
 
 app.registerExtension({
   name: "agentY.hookNode",
@@ -50,27 +24,8 @@ app.registerExtension({
       this.bgcolor = "#3a2a20";
       if (!this.title || this.title === "AgentYHook") this.title = "agentY hook";
       // Only seed the size on a fresh node; a restored node keeps its saved size,
-      // and the auto-growing anchor inputs / outputs resize the node as wired.
+      // and the auto-growing anchor inputs resize the node as wired.
       if (!this.size || (this.size[0] === 0 && this.size[1] === 0)) this.size = [300, 280];
-      // Seed the trailing empty output once the node is on the graph.
-      setTimeout(() => growOutputs(this), 0);
-      return r;
-    };
-
-    // Grow outputs whenever an output connection changes.
-    const onConn = nodeType.prototype.onConnectionsChange;
-    nodeType.prototype.onConnectionsChange = function (type, index, connected, link_info, ioSlot) {
-      const r = onConn ? onConn.apply(this, arguments) : undefined;
-      if (type === LiteGraph.OUTPUT) growOutputs(this);
-      return r;
-    };
-
-    // A graph load restores saved slots without firing onConnectionsChange —
-    // re-seed the trailing empty so a reopened chain stays extendable.
-    const onConfigure = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function (info) {
-      const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
-      setTimeout(() => growOutputs(this), 0);
       return r;
     };
   },

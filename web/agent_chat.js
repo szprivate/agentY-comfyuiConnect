@@ -999,7 +999,11 @@ class AgentChat {
     const out = [];
     for (const inp of hookNode.inputs || []) {
       if (!inp || inp.link == null) continue;
-      if (!/^anchor\d*$/.test(String(inp.name || ""))) continue;
+      // V3 Autogrow names the slots "anchors.anchor0", "anchors.anchor1", …; older
+      // builds used a bare "anchor"/"anchor0". Match the trailing anchorN either
+      // way (the "anchors." group prefix must not defeat detection) — otherwise the
+      // whole anchor link, and every hook→hook chain link, is silently dropped.
+      if (!/(?:^|\.)anchor\d*$/.test(String(inp.name || ""))) continue;
       const link = graph.links ? graph.links[inp.link] : null;
       if (!link) continue;
       const node = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;

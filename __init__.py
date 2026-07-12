@@ -65,10 +65,12 @@ class AgentYHook(io.ComfyNode):
       input if any are connected, else treating the prompt as text-to-media), and
       stages the result onto the canvas as loader nodes.
 
-    Both the ``anchor`` **input** and the ``passthrough`` **output** auto-grow:
-    each time you wire one, a new empty slot appears, so a single hook can gather
-    several inputs and export several outputs (of any type — image, video, but
-    also string / int / float) to the next hook in a chain.
+    The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
+    appears, so a single hook can gather several inputs (e.g. combine three images
+    in a standin, or apply one directive across two anchor nodes). The single
+    ``out`` **output** carries any type (image, video, string / int / float); a
+    stage that yields several results forwards them all to the next hook via the
+    agent, not via several slots.
 
     ``bake_to_canvas`` (workflow-standin only) — when on, the agent doesn't just
     run the workflow it generates for this hook: it nests that workflow into a
@@ -84,7 +86,7 @@ class AgentYHook(io.ComfyNode):
     Recommended usage: wire only the ``anchor`` inputs and leave the output
     unwired (the node is then pruned entirely on a normal run). Splicing it inline
     also works — the agent removes it from the graph before running, and the
-    passthrough forwards the first connected anchor.
+    ``out`` output forwards the first connected anchor.
     """
 
     @classmethod
@@ -145,10 +147,13 @@ class AgentYHook(io.ComfyNode):
                 io.Autogrow.Input("anchors", template=anchors),
             ],
             outputs=[
-                # First output is fixed by the V3 schema; the frontend auto-grows
-                # additional AnyType outputs (V3 has no dynamic-output primitive),
-                # so a standin can export several results to the next hook.
-                io.AnyType.Output(display_name="passthrough"),
+                # A single type-agnostic output. Wire it to the next hook's anchor
+                # to chain stages; the link marks the dependency. A stage that
+                # produces SEVERAL results doesn't need several slots — the agent
+                # forwards every produced file/value to the next stage from the
+                # run_workflow_now result, and a baked subgraph's output count comes
+                # from the agent's exposed-outputs spec, not from this slot.
+                io.AnyType.Output(display_name="out"),
             ],
         )
 
