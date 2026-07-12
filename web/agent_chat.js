@@ -262,7 +262,9 @@ class AgentChat {
     usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
     const logBtn = el("button", { className: "ay-btn", textContent: "📜", title: "Message-history log viewer" });
     logBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, logBtn]));
+    const memBtn = el("button", { className: "ay-btn", textContent: "🧠", title: "Long-term memory viewer" });
+    memBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
+    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, logBtn, memBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
