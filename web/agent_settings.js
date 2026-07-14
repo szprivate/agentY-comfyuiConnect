@@ -186,6 +186,21 @@ async function openAgentYSettingsModal() {
   setSec.append(setForm);
   body.append(setSec);
 
+  // ── model pricing section (config/pricing.json) ──
+  const priceSec = el("div", { className: "ays-sec" });
+  priceSec.append(el("h3", { textContent: "Model pricing (config/pricing.json)" }));
+  priceSec.append(el("div", { className: "ays-note", textContent:
+    "Per-model USD prices per MILLION tokens. Overrides the built-in tables so the token-usage cost column matches your endpoint (e.g. your MaaS deployment) and covers models the tables don't ship (deepseek, kimi). Entries with in/out ≤ 0 are ignored. Shape: {\"models\":{\"<model>\":{\"in\":0.4,\"out\":1.2}},\"provider_defaults\":{\"dashscope\":{\"in\":…,\"out\":…}}}." }));
+  const priceTa = el("textarea", {
+    className: "ays-input",
+    spellcheck: false,
+    value: JSON.stringify(data.pricing || { models: {}, provider_defaults: {} }, null, 2),
+    style: { width: "100%", minHeight: "200px", fontFamily: "ui-monospace,monospace", whiteSpace: "pre" },
+  });
+  const priceErr = el("div", { className: "ays-note", style: { color: "#e07a5f" } });
+  priceSec.append(priceTa, priceErr);
+  body.append(priceSec);
+
   // ── footer ──
   const msg = el("div", { className: "ays-msg" });
   const cancelBtn = el("button", { className: "ays-btn", textContent: "Close" });
@@ -201,7 +216,15 @@ async function openAgentYSettingsModal() {
     for (const [key, { input, original }] of Object.entries(envInputs)) {
       if (input.value !== original) envChanges[key] = input.value;
     }
+    let pricingPayload;
+    try {
+      pricingPayload = JSON.parse(priceTa.value);
+      priceErr.textContent = "";
+    } catch (e) {
+      priceErr.textContent = "Pricing JSON is invalid — not saved: " + e;
+    }
     const payload = { env: envChanges, settings: collectSettings(refs) };
+    if (pricingPayload !== undefined) payload.pricing = pricingPayload;
     try {
       const r = await fetch(backendBase() + "/agentY/settings", {
         method: "POST",
@@ -213,6 +236,7 @@ async function openAgentYSettingsModal() {
       const parts = [];
       if (j.env_updated && j.env_updated.length) parts.push(`${j.env_updated.length} auth key(s)`);
       if (j.settings_updated && j.settings_updated.length) parts.push(`${j.settings_updated.length} setting(s)`);
+      if (j.pricing_updated) parts.push("pricing");
       msg.textContent = parts.length ? "✅ Saved " + parts.join(", ") + ". Model changes apply on next /switch_model or restart." : "No changes to save.";
       // Refresh originals so a second save doesn't re-send unchanged keys.
       for (const [key, o] of Object.entries(envInputs)) o.original = o.input.value;
