@@ -58,6 +58,7 @@ function fmtTs(sec) {
 }
 
 const RANGES = [
+  ["last_run", "Last run", null],
   ["1h", "Last hour", 3600],
   ["24h", "Last 24 hours", 86400],
   ["7d", "Last 7 days", 604800],
@@ -127,6 +128,7 @@ function rangeParams(preset, fromInp, toInp) {
   const spec = RANGES.find((r) => r[0] === preset);
   if (!spec) return {};
   if (preset === "all") return {};
+  if (preset === "last_run") return { scope: "last_run" };
   if (preset === "custom") {
     const f = fromInp && fromInp.value ? new Date(fromInp.value).getTime() / 1000 : null;
     const t = toInp && toInp.value ? new Date(toInp.value).getTime() / 1000 : null;
@@ -140,7 +142,9 @@ async function openTokenUsageModal() {
 
   const overlay = el("div", { className: "atu-overlay" });
   const close = () => overlay.remove();
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  // Intentionally NOT closing on a backdrop (outside) click — the viewer closes
+  // only via the ✕ button. Clicking outside was dismissing it and making its
+  // controls inaccessible.
 
   // ── filter controls ──
   const rangeSel = el("select", { className: "atu-sel" });
@@ -276,6 +280,7 @@ async function openTokenUsageModal() {
   async function load() {
     const p = rangeParams(rangeSel.value, fromInp, toInp);
     const qs = new URLSearchParams();
+    if (p.scope) qs.set("scope", p.scope);
     if (p.from != null) qs.set("from", String(p.from));
     if (p.to != null) qs.set("to", String(p.to));
     tiles.innerHTML = "";
