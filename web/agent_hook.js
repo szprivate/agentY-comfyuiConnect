@@ -31,6 +31,25 @@ app.registerExtension({
   },
 });
 
+// The agentY text node holds a string the agent wrote when answering a 'text'
+// hook. A cool slate palette sets it apart from the warm hook / green python
+// nodes; its output is a fixed STRING, so no auto-grow here.
+app.registerExtension({
+  name: "agentY.textNode",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "AgentYText") return;
+    const onCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+      this.color = "#28405c";
+      this.bgcolor = "#20303a";
+      if (!this.title || this.title === "AgentYText") this.title = "agentY text";
+      if (!this.size || (this.size[0] === 0 && this.size[1] === 0)) this.size = [320, 200];
+      return r;
+    };
+  },
+});
+
 // The agentY python node (used when baking computed values) shares the warm
 // agentY palette. Its outputs are declared/fixed, so no output auto-grow here.
 app.registerExtension({

@@ -668,7 +668,8 @@ class AgentChat {
         break;
       case "canvas_patch":
         this.curAssistant = null;
-        this._applyCanvasPatch(ev);
+        if (ev.op === "place_text") this._placeCanvasText(ev);
+        else this._applyCanvasPatch(ev);
         break;
       case "system":
         this.curAssistant = null;
@@ -1012,6 +1013,67 @@ class AgentChat {
     } else {
       this._sys(`⚠️ No matching widget on **${title}** to update.`);
     }
+  }
+
+  // Place the agent's written answer to a TEXT hook onto the canvas as an
+  // "agentY text" node (a wireable STRING value), then wire its output wherever
+  // the hook's own output went — so downstream nodes / the next hook stage
+  // consume the string on a normal run. The hook node itself is left in place.
+  _placeCanvasText(ev) {
+    const LG = window.LiteGraph;
+    const graph = app.graph;
+    const text = String(ev.text || "");
+    if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYText"]) {
+      this._sys("⚠️ Wrote the answer, but this ComfyUI has no **agentY text** node registered — "
+        + "`git pull` the agentY-comfyuiConnect extension and reload to place it on the canvas.");
+      return;
+    }
+    let node;
+    try {
+      node = LG.createNode("AgentYText");
+      graph.add(node);
+    } catch (e) {
+      this._sys(`⚠️ Could not add agentY text node: ${e}`);
+      return;
+    }
+    const w = (node.widgets || []).find((x) => x && x.name === "text");
+    if (w) {
+      w.value = text;
+      try { if (w.callback) w.callback(text, app.canvas, node); } catch (_) {}
+    }
+    // Position beside the hook if we can find it, else stagger near the origin.
+    const hid = Number(ev.hook_node_id);
+    const hook = graph.getNodeById
+      ? graph.getNodeById(hid)
+      : (graph._nodes || []).find((n) => Number(n.id) === hid);
+    if (hook && Array.isArray(hook.pos)) {
+      node.pos = [hook.pos[0] + (hook.size ? hook.size[0] + 40 : 340), hook.pos[1]];
+    } else {
+      const off = this.nodeCount++ * 40;
+      node.pos = [80 + off, 80 + off];
+    }
+    // Take over the hook's downstream consumers: for every link out of the hook's
+    // first output, rewire that input to this text node. A LiteGraph input holds a
+    // single link, so connecting here replaces the hook's link automatically.
+    let wired = 0;
+    const outLinks = hook && hook.outputs && hook.outputs[0] && hook.outputs[0].links;
+    if (Array.isArray(outLinks)) {
+      for (const lid of outLinks.slice()) {
+        const link = graph.links ? graph.links[lid] : null;
+        if (!link) continue;
+        const target = graph.getNodeById ? graph.getNodeById(link.target_id) : null;
+        if (!target) continue;
+        try { node.connect(0, target, link.target_slot | 0); wired++; } catch (_) {}
+      }
+    }
+    node.title = "agentY text";
+    graph.setDirtyCanvas(true, true);
+    this._sys(
+      wired
+        ? `🧩 Placed an **agentY text** node with the answer and wired it into ${wired} input`
+          + `${wired === 1 ? "" : "s"} (took over the hook's output).`
+        : "🧩 Placed an **agentY text** node with the answer on the canvas — wire its output where you need the string."
+    );
   }
 
   // ── canvas hooks (AgentYHook nodes) ──────────────────────────────────────────

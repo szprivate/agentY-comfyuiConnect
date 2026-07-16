@@ -64,6 +64,12 @@ class AgentYHook(io.ComfyNode):
       The agent generates it, runs it (using the wired ``anchor`` output(s) as
       input if any are connected, else treating the prompt as text-to-media), and
       stages the result onto the canvas as loader nodes.
+    * ``text`` — the hook asks the agent for a **written text answer** (no media,
+      no workflow): the ``directive`` is the request (e.g. "write a caption for
+      this image", "summarise the wired prompt"). The agent writes the answer and
+      drops an ``agentY text`` node on the canvas carrying it, wired where this
+      hook's output went — so downstream nodes (or the next hook stage) consume
+      the string on a normal run. Any wired ``anchor`` is context for the answer.
 
     The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
     appears, so a single hook can gather several inputs (e.g. combine three images
@@ -104,9 +110,11 @@ class AgentYHook(io.ComfyNode):
             description=(
                 "Attach an agent instruction to the canvas. As a 'directive' it annotates a "
                 "node's output; as a 'workflow-standin' it stands in for a workflow/script "
-                "the agent generates from the prompt. The 'anchor' input auto-grows, so one "
-                "hook can gather several inputs. Toggle 'ignore' to disable it. Inert on a "
-                "normal run; acted on by the agentY agent when it runs the graph."
+                "the agent generates from the prompt; as 'text' it asks for a written answer "
+                "the agent drops on the canvas as a wireable 'agentY text' node. The 'anchor' "
+                "input auto-grows, so one hook can gather several inputs. Toggle 'ignore' to "
+                "disable it. Inert on a normal run; acted on by the agentY agent when it runs "
+                "the graph."
             ),
             inputs=[
                 io.String.Input(
@@ -115,12 +123,13 @@ class AgentYHook(io.ComfyNode):
                     default="",
                     placeholder=(
                         "directive: e.g. sweep the seed, 6 variations  •  "
-                        "standin: e.g. upscale 2x and add film grain"
+                        "standin: e.g. upscale 2x and add film grain  •  "
+                        "text: e.g. write a caption for this image"
                     ),
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["directive", "workflow-standin"],
+                    options=["directive", "workflow-standin", "text"],
                     default="directive",
                 ),
                 io.Combo.Input(
@@ -240,9 +249,43 @@ class AgentYPython(io.ComfyNode):
         return io.NodeOutput(*outs)
 
 
+class AgentYText(io.ComfyNode):
+    """A string the agent wrote, living on the canvas as a wireable node.
+
+    Companion to ``AgentYHook``'s ``text`` purpose: when the agent answers a text
+    hook, it places one of these carrying the answer and wires its ``STRING``
+    output where the hook's output went, so downstream nodes (or the next hook
+    stage) consume the string on a normal run — the value is baked into the graph
+    and reproduced without the agent. Its ``text`` widget is a plain multiline
+    string the user can also edit by hand.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYText",
+            display_name="agentY text",
+            category="agentY",
+            description=(
+                "A string the agent wrote (answering a 'text' hook), wireable into any "
+                "STRING input. Editable by hand; emits its text on a normal run."
+            ),
+            inputs=[
+                io.String.Input("text", multiline=True, default=""),
+            ],
+            outputs=[
+                io.String.Output(display_name="text"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, text="") -> io.NodeOutput:  # noqa: ANN001
+        return io.NodeOutput(text)
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook, AgentYPython]
+        return [AgentYHook, AgentYPython, AgentYText]
 
 
 async def comfy_entrypoint() -> ComfyExtension:
