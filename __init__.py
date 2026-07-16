@@ -85,6 +85,15 @@ class AgentYHook(io.ComfyNode):
     chain — "baking" the multi-step task into a reusable native workflow that runs
     next time without the agent.
 
+    ``freeze`` (directive / text hooks) — controls what the agent does with the
+    value it produces for this hook. OFF (default) *keeps the hook live*: the hook
+    stays wired exactly as drawn, the agent injects the produced value into the
+    graph at run time, and the ``agentY text`` node it drops is left UNCONNECTED as
+    a human-readable reference. ON *freezes* the value into the graph: the agent
+    bakes the ``agentY text`` node into the wired target input and takes over the
+    hook's downstream link, yielding a self-contained plain workflow you can re-run
+    yourself without the agent (at the cost of bypassing the hook).
+
     Toggle ``ignore`` to disable a hook without deleting it — the agent skips it.
 
     On a normal ComfyUI Queue the node is always inert: it's an identity
@@ -153,6 +162,20 @@ class AgentYHook(io.ComfyNode):
                         "canvas as a nested subgraph wired to mirror the hook chain."
                     ),
                 ),
+                io.Boolean.Input(
+                    "freeze",
+                    default=False,
+                    label_on="freeze into graph",
+                    label_off="keep hook live",
+                    tooltip=(
+                        "text / directive hooks: OFF (default) keeps the hook wired as you "
+                        "drew it and drops the 'agentY text' node UNCONNECTED as a reference "
+                        "— the agent injects the produced value into the graph at run time. ON "
+                        "bakes the 'agentY text' node into the wired target input, bypassing "
+                        "the hook, so you get a self-contained plain workflow you can re-run "
+                        "yourself without the agent."
+                    ),
+                ),
                 io.Autogrow.Input("anchors", template=anchors),
             ],
             outputs=[
@@ -168,7 +191,7 @@ class AgentYHook(io.ComfyNode):
 
     @classmethod
     def execute(cls, directive="", purpose="directive", mode="auto", ignore=False,
-                bake_to_canvas=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
+                bake_to_canvas=False, freeze=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).

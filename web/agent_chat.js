@@ -1052,9 +1052,23 @@ class AgentChat {
       const off = this.nodeCount++ * 40;
       node.pos = [80 + off, 80 + off];
     }
-    // Take over the hook's downstream consumers: for every link out of the hook's
-    // first output, rewire that input to this text node. A LiteGraph input holds a
-    // single link, so connecting here replaces the hook's link automatically.
+    node.title = "agentY text";
+    // keep-live (default): leave the hook wired exactly as the user drew it and
+    // place this node UNCONNECTED as a reference — the server injects the value
+    // into the base graph at run time, so nothing on the canvas is rewired. The
+    // server sets ev.keep_live from the hook's `freeze` toggle (freeze OFF => keep
+    // live). Only when freeze is ON do we take over the hook's downstream consumers.
+    if (ev.keep_live) {
+      graph.setDirtyCanvas(true, true);
+      this._sys(
+        "🧩 Placed an **agentY text** node with the answer on the canvas as a reference "
+        + "(hook left live — the value is injected into the graph at run time)."
+      );
+      return;
+    }
+    // freeze ON — take over the hook's downstream consumers: for every link out of
+    // the hook's first output, rewire that input to this text node. A LiteGraph
+    // input holds a single link, so connecting here replaces the hook's link.
     let wired = 0;
     const outLinks = hook && hook.outputs && hook.outputs[0] && hook.outputs[0].links;
     if (Array.isArray(outLinks)) {
@@ -1066,12 +1080,11 @@ class AgentChat {
         try { node.connect(0, target, link.target_slot | 0); wired++; } catch (_) {}
       }
     }
-    node.title = "agentY text";
     graph.setDirtyCanvas(true, true);
     this._sys(
       wired
         ? `🧩 Placed an **agentY text** node with the answer and wired it into ${wired} input`
-          + `${wired === 1 ? "" : "s"} (took over the hook's output).`
+          + `${wired === 1 ? "" : "s"} (froze the value into the graph, took over the hook's output).`
         : "🧩 Placed an **agentY text** node with the answer on the canvas — wire its output where you need the string."
     );
   }
@@ -1180,6 +1193,10 @@ class AgentChat {
         purpose: String(w.purpose || "directive"),
         mode: String(w.mode || "auto"),
         bake: w.bake_to_canvas === true || w.bake_to_canvas === "true",
+        // freeze OFF (default) = keep the hook live: the produced value is injected
+        // at run time and the agentY text node is placed unconnected as a reference.
+        // freeze ON = bake the value into the wired target (self-contained workflow).
+        freeze: w.freeze === true || w.freeze === "true",
         output_count: outs.length,
         outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
         // Where this hook's output is wired — the producer's destination input(s).
