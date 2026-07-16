@@ -1109,6 +1109,40 @@ class AgentChat {
     return out;
   }
 
+  // Follow every link OUT of this hook's output(s) to the node input it feeds —
+  // the producer's DESTINATION. A hook is an upstream producer: it consumes its
+  // anchor inputs as context and produces value(s) for its `out`, which the user
+  // wires into a real input (e.g. a KSampler's `seed`, a prompt node's `text`).
+  // Recording the exact target (node id + input name + declared type) lets the
+  // agent produce the right kind of value and fill/sweep the RIGHT input without
+  // guessing "the connected node" from prose.
+  _targetsFor(hookNode) {
+    const graph = app.graph;
+    if (!graph) return [];
+    const out = [];
+    const outputs = hookNode.outputs || [];
+    for (let slot = 0; slot < outputs.length; slot++) {
+      const o = outputs[slot];
+      if (!o || !Array.isArray(o.links)) continue;
+      for (const lid of o.links) {
+        const link = graph.links ? graph.links[lid] : null;
+        if (!link) continue;
+        const node = graph.getNodeById ? graph.getNodeById(link.target_id) : null;
+        if (!node) continue;
+        const tin = (node.inputs || [])[link.target_slot | 0] || {};
+        out.push({
+          node_id: String(node.id),
+          type: String(node.type || node.comfyClass || ""),
+          title: String(node.title || ""),
+          to_input: String(tin.name || ""),
+          to_input_type: String(tin.type || ""),
+          from_output_slot: slot,
+        });
+      }
+    }
+    return out;
+  }
+
   // Scalar widget values of a node (numbers/strings), for the [CANVAS HOOKS] block.
   _widgetSnapshot(node) {
     const out = {};
@@ -1148,6 +1182,8 @@ class AgentChat {
         bake: w.bake_to_canvas === true || w.bake_to_canvas === "true",
         output_count: outs.length,
         outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
+        // Where this hook's output is wired — the producer's destination input(s).
+        targets: this._targetsFor(hn),
         prev_hook_id: hookLinks.length ? String(hookLinks[0].node.id) : null,
         anchor_node_id: first ? String(first.id) : null,
         anchor_type: first ? String(first.type || first.comfyClass || "") : null,
