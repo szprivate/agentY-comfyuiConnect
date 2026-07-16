@@ -395,13 +395,27 @@ class AgentChat {
     try {
       const r = await fetch(backendBase() + "/agentY/threads", { cache: "no-store" });
       const list = r.ok ? await r.json() : [];
-      const cur = this.threadId;
       this.threadSel.innerHTML = "";
       for (const t of list) {
         this.threadSel.append(el("option", { value: t.id, textContent: t.title || "New chat" }));
       }
-      if (cur) this.threadSel.value = cur;
+      this._syncThreadSel();
     } catch (_) {}
+  }
+
+  // Reflect the current threadId in the dropdown. With no active thread — a fresh
+  // "New chat" that hasn't been persisted yet — show a "--" placeholder instead of
+  // leaving the previously-selected conversation's name displayed.
+  _syncThreadSel() {
+    if (!this.threadSel) return;
+    const ph = this.threadSel.querySelector('option[value=""]');
+    if (this.threadId) {
+      if (ph) ph.remove();
+      this.threadSel.value = this.threadId;
+    } else {
+      if (!ph) this.threadSel.prepend(el("option", { value: "", textContent: "--" }));
+      this.threadSel.value = "";
+    }
   }
 
   // Snapshot the current thread's live-rendered panel (thinking/step blocks and
@@ -428,6 +442,7 @@ class AgentChat {
     this._saveCurrentDom();
     this.threadId = null;
     this._clearActive(); // no persisted thread until the first message assigns one
+    this._syncThreadSel(); // dropdown shows "--" until the first message assigns a thread
     this.logEl.innerHTML = "";
     this._sys("New conversation. Ask me to generate or edit an image/video — results drop onto the graph as nodes.");
   }
@@ -449,6 +464,7 @@ class AgentChat {
     this._saveCurrentDom();
     this.threadId = id;
     this._saveActive(id);
+    this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
     // Restore the live-rendered panel if we've shown this thread already this
     // session (keeps the thinking/step blocks); otherwise rebuild from the
     // persisted messages, which store only the final user/assistant text.
