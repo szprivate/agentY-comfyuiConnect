@@ -20,6 +20,20 @@ function backendBase() {
     `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
   );
 }
+// The ComfyUI server that serves this sidebar (NOT the agentY host on :5000).
+// The "Start server" button hits the agentY-comfyuiConnect extension's route on
+// THIS origin, because the agentY host it would launch is the one that's down.
+function comfyBase() {
+  return location.origin;
+}
+
+// Highest status-line seq the panel has already shown. Persisted so a page
+// reload doesn't re-dump the whole server-side ring buffer.
+const STATUS_SEQ_KEY = "agentY_status_seq";
+// Shown on the offline overlay when the agentY host isn't reachable.
+const OFFLINE_MSG =
+  "The agentY chat host isn't running. Start it to use the panel — a PowerShell " +
+  "window will open and run `run_agent.ps1`.";
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
 function el(tag, props = {}, children = []) {
@@ -103,6 +117,10 @@ class AgentChat {
     this._consumed = {}; // nodeId -> value already sent as an input (skip re-sending unchanged)
     this.domCache = new Map(); // threadId -> {html, scroll}: live-rendered panel (thinking/step blocks) kept across conversation switches
     this._hostUp = true;
+    this._queue = []; // messages typed while a turn is running → auto-sent when it finishes
+    // Track the last CLI-status line shown so the on-connect / on-done buffer
+    // fetch never re-renders a line already delivered live during a turn.
+    this._lastStatusSeq = Number(localStorage.getItem(STATUS_SEQ_KEY) || 0) || 0;
     this._injectStyles();
     this._build();
     this._bootstrap();
@@ -137,11 +155,12 @@ class AgentChat {
   }
 
   async _afterConnect(firstBoot) {
-    this._hostUp = true;
+    this._setHostUp(true);
     await this._loadCommands();
     await this._loadModels();
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
+    this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
   }
 
   // Poll the host until it answers again, then reload the bits that go stale on a
@@ -150,7 +169,7 @@ class AgentChat {
   // stream fetch fails with a connection error.
   _startReconnect(firstBoot) {
     if (this._reconnectTimer) return;
-    this._hostUp = false;
+    this._setHostUp(false);
     this._reconnectTimer = setInterval(async () => {
       if (!(await this._hostReachable())) return;
       clearInterval(this._reconnectTimer);
@@ -186,7 +205,7 @@ class AgentChat {
       --ay-bg:#262624; --ay-surface:#302f2c; --ay-surface2:#3b3936;
       --ay-border:rgba(240,235,225,.10); --ay-text:#f2f0ea; --ay-muted:#a8a39a;
       --ay-accent:#5b9bf5; --ay-accent2:#4785e6; --ay-accent-soft:rgba(91,155,245,.15);
-      display:flex;flex-direction:column;height:100%;
+      position:relative;display:flex;flex-direction:column;height:100%;
       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
       font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
     }
@@ -247,6 +266,22 @@ class AgentChat {
     .ay-pop-desc{color:var(--ay-muted);font-size:12px;}
     .ay-log::-webkit-scrollbar,.ay-step-body::-webkit-scrollbar,.ay-pop::-webkit-scrollbar{width:8px;height:8px;}
     .ay-log::-webkit-scrollbar-thumb,.ay-step-body::-webkit-scrollbar-thumb,.ay-pop::-webkit-scrollbar-thumb{background:var(--ay-surface2);border-radius:8px;}
+    /* Queued messages (typed while a turn is running; auto-sent on completion). */
+    .ay-queue{display:flex;flex-direction:column;gap:5px;}
+    .ay-qchip{display:flex;gap:8px;align-items:center;background:var(--ay-accent-soft);border:1px solid rgba(91,155,245,.30);border-radius:10px;padding:5px 10px;font-size:12px;color:var(--ay-text);}
+    .ay-qchip .ay-qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ay-qchip .ay-qx{cursor:pointer;color:var(--ay-muted);flex-shrink:0;}
+    .ay-qchip .ay-qx:hover{color:var(--ay-text);}
+    /* Offline overlay — dims + blocks the whole panel while the host is down,
+       leaving only the "Start server" button actionable. */
+    .ay-offline-panel{position:absolute;inset:0;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(38,38,36,.86);backdrop-filter:blur(2px);}
+    .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:16px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
+    .ay-offline-card .ay-offline-icon{font-size:30px;line-height:1;}
+    .ay-offline-card .ay-offline-title{font-weight:600;font-size:15px;color:var(--ay-text);}
+    .ay-offline-card .ay-offline-msg{font-size:12.5px;color:var(--ay-muted);line-height:1.55;}
+    .ay-offline-card .ay-start{background:var(--ay-accent);color:#0a1a30;border:none;border-radius:999px;padding:10px 22px;font-weight:600;font-size:13px;cursor:pointer;transition:background .12s;}
+    .ay-offline-card .ay-start:hover{background:var(--ay-accent2);}
+    .ay-offline-card .ay-start:disabled{opacity:.55;cursor:default;}
     `;
     document.head.append(el("style", { id: "agentY-chat-styles", textContent: css }));
   }
@@ -283,6 +318,7 @@ class AgentChat {
 
     // input area
     this.attachEl = el("div", { className: "ay-attach" });
+    this.queueEl = el("div", { className: "ay-queue" });
     this.pop = el("div", { className: "ay-pop" });
     this.input = el("textarea", { className: "ay-input", placeholder: "Message agentY…  (type / for commands)" });
     this.input.addEventListener("input", () => this._onInput());
@@ -299,11 +335,16 @@ class AgentChat {
     this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
-    const inwrap = el("div", { className: "ay-inwrap" }, [this.pop, this.attachEl, inrow, this.fileInput]);
+    const inwrap = el("div", { className: "ay-inwrap" }, [this.pop, this.queueEl, this.attachEl, inrow, this.fileInput]);
     wrap.append(inwrap);
 
     // model quick-switch bar (bottom)
     wrap.append(this._buildModelBar());
+
+    // Offline overlay (shown when the agentY host is unreachable): dims the whole
+    // panel and offers a single "Start server" button. Built once, hidden by
+    // default; _setHostUp() toggles it.
+    wrap.append(this._buildOfflinePanel());
 
     // Once iconsUI.json loads, swap every button's fallback glyph for its Lucide
     // SVG (no-op if already applied synchronously above / if the fetch failed).
@@ -330,6 +371,130 @@ class AgentChat {
       this.modelSel,
       this.targetSel,
     ]);
+  }
+
+  // ── offline overlay + host-up state ──────────────────────────────────────────
+  _buildOfflinePanel() {
+    this._offlineMsg = el("div", { className: "ay-offline-msg", innerHTML: mdToHtml(OFFLINE_MSG) });
+    this._startBtn = el("button", { className: "ay-start", textContent: "▶  Start server" });
+    this._startBtn.addEventListener("click", () => this._startHost());
+    const card = el("div", { className: "ay-offline-card" }, [
+      el("div", { className: "ay-offline-icon", textContent: "🔌" }),
+      el("div", { className: "ay-offline-title", textContent: "agentY host offline" }),
+      this._offlineMsg,
+      this._startBtn,
+    ]);
+    this.offlineEl = el("div", { className: "ay-offline-panel" }, [card]);
+    return this.offlineEl;
+  }
+
+  // Reflect host reachability in the UI: while down, the overlay dims + blocks
+  // every control except its "Start server" button; coming back up hides it.
+  _setHostUp(up) {
+    this._hostUp = up;
+    if (!this.offlineEl) return;
+    this.offlineEl.style.display = up ? "none" : "flex";
+    if (!up) {
+      // Reset the card to its default actionable state each time we go offline.
+      if (this._startBtn) { this._startBtn.disabled = false; this._startBtn.textContent = "▶  Start server"; }
+      if (this._offlineMsg) this._offlineMsg.innerHTML = mdToHtml(OFFLINE_MSG);
+    }
+  }
+
+  // Ask the ComfyUI extension (same origin) to launch run_agent.ps1 in a new
+  // console. The reconnect watcher (already polling while we're offline) hides the
+  // overlay and reloads the panel once the host answers on :5000.
+  async _startHost() {
+    this._startBtn.disabled = true;
+    this._startBtn.textContent = "Starting…";
+    this._offlineMsg.innerHTML = mdToHtml("Launching the agentY host — a PowerShell window will open…");
+    try {
+      const r = await fetch(comfyBase() + "/agent/start_host", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        this._offlineMsg.innerHTML = mdToHtml(
+          "Couldn't start it automatically: " + (j.error || ("HTTP " + r.status)) +
+          "\n\nRun `run_agent.ps1` in the agentY folder manually."
+        );
+        this._startBtn.disabled = false;
+        this._startBtn.textContent = "▶  Start server";
+        return;
+      }
+      this._offlineMsg.innerHTML = mdToHtml("Host starting… waiting for it to come online.");
+      // The reconnect watcher is already running (we're offline); it'll flip us
+      // back online when :5000 answers. Kick it in case it somehow isn't.
+      this._startReconnect(!this.threadId);
+    } catch (e) {
+      this._offlineMsg.innerHTML = mdToHtml(
+        "Couldn't reach ComfyUI to start the host: " + e +
+        "\n\nMake sure the agentY-comfyuiConnect extension is installed, then restart ComfyUI."
+      );
+      this._startBtn.disabled = false;
+      this._startBtn.textContent = "▶  Start server";
+    }
+  }
+
+  // ── CLI status notices (memory init, model pulls, …) ─────────────────────────
+  _saveStatusSeq() { try { localStorage.setItem(STATUS_SEQ_KEY, String(this._lastStatusSeq)); } catch (_) {} }
+  _noteStatusSeq(seq) {
+    if (typeof seq === "number" && seq > this._lastStatusSeq) { this._lastStatusSeq = seq; this._saveStatusSeq(); }
+  }
+
+  // Pull any status lines the panel hasn't shown yet (startup notices that predate
+  // the connection, or lines emitted between turns). In-turn lines already arrived
+  // live as `status_line` SSE events and advanced _lastStatusSeq, so `since` skips
+  // them. If the host's counter is below ours it restarted → re-drain from 0.
+  async _drainStatus() {
+    if (!this._hostUp) return;
+    try {
+      let since = this._lastStatusSeq || 0;
+      let r = await fetch(backendBase() + "/agentY/status?since=" + since, { cache: "no-store" });
+      if (!r.ok) return;
+      let snap = await r.json();
+      if (typeof snap.seq === "number" && snap.seq < since) {
+        this._lastStatusSeq = 0;
+        r = await fetch(backendBase() + "/agentY/status?since=0", { cache: "no-store" });
+        if (!r.ok) return;
+        snap = await r.json();
+      }
+      for (const m of (snap.messages || [])) {
+        this._sys(m.text);
+        this._noteStatusSeq(m.seq);
+      }
+    } catch (_) {}
+  }
+
+  // ── queued messages (typed while a turn is running) ──────────────────────────
+  _queueMessage(text) {
+    this._queue.push({ text: text || "", attachments: this.attachments.slice() });
+    this.input.value = "";
+    this._autosize();
+    this._hidePop();
+    this.attachments = [];
+    this._renderAttachments();
+    this._renderQueue();
+  }
+  _renderQueue() {
+    this.queueEl.innerHTML = "";
+    this._queue.forEach((q, i) => {
+      const label = (q.text || "(image only)") + (q.attachments.length ? `  📎${q.attachments.length}` : "");
+      const chip = el("div", { className: "ay-qchip", title: "Queued — sends when the current turn finishes" }, [
+        el("span", { className: "ay-qtext", textContent: "⏳ " + label }),
+        el("span", { className: "ay-qx", textContent: "✕", title: "Remove from queue" }),
+      ]);
+      chip.querySelector(".ay-qx").addEventListener("click", () => { this._queue.splice(i, 1); this._renderQueue(); });
+      this.queueEl.append(chip);
+    });
+  }
+  // Dispatch the next queued message once the pipeline is free (called on `done`).
+  _maybeDispatchQueued() {
+    if (this.streaming || this.activeAsk || !this._hostUp || !this._queue.length) return;
+    const item = this._queue.shift();
+    this._renderQueue();
+    this.input.value = item.text || "";
+    this.attachments = item.attachments || [];
+    this._renderAttachments();
+    this.send(); // re-captures canvas state at dispatch time; clears input/attachments
   }
 
   // Rebuild the model dropdown from a { "<vendor>": [[spec,label],…] } map,
@@ -675,6 +840,13 @@ class AgentChat {
         this.curAssistant = null;
         this._sys(ev.data);
         break;
+      case "status_line":
+        // A CLI-side notice (memory init, model pull, …) surfaced live during a
+        // turn. Render it and advance the seq so the on-done drain won't repeat it.
+        this.curAssistant = null;
+        this._sys(ev.data);
+        this._noteStatusSeq(ev.seq);
+        break;
       case "ask":
         this.curAssistant = null;
         this.activeAsk = ev.request_id;
@@ -697,6 +869,8 @@ class AgentChat {
         this._setBusy(false);
         this._savePanel();  // persist the rendered panel so blocks survive reloads
         this._loadThreads();
+        this._drainStatus();       // catch any between-/in-turn CLI notices not delivered live
+        this._maybeDispatchQueued(); // send the next message queued while this turn ran
         break;
     }
     // Persist the in-progress panel periodically (throttled) so a reload or a host
@@ -791,6 +965,13 @@ class AgentChat {
     this.sendBtn.disabled = false;
     setButtonIcon(this.sendBtn, stopMode ? "stop" : "send", stopMode ? "⏹ Stop" : "Send");
     this.sendBtn.classList.toggle("ay-stop", stopMode);
+    // Cue the user that typing now queues (rather than doing nothing) — the input
+    // stays live so a message can be lined up mid-turn and auto-sent on completion.
+    if (this.input) {
+      this.input.placeholder = stopMode
+        ? "Type to queue — sends when this turn finishes…"
+        : "Message agentY…  (type / for commands)";
+    }
     // Don't allow a model switch mid-turn.
     if (this.modelSel) this.modelSel.disabled = b;
     if (this.targetSel) this.targetSel.disabled = b;
@@ -823,7 +1004,12 @@ class AgentChat {
       return;
     }
 
-    if (this.streaming) return; // one turn at a time
+    // A turn is already running (and we're not answering an ask): queue this
+    // message instead of dropping it — it auto-sends when the turn finishes.
+    if (this.streaming) {
+      if (text || this.attachments.length) this._queueMessage(text);
+      return;
+    }
     const imgs = this.attachments.map((a) => a.path);
     const noteParts = [];
     if (this.attachments.length) noteParts.push(`${this.attachments.length} image(s) attached`);

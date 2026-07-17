@@ -3,3 +3,7 @@ __pycache__/
 *.egg-info/
 .DS_Store
 .venv/
+
+# Machine-specific: records where the agentY host lives so the "Start server"
+# button can relaunch run_agent.ps1 (written by the host / install_agent.ps1).
+.agenty_host.json

@@ -20,7 +20,38 @@ node and a fresh empty ``anchor`` slot appears, letting a single hook gather
 several inputs (e.g. combine three images in a standin, or apply one directive
 across two anchor nodes).
 """
+import json as _json
+import os as _os
+import subprocess as _subprocess
+import sys as _sys
+
 from aiohttp import web
+
+# Where this extension records the agentY host's location, so the sidebar's
+# "Start server" button can relaunch ``run_agent.ps1`` when the host on :5000 is
+# down (a browser can't spawn a process, but this ComfyUI-side route can). The
+# file is written by the agentY host on startup (self-registration) and by
+# ``install_agent.ps1``; it's gitignored (machine-specific path).
+_EXT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_HOST_CFG = _os.path.join(_EXT_DIR, ".agenty_host.json")
+
+
+def _read_host_cfg():
+    """Resolve (project_root, run_script) for the agentY host. ``AGENTY_ROOT`` env
+    wins; otherwise the recorded ``.agenty_host.json``. Returns ("", script) when
+    unknown."""
+    script = "run_agent.ps1"
+    root = (_os.environ.get("AGENTY_ROOT") or "").strip()
+    if not root and _os.path.isfile(_HOST_CFG):
+        try:
+            with open(_HOST_CFG, "r", encoding="utf-8") as _fh:
+                data = _json.load(_fh)
+            root = str(data.get("project_root", "")).strip()
+            script = str(data.get("run_script", script)).strip() or script
+        except Exception:  # noqa: BLE001
+            pass
+    return root, script
+
 
 try:
     from server import PromptServer
@@ -38,9 +69,51 @@ try:
         # Broadcast to every connected ComfyUI frontend (sid=None => all).
         PromptServer.instance.send_sync("agent.load_workflow", graph)
         return web.json_response({"ok": True, "nodes": len(graph.get("nodes", []))})
+
+    @_routes.post("/agent/register_host")
+    async def _agent_register_host(request):  # noqa: ANN001
+        """The agentY host tells us where it lives (so we can relaunch it later)."""
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        root = str((data or {}).get("project_root", "")).strip()
+        script = str((data or {}).get("run_script", "run_agent.ps1")).strip() or "run_agent.ps1"
+        if not root or not _os.path.isdir(root):
+            return web.json_response({"ok": False, "error": "project_root is not a directory"}, status=400)
+        try:
+            with open(_HOST_CFG, "w", encoding="utf-8") as _fh:
+                _json.dump({"project_root": root, "run_script": script}, _fh, indent=2)
+        except Exception as _exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(_exc)}, status=500)
+        return web.json_response({"ok": True})
+
+    @_routes.post("/agent/start_host")
+    async def _agent_start_host(request):  # noqa: ANN001
+        """Launch run_agent.ps1 in a new console so the sidebar can start the host."""
+        root, script = _read_host_cfg()
+        if not root:
+            return web.json_response(
+                {"ok": False, "error": "agentY location unknown — run run_agent.ps1 once, "
+                                       "or set the AGENTY_ROOT environment variable."}, status=409)
+        script_path = _os.path.join(root, script)
+        if not _os.path.isfile(script_path):
+            return web.json_response({"ok": False, "error": f"{script} not found under {root}"}, status=404)
+        if _sys.platform != "win32":
+            return web.json_response(
+                {"ok": False, "error": "auto-start is Windows-only; run the script manually."}, status=400)
+        try:
+            _CREATE_NEW_CONSOLE = 0x00000010
+            _subprocess.Popen(
+                ["powershell", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                cwd=root, creationflags=_CREATE_NEW_CONSOLE, close_fds=True,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(_exc)}, status=500)
+        return web.json_response({"ok": True, "root": root, "script": script})
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
-    print(f"[agentY-comfyuiConnect] could not register /agent/load_workflow: {_e}")
+    print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")
 
 
 from comfy_api.latest import ComfyExtension, io
