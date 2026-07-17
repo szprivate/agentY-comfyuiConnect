@@ -111,6 +111,9 @@ try:
         except Exception as _exc:  # noqa: BLE001
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
         return web.json_response({"ok": True, "root": root, "script": script})
+
+    print("[agentY-comfyuiConnect] registered /agent routes "
+          "(load_workflow, register_host, start_host)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")

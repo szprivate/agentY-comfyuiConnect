@@ -161,6 +161,27 @@ class AgentChat {
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
+    this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
+  }
+
+  // Tell the ComfyUI extension (same origin) where the agentY host lives, using
+  // the running host's own project_root. The browser is the one component that
+  // can reach BOTH the host (:5000) and ComfyUI, so this is the reliable way to
+  // keep the extension's .agenty_host.json current — no env var / manual config.
+  // Best-effort: silently no-ops if the extension route isn't present yet (e.g.
+  // ComfyUI needs a restart to load it).
+  async _registerHostLocation() {
+    try {
+      const r = await fetch(backendBase() + "/agentY/health", { cache: "no-store" });
+      if (!r.ok) return;
+      const h = await r.json();
+      if (!h || !h.project_root) return;
+      await fetch(comfyBase() + "/agent/register_host", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_root: h.project_root, run_script: "run_agent.ps1" }),
+      });
+    } catch (_) {}
   }
 
   // Poll the host until it answers again, then reload the bits that go stale on a
