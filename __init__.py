@@ -473,6 +473,82 @@ def _collector_paths(files: str, exts: tuple) -> list[str]:
     return out
 
 
+# ── incremental-load cursor ───────────────────────────────────────────────────
+# When a collector's ``load_incrementally`` toggle is ON it emits only ONE file
+# per Queue Prompt, stepping through the list. The cursor is kept here, keyed by
+# the node's canvas ``unique_id``, and advanced once per execution. It lives in
+# memory only (an "internal counter"): it resets on a ComfyUI restart, and a
+# normal (non-incremental) run of the same node clears it so the next incremental
+# session starts from the first file again.
+_COLLECTOR_INCR_INDEX: dict[str, int] = {}
+
+
+def _incr_index(node_id, count: int) -> int:
+    """Return the current 0-based cursor for *node_id* (wrapping at *count*), then
+    advance it by one. ``count <= 0`` yields 0."""
+    if count <= 0:
+        return 0
+    key = str(node_id)
+    cur = _COLLECTOR_INCR_INDEX.get(key, 0) % count
+    _COLLECTOR_INCR_INDEX[key] = cur + 1
+    return cur
+
+
+def _reset_incr_index(node_id) -> None:
+    """Forget a node's cursor (called on a non-incremental run)."""
+    _COLLECTOR_INCR_INDEX.pop(str(node_id), None)
+
+
+def _uid(cls) -> str | None:
+    """The collector node's canvas unique_id (declared as a hidden input), or None."""
+    h = getattr(cls, "hidden", None)
+    return getattr(h, "unique_id", None) if h is not None else None
+
+
+def _collector_progress(node_id, msg: str) -> None:
+    """Best-effort node status text (e.g. "3/12 photo.png") for the incremental
+    cursor. No-op if the PromptServer isn't importable."""
+    if not node_id:
+        return
+    try:
+        from server import PromptServer
+        PromptServer.instance.send_progress_text(msg, node_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_incrementally_input(kind: str):
+    """The shared ``load_incrementally`` toggle for the collector nodes."""
+    return io.Boolean.Input(
+        "load_incrementally",
+        default=False,
+        label_on="one per queue",
+        label_off="all at once",
+        tooltip=(
+            f"OFF (default): emit every collected {kind} on each run. ON: emit just "
+            f"one {kind} per Queue Prompt, advancing an internal cursor each queue so "
+            "repeated queues (or a batch count) step through the list one at a time. "
+            "The cursor wraps at the end; a normal (all-at-once) run resets it to the "
+            "first file. Does not affect what the agentY agent sees — it always reads "
+            "the full path list."
+        ),
+    )
+
+
+def _apply_incremental(cls, paths: list, load_incrementally: bool) -> list:
+    """In incremental mode, narrow *paths* to the single file at the node's current
+    cursor (then advance it) and post a "N/total name" status. Otherwise clear the
+    cursor and return *paths* unchanged."""
+    node_id = _uid(cls)
+    if load_incrementally and paths:
+        idx = _incr_index(node_id, len(paths))
+        chosen = paths[idx]
+        _collector_progress(node_id, f"{idx + 1}/{len(paths)}\n{_os.path.basename(chosen)}")
+        return [chosen]
+    _reset_incr_index(node_id)
+    return paths
+
+
 class AgentYImageCollector(io.ComfyNode):
     """Gather image files from disk into one node — an agent-friendly input batch.
 
@@ -484,6 +560,10 @@ class AgentYImageCollector(io.ComfyNode):
     every frame is uniformly scaled to cover a max(width) x max(height) canvas and
     centre-cropped (aspect ratio preserved, never distorted) — plus the
     newline-joined ``paths`` string.
+
+    Toggle **load_incrementally** to emit just ONE image per Queue Prompt instead of
+    the whole batch, stepping through the list on successive queues (see the toggle's
+    tooltip).
     """
 
     @classmethod
@@ -496,7 +576,8 @@ class AgentYImageCollector(io.ComfyNode):
                 "Collect image files from disk (native picker) into one node. The path "
                 "list is node data, so the agentY agent can read every image with no "
                 "pre-run when the node is wired to an agentY hook. Emits a stacked IMAGE "
-                "batch + a paths string for normal runs."
+                "batch + a paths string for normal runs (or one image per queue when "
+                "load_incrementally is on)."
             ),
             inputs=[
                 io.String.Input(
@@ -505,20 +586,30 @@ class AgentYImageCollector(io.ComfyNode):
                     default="",
                     placeholder="one absolute image path per line — use 'Add images...' to pick",
                 ),
+                _load_incrementally_input("image"),
             ],
             outputs=[
                 io.Image.Output(display_name="images"),
                 io.String.Output(display_name="paths"),
             ],
+            hidden=[io.Hidden.unique_id],
         )
 
     @classmethod
-    def execute(cls, files="") -> io.NodeOutput:  # noqa: ANN001
+    def fingerprint_inputs(cls, files="", load_incrementally=False):  # noqa: ANN001, N805
+        # Incremental mode must re-run on every queue so the cursor advances — NaN
+        # is never equal to itself, so ComfyUI always re-executes. Otherwise fall
+        # back to ordinary content caching (re-run only when the path list changes).
+        return float("nan") if load_incrementally else files
+
+    @classmethod
+    def execute(cls, files="", load_incrementally=False) -> io.NodeOutput:  # noqa: ANN001
         import numpy as np
         import torch
         from PIL import Image as _PILImage, ImageOps as _ImageOps
 
         paths = _collector_paths(files, _COLLECT_IMG_EXTS)
+        paths = _apply_incremental(cls, paths, load_incrementally)
         loaded: list = []
         for p in paths:
             try:
@@ -557,6 +648,10 @@ class AgentYVideoCollector(io.ComfyNode):
     the ``files`` box. The agentY agent reads the paths with no pre-run when the node
     is wired to an ``agentY hook``. Outputs a **list** of ``VIDEO`` objects (one per
     file, for normal runs) plus the newline-joined ``paths`` string.
+
+    Toggle **load_incrementally** to emit just ONE video per Queue Prompt instead of
+    the whole list, stepping through the files on successive queues (see the toggle's
+    tooltip).
     """
 
     @classmethod
@@ -569,7 +664,8 @@ class AgentYVideoCollector(io.ComfyNode):
                 "Collect video files from disk (native picker) into one node. The path "
                 "list is node data, so the agentY agent can read every video with no "
                 "pre-run when the node is wired to an agentY hook. Emits a list of VIDEO "
-                "objects + a paths string for normal runs."
+                "objects + a paths string for normal runs (or one video per queue when "
+                "load_incrementally is on)."
             ),
             inputs=[
                 io.String.Input(
@@ -578,16 +674,25 @@ class AgentYVideoCollector(io.ComfyNode):
                     default="",
                     placeholder="one absolute video path per line — use 'Add videos...' to pick",
                 ),
+                _load_incrementally_input("video"),
             ],
             outputs=[
                 io.Video.Output(display_name="videos", is_output_list=True),
                 io.String.Output(display_name="paths"),
             ],
+            hidden=[io.Hidden.unique_id],
         )
 
     @classmethod
-    def execute(cls, files="") -> io.NodeOutput:  # noqa: ANN001
+    def fingerprint_inputs(cls, files="", load_incrementally=False):  # noqa: ANN001, N805
+        # See AgentYImageCollector.fingerprint_inputs — NaN forces a re-run each
+        # queue in incremental mode; otherwise cache on the path-list contents.
+        return float("nan") if load_incrementally else files
+
+    @classmethod
+    def execute(cls, files="", load_incrementally=False) -> io.NodeOutput:  # noqa: ANN001
         paths = _collector_paths(files, _COLLECT_VID_EXTS)
+        paths = _apply_incremental(cls, paths, load_incrementally)
         videos: list = []
         try:
             from comfy_api.latest import VideoFromFile
