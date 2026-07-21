@@ -135,8 +135,10 @@ class AgentChat {
     elm.innerHTML = "";
     elm.appendChild(this.wrap);
     // Cheap, non-destructive refresh: repopulate the thread dropdown (in case a
-    // conversation was created/deleted elsewhere) without touching the open log.
-    if (this._hostUp) this._loadThreads();
+    // conversation was created/deleted elsewhere) and the model list (so a vendor
+    // that was down at connect — e.g. Ollama still starting — appears once it's up)
+    // without touching the open log. Switching tabs away and back thus self-heals.
+    if (this._hostUp) { this._loadThreads(); this._loadModels(); }
   }
 
   // Load everything the panel needs. If the host isn't up yet (e.g. it was just
