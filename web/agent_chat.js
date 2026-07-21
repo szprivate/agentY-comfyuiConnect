@@ -1500,6 +1500,20 @@ class AgentChat {
 // keep a single instance and just re-parent its DOM into each new mount point.
 let _AGENTY_CHAT = null;
 
+// Expose the conversation currently selected in the history dropdown so other
+// panels (e.g. the Token Usage overview's "Current run" scope) can scope to it.
+// Returns {id, title} or null when no thread is open (a fresh, unsaved chat).
+window.agentYCurrentThread = () => {
+  const c = _AGENTY_CHAT;
+  if (!c || !c.threadId) return null;
+  let title = "";
+  try {
+    const opt = c.threadSel && c.threadSel.querySelector(`option[value="${c.threadId}"]`);
+    title = opt ? opt.textContent : "";
+  } catch (_) {}
+  return { id: c.threadId, title };
+};
+
 app.registerExtension({
   name: "agentY.chat.sidebar",
   async setup() {

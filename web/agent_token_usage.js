@@ -59,6 +59,7 @@ function fmtTs(sec) {
 
 const RANGES = [
   ["last_run", "Last run", null],
+  ["thread", "Current run", null],
   ["1h", "Last hour", 3600],
   ["24h", "Last 24 hours", 86400],
   ["7d", "Last 7 days", 604800],
@@ -129,6 +130,11 @@ function rangeParams(preset, fromInp, toInp) {
   if (!spec) return {};
   if (preset === "all") return {};
   if (preset === "last_run") return { scope: "last_run" };
+  if (preset === "thread") {
+    // "Current run" = the conversation selected in the chat history dropdown.
+    const t = (typeof window.agentYCurrentThread === "function" && window.agentYCurrentThread()) || null;
+    return { scope: "thread", thread_id: t && t.id ? t.id : "", threadTitle: t && t.title ? t.title : "" };
+  }
   if (preset === "custom") {
     const f = fromInp && fromInp.value ? new Date(fromInp.value).getTime() / 1000 : null;
     const t = toInp && toInp.value ? new Date(toInp.value).getTime() / 1000 : null;
@@ -193,6 +199,7 @@ async function openTokenUsageModal() {
   document.body.append(overlay);
 
   let lastData = null; // most recent server response for the current time window
+  let _threadTitle = ""; // conversation name when the "Current run" scope is active
 
   function tile(cls, key, valNode, sub) {
     return el("div", { className: "atu-tile " + cls }, [
@@ -270,7 +277,10 @@ async function openTokenUsageModal() {
     }
 
     const lr = lastData.log_range || {};
+    const scopeNote = rangeSel.value === "thread" && _threadTitle
+      ? `Scoped to the selected conversation: “${_threadTitle}”. ` : "";
     note.textContent =
+      scopeNote +
       `Log spans ${fmtTs(lr.min)} → ${fmtTs(lr.max)}. ` +
       `Summed from per-call deltas in .logs/tokens_usage.log. ` +
       `Hit rate = cache reads ÷ all input tokens (fresh + cache read + cache write). ` +
@@ -279,8 +289,22 @@ async function openTokenUsageModal() {
 
   async function load() {
     const p = rangeParams(rangeSel.value, fromInp, toInp);
+
+    // "Current run" needs a conversation selected in the chat history dropdown.
+    if (p.scope === "thread" && !p.thread_id) {
+      lastData = null;
+      tiles.innerHTML = "";
+      tableHost.innerHTML = "";
+      note.textContent = "";
+      tableHost.append(el("div", { className: "atu-empty",
+        textContent: "No conversation is open — pick one from the chat history dropdown to see its token usage." }));
+      return;
+    }
+    _threadTitle = p.scope === "thread" ? (p.threadTitle || p.thread_id) : "";
+
     const qs = new URLSearchParams();
     if (p.scope) qs.set("scope", p.scope);
+    if (p.thread_id) qs.set("thread_id", p.thread_id);
     if (p.from != null) qs.set("from", String(p.from));
     if (p.to != null) qs.set("to", String(p.to));
     tiles.innerHTML = "";
