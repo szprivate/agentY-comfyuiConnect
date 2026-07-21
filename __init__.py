@@ -178,8 +178,32 @@ try:
         paths = [p for p in paths if isinstance(p, str) and _os.path.isfile(p)]
         return web.json_response({"ok": True, "paths": paths, "kind": kind})
 
+    @_routes.post("/agent/reset_collector_cursor")
+    async def _agent_reset_collector_cursor(request):  # noqa: ANN001
+        """Reset a collector node's incremental-load cursor to the first file.
+
+        Called by the collector frontend from a one-shot patch on the Queue button
+        (``app.queuePrompt``), which fires exactly once per click — so a Queue with
+        batch count > 1 resets the cursor once, then steps through the batch from
+        the top. The cursor dict lives in this same module/process, so this mutates
+        exactly what the node's ``execute`` reads."""
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        ids: list = []
+        if isinstance(data, dict):
+            if data.get("node_id") is not None:
+                ids.append(data["node_id"])
+            raw = data.get("node_ids")
+            if isinstance(raw, list):
+                ids.extend(raw)
+        for nid in ids:
+            _reset_incr_index(nid)  # defined later in this module; resolved at call time
+        return web.json_response({"ok": True, "reset": [str(i) for i in ids]})
+
     print("[agentY-comfyuiConnect] registered /agent routes "
-          "(load_workflow, register_host, start_host, pick_files)")
+          "(load_workflow, register_host, start_host, pick_files, reset_collector_cursor)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")
@@ -495,7 +519,8 @@ def _incr_index(node_id, count: int) -> int:
 
 
 def _reset_incr_index(node_id) -> None:
-    """Forget a node's cursor (called on a non-incremental run)."""
+    """Forget a node's cursor — called on a non-incremental run, and by the
+    ``/agent/reset_collector_cursor`` route when the reset toggle is armed."""
     _COLLECTOR_INCR_INDEX.pop(str(node_id), None)
 
 
