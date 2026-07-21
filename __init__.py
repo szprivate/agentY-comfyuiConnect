@@ -480,9 +480,10 @@ class AgentYImageCollector(io.ComfyNode):
     pick images from anywhere on disk; the absolute paths accumulate in the ``files``
     box (one per line — editable/pasteable by hand). Because that list is node data,
     the agentY agent sees every image the moment the collector is wired to an
-    ``agentY hook`` — no Queue Prompt needed. Outputs a stacked ``IMAGE`` batch
-    (frames past the first are resized to the first image's size) for normal runs,
-    plus the newline-joined ``paths`` string.
+    ``agentY hook`` — no Queue Prompt needed. Outputs a stacked ``IMAGE`` batch —
+    every frame is uniformly scaled to cover a max(width) x max(height) canvas and
+    centre-cropped (aspect ratio preserved, never distorted) — plus the
+    newline-joined ``paths`` string.
     """
 
     @classmethod
@@ -518,21 +519,29 @@ class AgentYImageCollector(io.ComfyNode):
         from PIL import Image as _PILImage, ImageOps as _ImageOps
 
         paths = _collector_paths(files, _COLLECT_IMG_EXTS)
-        arrs: list = []
-        target = None
+        loaded: list = []
         for p in paths:
             try:
                 im = _PILImage.open(p)
-                im = _ImageOps.exif_transpose(im).convert("RGB")
+                loaded.append(_ImageOps.exif_transpose(im).convert("RGB"))
             except Exception as exc:  # noqa: BLE001
                 print(f"[agentY image collector] skipping {p}: {exc}")
-                continue
-            if target is None:
-                target = im.size
-            elif im.size != target:
-                im = im.resize(target, _PILImage.LANCZOS)
-            arrs.append(np.asarray(im, dtype=np.float32) / 255.0)
-        if arrs:
+        if loaded:
+            # A ComfyUI IMAGE batch needs a uniform H x W. Use a canvas of
+            # max(width) x max(height) across the set, then fit each frame into it
+            # by scaling UNIFORMLY to cover and centre-cropping the overflow —
+            # aspect ratio is always preserved (never stretched); cropping absorbs
+            # the mismatch. ImageOps.fit does exactly this cover+crop.
+            canvas_w = max(im.width for im in loaded)
+            canvas_h = max(im.height for im in loaded)
+            arrs = [
+                np.asarray(
+                    _ImageOps.fit(im, (canvas_w, canvas_h),
+                                  method=_PILImage.LANCZOS, centering=(0.5, 0.5)),
+                    dtype=np.float32,
+                ) / 255.0
+                for im in loaded
+            ]
             batch = torch.from_numpy(np.stack(arrs, axis=0))
         else:
             # No valid images — a 1x64x64 black frame keeps a normal run from crashing.
