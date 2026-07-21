@@ -20,6 +20,7 @@ node and a fresh empty ``anchor`` slot appears, letting a single hook gather
 several inputs (e.g. combine three images in a standin, or apply one directive
 across two anchor nodes).
 """
+import asyncio as _asyncio
 import json as _json
 import os as _os
 import subprocess as _subprocess
@@ -34,6 +35,13 @@ from aiohttp import web
 # ``install_agent.ps1``; it's gitignored (machine-specific path).
 _EXT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 _HOST_CFG = _os.path.join(_EXT_DIR, ".agenty_host.json")
+
+# Native OS file-picker helper for the agentY collector nodes. Run as a
+# subprocess (under ComfyUI's own Python, which has tkinter) so the Tk dialog
+# never touches the aiohttp event loop. See ``_agent_pick_files`` below.
+_PICKER = _os.path.join(_EXT_DIR, "_filepicker.py")
+_PICK_IMG_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"}
+_PICK_VID_EXTS = {"mp4", "mov", "webm", "mkv", "avi", "m4v", "mpg", "mpeg"}
 
 
 def _read_host_cfg():
@@ -112,8 +120,66 @@ try:
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
         return web.json_response({"ok": True, "root": root, "script": script})
 
+    @_routes.post("/agent/pick_files")
+    async def _agent_pick_files(request):  # noqa: ANN001
+        """Open a native OS file/folder dialog on the ComfyUI host and return the
+        chosen absolute paths — the backend picker for the agentY collector nodes.
+
+        The browser can't read a file's real filesystem path, so the collector
+        nodes call this instead: it launches ``_filepicker.py`` as a subprocess
+        (a fresh Tk dialog per call, off the event loop) and returns true on-disk
+        paths, no copying. ``kind`` filters image vs video; ``mode`` picks files
+        or a whole folder (folder is expanded to its matching media here).
+        """
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        kind = str((data or {}).get("kind", "image")).lower()
+        if kind not in ("image", "video"):
+            kind = "image"
+        mode = str((data or {}).get("mode", "files")).lower()
+        if mode not in ("files", "folder"):
+            mode = "files"
+        if not _os.path.isfile(_PICKER):
+            return web.json_response({"ok": False, "error": "picker helper missing"}, status=500)
+        try:
+            proc = await _asyncio.create_subprocess_exec(
+                _sys.executable, _PICKER, kind, mode,
+                stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE,
+                cwd=_EXT_DIR,
+            )
+            out, _err = await proc.communicate()
+        except Exception as _exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(_exc)}, status=500)
+        raw = (out or b"").decode("utf-8", "replace").strip()
+        try:
+            parsed = _json.loads(raw) if raw else []
+        except Exception:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"picker returned unparseable output: {raw[:200]!r}"},
+                status=500)
+        # The helper emits {"error": ...} when Tk is unavailable, else a JSON list.
+        if isinstance(parsed, dict) and parsed.get("error"):
+            return web.json_response({"ok": False, "error": str(parsed["error"])}, status=500)
+        paths = parsed if isinstance(parsed, list) else []
+        if mode == "folder" and paths:
+            exts = _PICK_VID_EXTS if kind == "video" else _PICK_IMG_EXTS
+            folder = paths[0]
+            expanded: list = []
+            try:
+                for name in sorted(_os.listdir(folder)):
+                    full = _os.path.join(folder, name)
+                    if _os.path.isfile(full) and name.rsplit(".", 1)[-1].lower() in exts:
+                        expanded.append(full)
+            except Exception:  # noqa: BLE001
+                expanded = []
+            paths = expanded
+        paths = [p for p in paths if isinstance(p, str) and _os.path.isfile(p)]
+        return web.json_response({"ok": True, "paths": paths, "kind": kind})
+
     print("[agentY-comfyuiConnect] registered /agent routes "
-          "(load_workflow, register_host, start_host)")
+          "(load_workflow, register_host, start_host, pick_files)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")
@@ -377,9 +443,159 @@ class AgentYText(io.ComfyNode):
         return io.NodeOutput(text)
 
 
+# ── file collector nodes ──────────────────────────────────────────────────────
+# Two nodes that gather files from disk (via the native picker, /agent/pick_files)
+# into a single node. The collected list is stored as the ``files`` widget — plain
+# node data serialized into the workflow — so the agentY agent can read every path
+# BEFORE any run (unlike a runtime IMAGE batch tensor, which only exists after
+# execution). That's what makes a batch of inputs understandable to the agent with
+# no pre-run. The nodes double as ordinary input nodes: the image collector emits a
+# stacked IMAGE batch, the video collector a list of VIDEOs, plus a paths STRING.
+
+_COLLECT_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff")
+_COLLECT_VID_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg")
+
+
+def _collector_paths(files: str, exts: tuple) -> list[str]:
+    """Parse the ``files`` widget (one absolute path per line) into an ordered,
+    de-duplicated list of existing files of the wanted kind."""
+    out: list[str] = []
+    seen: set = set()
+    for line in (files or "").splitlines():
+        p = line.strip().strip('"')
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        if exts and not p.lower().endswith(exts):
+            continue
+        if _os.path.isfile(p):
+            out.append(p)
+    return out
+
+
+class AgentYImageCollector(io.ComfyNode):
+    """Gather image files from disk into one node — an agent-friendly input batch.
+
+    Click **Add images…** (or **Add folder…**) to open a native OS file dialog and
+    pick images from anywhere on disk; the absolute paths accumulate in the ``files``
+    box (one per line — editable/pasteable by hand). Because that list is node data,
+    the agentY agent sees every image the moment the collector is wired to an
+    ``agentY hook`` — no Queue Prompt needed. Outputs a stacked ``IMAGE`` batch
+    (frames past the first are resized to the first image's size) for normal runs,
+    plus the newline-joined ``paths`` string.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYImageCollector",
+            display_name="agentY image collector",
+            category="agentY",
+            description=(
+                "Collect image files from disk (native picker) into one node. The path "
+                "list is node data, so the agentY agent can read every image with no "
+                "pre-run when the node is wired to an agentY hook. Emits a stacked IMAGE "
+                "batch + a paths string for normal runs."
+            ),
+            inputs=[
+                io.String.Input(
+                    "files",
+                    multiline=True,
+                    default="",
+                    placeholder="one absolute image path per line — use 'Add images...' to pick",
+                ),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+                io.String.Output(display_name="paths"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, files="") -> io.NodeOutput:  # noqa: ANN001
+        import numpy as np
+        import torch
+        from PIL import Image as _PILImage, ImageOps as _ImageOps
+
+        paths = _collector_paths(files, _COLLECT_IMG_EXTS)
+        arrs: list = []
+        target = None
+        for p in paths:
+            try:
+                im = _PILImage.open(p)
+                im = _ImageOps.exif_transpose(im).convert("RGB")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[agentY image collector] skipping {p}: {exc}")
+                continue
+            if target is None:
+                target = im.size
+            elif im.size != target:
+                im = im.resize(target, _PILImage.LANCZOS)
+            arrs.append(np.asarray(im, dtype=np.float32) / 255.0)
+        if arrs:
+            batch = torch.from_numpy(np.stack(arrs, axis=0))
+        else:
+            # No valid images — a 1x64x64 black frame keeps a normal run from crashing.
+            batch = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        return io.NodeOutput(batch, "\n".join(paths))
+
+
+class AgentYVideoCollector(io.ComfyNode):
+    """Gather video files from disk into one node — an agent-friendly input set.
+
+    Like the image collector, but for video: **Add videos…** / **Add folder…** open
+    a native OS dialog filtered to video files, and the absolute paths accumulate in
+    the ``files`` box. The agentY agent reads the paths with no pre-run when the node
+    is wired to an ``agentY hook``. Outputs a **list** of ``VIDEO`` objects (one per
+    file, for normal runs) plus the newline-joined ``paths`` string.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYVideoCollector",
+            display_name="agentY video collector",
+            category="agentY",
+            description=(
+                "Collect video files from disk (native picker) into one node. The path "
+                "list is node data, so the agentY agent can read every video with no "
+                "pre-run when the node is wired to an agentY hook. Emits a list of VIDEO "
+                "objects + a paths string for normal runs."
+            ),
+            inputs=[
+                io.String.Input(
+                    "files",
+                    multiline=True,
+                    default="",
+                    placeholder="one absolute video path per line — use 'Add videos...' to pick",
+                ),
+            ],
+            outputs=[
+                io.Video.Output(display_name="videos", is_output_list=True),
+                io.String.Output(display_name="paths"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, files="") -> io.NodeOutput:  # noqa: ANN001
+        paths = _collector_paths(files, _COLLECT_VID_EXTS)
+        videos: list = []
+        try:
+            from comfy_api.latest import VideoFromFile
+            for p in paths:
+                try:
+                    videos.append(VideoFromFile(p))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[agentY video collector] could not load {p}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agentY video collector] VIDEO type unavailable ({exc}); paths only")
+        return io.NodeOutput(videos, "\n".join(paths))
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook, AgentYPython, AgentYText]
+        return [AgentYHook, AgentYPython, AgentYText,
+                AgentYImageCollector, AgentYVideoCollector]
 
 
 async def comfy_entrypoint() -> ComfyExtension:
