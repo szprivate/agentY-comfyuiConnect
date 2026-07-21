@@ -1385,8 +1385,8 @@ class AgentChat {
         !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
       // A hook wired FROM another hook is a downstream stage in a chain: its
       // input is the predecessor's output (resolved at run time), so record it in
-      // prev_hook_id(s)/prev_links. A hook wired from a real node anchors a
-      // directive/standin. With auto-grow a hook can carry several of each; the
+      // prev_hook_id(s)/prev_links. A hook wired from a real node anchors an
+      // inline_parameter/make_workflow. With auto-grow a hook can carry several of each; the
       // singular fields keep the first of each (unchanged behavior for the common
       // single-input case) and the plural, slot-aware fields carry every wired
       // input so the bake step can reproduce the exact wiring.
@@ -1397,8 +1397,7 @@ class AgentChat {
       hooks.push({
         hook_node_id: String(hn.id),
         directive,
-        purpose: String(w.purpose || "directive"),
-        mode: String(w.mode || "auto"),
+        purpose: String(w.purpose || "inline_parameter"),
         bake: w.bake_to_canvas === true || w.bake_to_canvas === "true",
         // freeze OFF (default) = keep the hook live: the produced value is injected
         // at run time and the agentY text node is placed unconnected as a reference.

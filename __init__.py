@@ -128,14 +128,14 @@ _MAX_ANCHORS = 20
 
 
 class AgentYHook(io.ComfyNode):
-    """An agent instruction attached to the canvas. Two purposes:
+    """An agent instruction attached to the canvas. Three purposes:
 
-    * ``directive`` (default) — annotate an upstream node's output. Wire an
+    * ``inline_parameter`` (default) — annotate an upstream node's output. Wire an
       ``anchor`` input from any node's output and type a directive (e.g. "create
       prompt variations", "sweep the seed 6×", "iterate the files in this
       folder"). When the agentY agent runs the on-canvas graph, it applies the
       directive to the anchored node(s) and runs the expanded batch.
-    * ``workflow-standin`` — the hook stands in for a workflow or Python script
+    * ``make_workflow`` — the hook stands in for a workflow or Python script
       the agent generates from the ``directive`` field (used here as a prompt).
       The agent generates it, runs it (using the wired ``anchor`` output(s) as
       input if any are connected, else treating the prompt as text-to-media), and
@@ -154,14 +154,14 @@ class AgentYHook(io.ComfyNode):
     stage that yields several results forwards them all to the next hook via the
     agent, not via several slots.
 
-    ``bake_to_canvas`` (workflow-standin only) — when on, the agent doesn't just
+    ``bake_to_canvas`` (make_workflow only) — when on, the agent doesn't just
     run the workflow it generates for this hook: it nests that workflow into a
     ComfyUI **subgraph**, exposes inputs/outputs matching this hook's slots, drops
     the subgraph onto the same canvas, and wires the subgraphs to mirror the hook
     chain — "baking" the multi-step task into a reusable native workflow that runs
     next time without the agent.
 
-    ``freeze`` (directive / text hooks) — controls what the agent does with the
+    ``freeze`` (inline_parameter / text hooks) — controls what the agent does with the
     value it produces for this hook. OFF (default) *keeps the hook live*: the hook
     stays wired exactly as drawn, the agent injects the produced value into the
     graph at run time, and the ``agentY text`` node it drops is left UNCONNECTED as
@@ -193,8 +193,8 @@ class AgentYHook(io.ComfyNode):
             display_name="agentY hook",
             category="agentY",
             description=(
-                "Attach an agent instruction to the canvas. As a 'directive' it annotates a "
-                "node's output; as a 'workflow-standin' it stands in for a workflow/script "
+                "Attach an agent instruction to the canvas. As an 'inline_parameter' it annotates a "
+                "node's output; as a 'make_workflow' it stands in for a workflow/script "
                 "the agent generates from the prompt; as 'text' it asks for a written answer "
                 "the agent drops on the canvas as a wireable 'agentY text' node. The 'anchor' "
                 "input auto-grows, so one hook can gather several inputs. Toggle 'ignore' to "
@@ -207,20 +207,15 @@ class AgentYHook(io.ComfyNode):
                     multiline=True,
                     default="",
                     placeholder=(
-                        "directive: e.g. sweep the seed, 6 variations  •  "
-                        "standin: e.g. upscale 2x and add film grain  •  "
+                        "inline_parameter: e.g. sweep the seed, 6 variations  •  "
+                        "make_workflow: e.g. upscale 2x and add film grain  •  "
                         "text: e.g. write a caption for this image"
                     ),
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["directive", "workflow-standin", "text"],
-                    default="directive",
-                ),
-                io.Combo.Input(
-                    "mode",
-                    options=["auto", "prompt-variations", "seed-sweep", "file-iterate", "freeform"],
-                    default="auto",
+                    options=["inline_parameter", "make_workflow", "text"],
+                    default="inline_parameter",
                 ),
                 io.Boolean.Input(
                     "ignore",
@@ -234,7 +229,7 @@ class AgentYHook(io.ComfyNode):
                     label_on="bake subgraph",
                     label_off="run only",
                     tooltip=(
-                        "workflow-standin only: also bake the generated workflow onto the "
+                        "make_workflow only: also bake the generated workflow onto the "
                         "canvas as a nested subgraph wired to mirror the hook chain."
                     ),
                 ),
@@ -244,7 +239,7 @@ class AgentYHook(io.ComfyNode):
                     label_on="freeze into graph",
                     label_off="keep hook live",
                     tooltip=(
-                        "text / directive hooks: OFF (default) keeps the hook wired as you "
+                        "text / inline_parameter hooks: OFF (default) keeps the hook wired as you "
                         "drew it and drops the 'agentY text' node UNCONNECTED as a reference "
                         "— the agent injects the produced value into the graph at run time. ON "
                         "bakes the 'agentY text' node into the wired target input, bypassing "
@@ -266,7 +261,7 @@ class AgentYHook(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, directive="", purpose="directive", mode="auto", ignore=False,
+    def execute(cls, directive="", purpose="inline_parameter", ignore=False,
                 bake_to_canvas=False, freeze=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
