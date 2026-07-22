@@ -236,6 +236,18 @@ class AgentYHook(io.ComfyNode):
       drops an ``agentY text`` node on the canvas carrying it, wired where this
       hook's output went — so downstream nodes (or the next hook stage) consume
       the string on a normal run. Any wired ``anchor`` is context for the answer.
+    * ``iterate`` — turns this graph into an **interactive refinement loop**: the
+      agent runs it ONE generation per turn and feeds each result back in as the
+      next input, so you refine an image step by step in chat. Wire this hook's
+      **output into the prompt node's text input** (where each prompt you type in
+      chat is written) and wire the **LoadImage node's image output into an
+      anchor** (the node whose image the agent replaces with the running result).
+      Each turn you give the next prompt; the agent runs the graph, updates that
+      LoadImage in place, and asks for the next step. You can jump back to an
+      earlier generation ("go back to the original", "back to generation 3, then …")
+      and keep going until you say stop. Requires a save node that writes to
+      ComfyUI's history (e.g. a SaveImage, or the bEpic viewer with
+      ``save_to_output`` ON) so the agent can fetch each result to feed forward.
 
     The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
     appears, so a single hook can gather several inputs (e.g. combine three images
@@ -304,7 +316,7 @@ class AgentYHook(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["inline_parameter", "make_workflow", "text"],
+                    options=["inline_parameter", "make_workflow", "text", "iterate"],
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(
