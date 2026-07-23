@@ -307,8 +307,8 @@ class AgentChat {
     /* "Working" marker: a blinking caret shown from the moment a turn starts
        (user hits Enter) until it finishes, pinned to the bottom of the log. */
     .ay-working{align-self:flex-start;display:flex;align-items:center;gap:8px;padding:6px 13px;}
-    .ay-working .ay-caret{width:9px;height:18px;border-radius:2px;background:var(--ay-accent);box-shadow:0 0 10px var(--ay-accent-soft);animation:ay-caret-blink 1.05s steps(1,end) infinite;}
-    @keyframes ay-caret-blink{0%,50%{opacity:1;}50.01%,100%{opacity:0;}}
+    .ay-working .ay-caret{width:9px;height:18px;border-radius:2px;background:var(--ay-accent);box-shadow:0 0 10px var(--ay-accent-soft);transform-origin:center;animation:ay-caret-pulse 1.1s ease-in-out infinite;}
+    @keyframes ay-caret-pulse{0%,100%{opacity:1;transform:scaleY(1);}50%{opacity:.25;transform:scaleY(.72);}}
     .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
     .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
     .ay-step>summary::-webkit-details-marker{display:none;}
@@ -742,7 +742,10 @@ class AgentChat {
   _scroll() {
     // Keep the "working" caret as the last item while a turn runs — every render
     // path funnels through here, so appending content never buries the marker.
-    if (this._workingEl && this._workingEl.parentNode === this.logEl) {
+    if (this._workingEl && this._workingEl.parentNode === this.logEl &&
+        this.logEl.lastElementChild !== this._workingEl) {
+      // Only move it when something new landed after it — re-appending on every
+      // token would restart the CSS animation and freeze it on its first frame.
       this.logEl.appendChild(this._workingEl);
     }
     this.logEl.scrollTop = this.logEl.scrollHeight;
