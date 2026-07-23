@@ -304,6 +304,11 @@ class AgentChat {
     .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
     .ay-link{color:var(--ay-accent);text-decoration:underline;}
     .ay-link:hover{color:var(--ay-accent2);}
+    /* "Working" marker: a blinking caret shown from the moment a turn starts
+       (user hits Enter) until it finishes, pinned to the bottom of the log. */
+    .ay-working{align-self:flex-start;display:flex;align-items:center;gap:8px;padding:6px 13px;}
+    .ay-working .ay-caret{width:9px;height:18px;border-radius:2px;background:var(--ay-accent);box-shadow:0 0 10px var(--ay-accent-soft);animation:ay-caret-blink 1.05s steps(1,end) infinite;}
+    @keyframes ay-caret-blink{0%,50%{opacity:1;}50.01%,100%{opacity:0;}}
     .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
     .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
     .ay-step>summary::-webkit-details-marker{display:none;}
@@ -660,7 +665,7 @@ class AgentChat {
   // all) so returning to it later this session restores exactly what was shown.
   _saveCurrentDom() {
     if (this.threadId) {
-      this.domCache.set(this.threadId, { html: this.logEl.innerHTML, scroll: this.logEl.scrollTop });
+      this.domCache.set(this.threadId, { html: this._logHtml(), scroll: this.logEl.scrollTop });
     }
   }
 
@@ -672,7 +677,7 @@ class AgentChat {
     fetch(backendBase() + "/agentY/threads/" + this.threadId + "/panel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html: this.logEl.innerHTML }),
+      body: JSON.stringify({ html: this._logHtml() }),
     }).catch(() => {});
   }
 
@@ -734,7 +739,40 @@ class AgentChat {
   }
 
   // ── rendering ────────────────────────────────────────────────────────────────
-  _scroll() { this.logEl.scrollTop = this.logEl.scrollHeight; }
+  _scroll() {
+    // Keep the "working" caret as the last item while a turn runs — every render
+    // path funnels through here, so appending content never buries the marker.
+    if (this._workingEl && this._workingEl.parentNode === this.logEl) {
+      this.logEl.appendChild(this._workingEl);
+    }
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+
+  // Show/hide the animated "agent is working" caret. Driven by _setBusy so it
+  // appears the instant the pipeline starts and clears on done / stop / error.
+  _setWorking(on) {
+    if (on) {
+      if (!this._workingEl) {
+        this._workingEl = el("div", { className: "ay-working", title: "agentY is working…" },
+          [el("span", { className: "ay-caret" })]);
+      }
+      this.logEl.appendChild(this._workingEl); // (re)pin to the end of the log
+      this._scroll();
+    } else if (this._workingEl && this._workingEl.parentNode) {
+      this._workingEl.parentNode.removeChild(this._workingEl);
+    }
+  }
+
+  // Panel snapshot without the transient working caret, so it's never persisted /
+  // restored as a stray blinking cursor with no turn running.
+  _logHtml() {
+    const w = this._workingEl;
+    const attached = w && w.parentNode === this.logEl;
+    if (attached) this.logEl.removeChild(w);
+    const html = this.logEl.innerHTML;
+    if (attached) this.logEl.appendChild(w);
+    return html;
+  }
   _sys(text) {
     this.logEl.append(el("div", { className: "ay-msg ay-system", innerHTML: mdToHtml(text) }));
     this._scroll();
@@ -1035,6 +1073,7 @@ class AgentChat {
     // While a turn is running (and not waiting on a reply) the button becomes a
     // Stop button; otherwise it's the Send/reply button. Always clickable.
     const stopMode = b && !this.activeAsk;
+    this._setWorking(stopMode); // blinking caret while the agent is actively working
     this.sendBtn.disabled = false;
     setButtonIcon(this.sendBtn, stopMode ? "stop" : "send", stopMode ? "⏹ Stop" : "Send");
     this.sendBtn.classList.toggle("ay-stop", stopMode);
