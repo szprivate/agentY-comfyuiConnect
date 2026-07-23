@@ -236,6 +236,13 @@ class AgentYHook(io.ComfyNode):
       drops an ``agentY text`` node on the canvas carrying it, wired where this
       hook's output went — so downstream nodes (or the next hook stage) consume
       the string on a normal run. Any wired ``anchor`` is context for the answer.
+    * ``general_request`` — a **free-form** instruction: the agent treats the
+      ``directive`` as an ordinary request (with any wired ``anchor`` as the provided
+      input/context and this graph already captured) and decides the right action
+      itself — answer, generate or edit media, run a workflow, compute a value. Use
+      it when the task doesn't fit the more specific purposes; media results stage
+      onto the canvas, a single produced value goes to the wired target, and a plain
+      question is answered in chat.
     * ``iterate`` — turns this graph into an **interactive refinement loop**: the
       agent runs it ONE generation per turn and feeds each result back in as the
       next input, so you refine an image step by step in chat. Wire this hook's
@@ -316,7 +323,7 @@ class AgentYHook(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["inline_parameter", "make_workflow", "text", "iterate"],
+                    options=["inline_parameter", "make_workflow", "text", "general_request", "iterate"],
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(
