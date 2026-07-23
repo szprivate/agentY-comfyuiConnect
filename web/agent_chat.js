@@ -32,6 +32,7 @@ function comfyBase() {
 // Highest status-line seq the panel has already shown. Persisted so a page
 // reload doesn't re-dump the whole server-side ring buffer.
 const STATUS_SEQ_KEY = "agentY_status_seq";
+const NOTIFY_SEQ_KEY = "agentY_notify_seq";
 // Shown on the offline overlay when the agentY host isn't reachable.
 const OFFLINE_MSG =
   "The agentY chat host isn't running. Start it to use the panel — a PowerShell " +
@@ -127,6 +128,10 @@ class AgentChat {
     // Track the last CLI-status line shown so the on-connect / on-done buffer
     // fetch never re-renders a line already delivered live during a turn.
     this._lastStatusSeq = Number(localStorage.getItem(STATUS_SEQ_KEY) || 0) || 0;
+    // Background notifications (e.g. Magnific auto-drop): highest seq already
+    // handled, so the idle poll never re-drops one delivered live during a turn.
+    this._lastNotifySeq = Number(localStorage.getItem(NOTIFY_SEQ_KEY) || 0) || 0;
+    this._notifyTimer = null;
     this._injectStyles();
     this._build();
     this._bootstrap();
@@ -169,6 +174,8 @@ class AgentChat {
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
+    this._drainNotifications(); // and any background auto-drops queued before we connected
+    this._startNotifyPoll();    // keep polling for background auto-drops while idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
   }
@@ -360,6 +367,17 @@ class AgentChat {
     .ay-offline-card .ay-start{background:var(--ay-accent);color:#0a1a30;border:none;border-radius:999px;padding:10px 22px;font-weight:600;font-size:13px;cursor:pointer;transition:background .12s;}
     .ay-offline-card .ay-start:hover{background:var(--ay-accent2);}
     .ay-offline-card .ay-start:disabled{opacity:.55;cursor:default;}
+    /* Toast host lives on <body> (outside .ay-wrap) so notifications pop even when
+       the agentY tab isn't the active sidebar — hence self-contained colors. */
+    .ay-toast-host{position:fixed;top:16px;right:16px;z-index:100000;display:flex;flex-direction:column;gap:10px;max-width:340px;pointer-events:none;}
+    .ay-toast{pointer-events:auto;background:#302f2c;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-left:3px solid #5b9bf5;border-radius:12px;padding:12px 14px;box-shadow:0 12px 40px rgba(0,0,0,.5);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;line-height:1.45;cursor:default;opacity:0;transform:translateX(12px);transition:opacity .18s ease,transform .18s ease;}
+    .ay-toast.ay-in{opacity:1;transform:translateX(0);}
+    .ay-toast.ay-success{border-left-color:#57b96b;}
+    .ay-toast.ay-error{border-left-color:#d1685a;}
+    .ay-toast .ay-toast-title{font-weight:600;margin-bottom:2px;display:flex;align-items:center;gap:7px;}
+    .ay-toast .ay-toast-body{color:#cfcabf;}
+    .ay-toast .ay-toast-link{display:inline-block;margin-top:6px;color:#5b9bf5;text-decoration:underline;font-size:12px;cursor:pointer;}
+    .ay-toast .ay-toast-x{position:absolute;top:8px;right:10px;color:#a8a39a;cursor:pointer;font-size:13px;line-height:1;}
     `;
     document.head.append(el("style", { id: "agentY-chat-styles", textContent: css }));
   }
@@ -539,6 +557,105 @@ class AgentChat {
       for (const m of (snap.messages || [])) {
         this._sys(m.text);
         this._noteStatusSeq(m.seq);
+      }
+    } catch (_) {}
+  }
+
+  // ── background notifications (Magnific auto-drop, …) ──────────────────────────
+  // Structured events that land BETWEEN turns (an async generation finishing
+  // minutes after its turn ended). There's no live SSE stream while idle, so poll
+  // on a timer; events that arrive live during a turn come through `_onEvent`'s
+  // `notify` case and advance the same seq, so `since` dedupes the two paths.
+  _saveNotifySeq() { try { localStorage.setItem(NOTIFY_SEQ_KEY, String(this._lastNotifySeq)); } catch (_) {} }
+  _noteNotifySeq(seq) {
+    if (typeof seq === "number" && seq > this._lastNotifySeq) { this._lastNotifySeq = seq; this._saveNotifySeq(); }
+  }
+
+  _startNotifyPoll() {
+    if (this._notifyTimer) return;
+    // 8 s is a good idle cadence: fast enough that a finished render appears
+    // promptly, cheap enough to leave running while connected.
+    this._notifyTimer = setInterval(() => { this._drainNotifications(); }, 8000);
+  }
+
+  async _drainNotifications() {
+    if (!this._hostUp) return;
+    try {
+      let since = this._lastNotifySeq || 0;
+      let r = await fetch(backendBase() + "/agentY/notifications?since=" + since, { cache: "no-store" });
+      if (!r.ok) return;
+      let snap = await r.json();
+      if (typeof snap.seq === "number" && snap.seq < since) {
+        // Host restarted (its counter reset below ours) → re-drain from 0.
+        this._lastNotifySeq = 0;
+        r = await fetch(backendBase() + "/agentY/notifications?since=0", { cache: "no-store" });
+        if (!r.ok) return;
+        snap = await r.json();
+      }
+      for (const evt of (snap.events || [])) this._handleNotify(evt);
+    } catch (_) {}
+  }
+
+  // Apply one notification (from the idle poll or a live `notify` SSE event).
+  // Idempotent per seq: a lower/equal seq was already handled, so skip it.
+  _handleNotify(evt) {
+    if (!evt || typeof evt.seq !== "number" || evt.seq <= this._lastNotifySeq) return;
+    this._noteNotifySeq(evt.seq);
+    try {
+      if (evt.output && evt.output.path) {
+        this.injectNode(evt.output);           // drop the finished asset onto the canvas
+      }
+    } catch (e) { console.error("[agentY] notify injectNode failed", e); }
+    const t = evt.toast || {};
+    if (t.title || t.body) this._toast(t);
+  }
+
+  // A self-contained pop-up: an in-UI toast on <body> (always) plus an OS-level
+  // browser Notification when the user has granted permission (valuable when the
+  // ComfyUI tab is in the background). Permission is requested on a user gesture
+  // in `send()`; we never force a prompt here.
+  _toast(t) {
+    const level = t.level || "info";
+    try {
+      let host = document.getElementById("agentY-toast-host");
+      if (!host) {
+        host = el("div", { id: "agentY-toast-host", className: "ay-toast-host" });
+        document.body.appendChild(host);
+      }
+      const card = el("div", { className: "ay-toast ay-" + level });
+      const icon = level === "success" ? "✨" : level === "error" ? "⚠️" : "🔔";
+      card.appendChild(el("div", { className: "ay-toast-x", textContent: "✕" }));
+      card.appendChild(el("div", { className: "ay-toast-title", textContent: icon + "  " + (t.title || "agentY") }));
+      if (t.body) card.appendChild(el("div", { className: "ay-toast-body", textContent: t.body }));
+      if (t.url) {
+        const link = el("span", { className: "ay-toast-link", textContent: "Open in Magnific ↗" });
+        link.addEventListener("click", () => { try { window.open(t.url, "_blank", "noopener"); } catch (_) {} });
+        card.appendChild(link);
+      }
+      host.appendChild(card);
+      requestAnimationFrame(() => card.classList.add("ay-in"));
+      const dismiss = () => {
+        card.classList.remove("ay-in");
+        setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 220);
+      };
+      card.querySelector(".ay-toast-x").addEventListener("click", dismiss);
+      // Errors linger; successes auto-dismiss after 12 s.
+      if (level !== "error") setTimeout(dismiss, 12000);
+    } catch (e) { console.error("[agentY] toast failed", e); }
+
+    // OS-level notification (best-effort; needs prior granted permission).
+    try {
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        new Notification(t.title || "agentY", { body: t.body || "", tag: "agentY-magnific" });
+      }
+    } catch (_) {}
+  }
+
+  // Ask once for browser-notification permission, from a user gesture (send()).
+  _ensureNotifyPermission() {
+    try {
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        Notification.requestPermission().catch(() => {});
       }
     } catch (_) {}
   }
@@ -976,6 +1093,12 @@ class AgentChat {
         this._sys(ev.data);
         this._noteStatusSeq(ev.seq);
         break;
+      case "notify":
+        // A structured background notification (e.g. a Magnific creation that
+        // finished mid-turn). Drop it onto the canvas + pop a toast; advancing the
+        // seq means the idle poll won't re-handle it.
+        this._handleNotify(ev);
+        break;
       case "ask":
         this.curAssistant = null;
         this.activeAsk = ev.request_id;
@@ -999,6 +1122,7 @@ class AgentChat {
         this._savePanel();  // persist the rendered panel so blocks survive reloads
         this._loadThreads();
         this._drainStatus();       // catch any between-/in-turn CLI notices not delivered live
+        this._drainNotifications();  // and any background auto-drops that landed this turn
         this._maybeDispatchQueued(); // send the next message queued while this turn ran
         break;
     }
@@ -1110,6 +1234,11 @@ class AgentChat {
   // ── sending ──────────────────────────────────────────────────────────────────
   async send() {
     const text = this.input.value.trim();
+
+    // First send is a user gesture — a good moment to ask (once) for browser-
+    // notification permission so background auto-drops (e.g. Magnific finishing
+    // minutes later) can raise an OS pop-up even when this tab isn't focused.
+    this._ensureNotifyPermission();
 
     // /help (or /docs) — open the usage guide in a new browser tab. Handled
     // entirely client-side; calling window.open here (inside the send() gesture
