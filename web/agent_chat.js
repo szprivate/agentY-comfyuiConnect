@@ -576,10 +576,21 @@ class AgentChat {
     // 8 s is a good idle cadence: fast enough that a finished render appears
     // promptly, cheap enough to leave running while connected.
     this._notifyTimer = setInterval(() => { this._drainNotifications(); }, 8000);
+    // Don't poll while this ComfyUI tab is hidden: a backgrounded tab shouldn't
+    // hammer /agentY/notifications (that's the endless `since=0` log noise when a
+    // second ComfyUI tab is open), and skipping keeps the drop landing in the tab
+    // the user is actually looking at. Drain once immediately when they return.
+    if (!this._visHooked && typeof document !== "undefined") {
+      this._visHooked = true;
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) this._drainNotifications();
+      });
+    }
   }
 
   async _drainNotifications() {
     if (!this._hostUp) return;
+    if (typeof document !== "undefined" && document.hidden) return;
     try {
       let since = this._lastNotifySeq || 0;
       let r = await fetch(backendBase() + "/agentY/notifications?since=" + since, { cache: "no-store" });
