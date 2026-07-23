@@ -26,6 +26,18 @@ function isSecret(key) {
   return /KEY|TOKEN|SECRET|PASSWORD/i.test(key);
 }
 
+// Presentational grouping for the (otherwise flat) top-level settings.json leaves,
+// so the modal reads as a few meaningful collapsible sections instead of one long
+// list. Purely UI — keys stay flat in settings.json; anything not listed here falls
+// into an "Other" group, and object-valued keys (llm, memory, …) become their own
+// groups automatically.
+const SETTINGS_GROUPS = [
+  ["Connections", ["comfyui_url", "agent_server_url"]],
+  ["ComfyUI paths", ["comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
+  ["agentY output & logs", ["output_dir", "output_workflows_dir", "conversation_db", "message_history_log", "tokens_usage_log"]],
+  ["Behaviour", ["autoload_workflows_into_canvas"]],
+];
+
 function injectStyles() {
   if (document.getElementById("agentY-settings-styles")) return;
   const css = `
@@ -83,45 +95,89 @@ function buildModelSelect(groups, current) {
   return sel;
 }
 
-// Recursively render a settings object into form controls, collecting leaf refs.
+// A collapsible group, COLLAPSED by default (item 2: settings start folded).
+function makeCollapsibleGroup(title) {
+  const body = el("div", { className: "ays-groupbody", style: { display: "none" } });
+  const head = el("div", { className: "ays-grouphead", textContent: "▸ " + title });
+  head.addEventListener("click", () => {
+    const hidden = body.style.display === "none";
+    body.style.display = hidden ? "" : "none";
+    head.textContent = (hidden ? "▾ " : "▸ ") + title;
+  });
+  return { group: el("div", { className: "ays-group" }, [head, body]), body };
+}
+
+// Render one leaf setting (scalar / array / model-select) as a labelled row and
+// register its ref for save-time collection.
+function renderLeafRow(container, key, val, path, modelGroups, refs) {
+  const row = el("div", { className: "ays-row" });
+  row.append(el("label", { className: "ays-label", textContent: key }));
+  let input;
+  const underPipeline = path[0] === "llm" && path[1] === "pipeline";
+  if (typeof val === "boolean") {
+    input = el("input", { type: "checkbox", className: "ays-input" });
+    input.checked = val;
+    refs.push({ path, get: () => input.checked });
+  } else if (typeof val === "number") {
+    input = el("input", { type: "number", className: "ays-input", value: String(val) });
+    refs.push({ path, get: () => { const n = Number(input.value); return Number.isNaN(n) ? val : n; } });
+  } else if (Array.isArray(val)) {
+    input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
+    refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
+  } else if (underPipeline && modelGroups && Object.keys(modelGroups).length) {
+    input = buildModelSelect(modelGroups, val == null ? "" : String(val));
+    refs.push({ path, get: () => input.value });
+  } else {
+    input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
+    refs.push({ path, get: () => input.value });
+  }
+  row.append(input);
+  container.append(row);
+}
+
+// Recursively render a settings object: nested objects become collapsed groups,
+// leaves become rows. Used for group bodies (llm, memory, …) below the top level.
 function buildSettingsForm(container, obj, modelGroups, pathPrefix, refs) {
   for (const [key, val] of Object.entries(obj)) {
     const path = pathPrefix.concat(key);
     if (val && typeof val === "object" && !Array.isArray(val)) {
-      const body = el("div", { className: "ays-groupbody" });
-      const head = el("div", { className: "ays-grouphead", textContent: "▾ " + key });
-      head.addEventListener("click", () => {
-        const hidden = body.style.display === "none";
-        body.style.display = hidden ? "" : "none";
-        head.textContent = (hidden ? "▾ " : "▸ ") + key;
-      });
-      container.append(el("div", { className: "ays-group" }, [head, body]));
+      const { group, body } = makeCollapsibleGroup(key);
+      container.append(group);
       buildSettingsForm(body, val, modelGroups, path, refs);
-      continue;
-    }
-    const row = el("div", { className: "ays-row" });
-    row.append(el("label", { className: "ays-label", textContent: key }));
-    let input;
-    const underPipeline = path[0] === "llm" && path[1] === "pipeline";
-    if (typeof val === "boolean") {
-      input = el("input", { type: "checkbox", className: "ays-input" });
-      input.checked = val;
-      refs.push({ path, get: () => input.checked });
-    } else if (typeof val === "number") {
-      input = el("input", { type: "number", className: "ays-input", value: String(val) });
-      refs.push({ path, get: () => { const n = Number(input.value); return Number.isNaN(n) ? val : n; } });
-    } else if (Array.isArray(val)) {
-      input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
-      refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
-    } else if (underPipeline && modelGroups && Object.keys(modelGroups).length) {
-      input = buildModelSelect(modelGroups, val == null ? "" : String(val));
-      refs.push({ path, get: () => input.value });
     } else {
-      input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
-      refs.push({ path, get: () => input.value });
+      renderLeafRow(container, key, val, path, modelGroups, refs);
     }
-    row.append(input);
-    container.append(row);
+  }
+}
+
+// Top-level render: bucket the flat scalar leaves into the meaningful SETTINGS_GROUPS
+// (plus an "Other" catch-all), and give each object-valued key its own group. Every
+// group is collapsed by default.
+function buildTopLevelSettings(container, settings, modelGroups, refs) {
+  const scalars = {};
+  const objects = {};
+  for (const [k, v] of Object.entries(settings)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) objects[k] = v;
+    else scalars[k] = v;
+  }
+  const used = new Set();
+  for (const [title, keys] of SETTINGS_GROUPS) {
+    const present = keys.filter((k) => k in scalars);
+    if (!present.length) continue;
+    const { group, body } = makeCollapsibleGroup(title);
+    container.append(group);
+    for (const k of present) { renderLeafRow(body, k, scalars[k], [k], modelGroups, refs); used.add(k); }
+  }
+  const leftover = Object.keys(scalars).filter((k) => !used.has(k));
+  if (leftover.length) {
+    const { group, body } = makeCollapsibleGroup("Other");
+    container.append(group);
+    for (const k of leftover) renderLeafRow(body, k, scalars[k], [k], modelGroups, refs);
+  }
+  for (const [k, v] of Object.entries(objects)) {
+    const { group, body } = makeCollapsibleGroup(k);
+    container.append(group);
+    buildSettingsForm(body, v, modelGroups, [k], refs);
   }
 }
 
@@ -151,8 +207,27 @@ async function openAgentYSettingsModal() {
     return;
   }
 
+  // MCP servers (config/mcp.json + per-server status). Best-effort — the section
+  // is simply omitted if the host predates the /agentY/mcp route.
+  let mcpData = null;
+  try {
+    const rm = await fetch(backendBase() + "/agentY/mcp");
+    if (rm.ok) mcpData = await rm.json();
+  } catch (_) { /* no MCP route on this host — skip the section */ }
+
   const overlay = el("div", { className: "ays-overlay" });
   const body = el("div", { className: "ays-body" });
+
+  // ── viewers (moved here from the side-panel top bar) ──
+  const toolsSec = el("div", { className: "ays-sec" });
+  toolsSec.append(el("h3", { textContent: "Viewers" }));
+  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log and long-term memory editors — moved here from the chat panel's top bar." }));
+  const logViewBtn = el("button", { className: "ays-btn", textContent: "📜  Message-history log…" });
+  logViewBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
+  const memViewBtn = el("button", { className: "ays-btn", textContent: "🧠  Long-term memory…" });
+  memViewBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
+  toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn]));
+  body.append(toolsSec);
 
   // ── .env auth section ──
   const envInputs = {};
@@ -174,6 +249,20 @@ async function openAgentYSettingsModal() {
     envInputs[key] = { input: inp, original: cur };
     envSec.append(el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: key }), inp]));
   }
+  // Add NEW .env keys (e.g. an MCP server's API key). The host appends them and
+  // applies them to the live process, so a header-auth MCP server can reference
+  // ${THE_KEY} immediately on the next agent start.
+  const addKeyRows = [];
+  const addKeysWrap = el("div", {});
+  const addAKeyRow = () => {
+    const nameInp = el("input", { className: "ays-input", placeholder: "NEW_KEY_NAME", style: { flex: "0 0 42%" } });
+    const valInp = el("input", { className: "ays-input", type: "password", placeholder: "value" });
+    addKeyRows.push({ name: nameInp, val: valInp });
+    addKeysWrap.append(el("div", { className: "ays-row" }, [nameInp, valInp]));
+  };
+  const addKeyBtn = el("button", { className: "ays-btn", textContent: "+ Add auth key" });
+  addKeyBtn.addEventListener("click", (e) => { e.preventDefault(); addAKeyRow(); });
+  envSec.append(addKeysWrap, addKeyBtn);
   body.append(envSec);
 
   // ── settings.json section ──
@@ -182,7 +271,7 @@ async function openAgentYSettingsModal() {
   setSec.append(el("h3", { textContent: "Application settings (config/settings.json)" }));
   setSec.append(el("div", { className: "ays-note", textContent: "Model per stage (llm ▸ pipeline), directories, and behaviour toggles. Comments are preserved on save; only changed values are written." }));
   const setForm = el("div");
-  buildSettingsForm(setForm, data.settings || {}, data.model_groups || {}, [], refs);
+  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
   setSec.append(setForm);
   body.append(setSec);
 
@@ -201,6 +290,55 @@ async function openAgentYSettingsModal() {
   priceSec.append(priceTa, priceErr);
   body.append(priceSec);
 
+  // ── MCP servers section (config/mcp.json) ──
+  let mcpTa = null;
+  let mcpErr = null;
+  if (mcpData && mcpData.ok) {
+    const mcpSec = el("div", { className: "ays-sec" });
+    mcpSec.append(el("h3", { textContent: "MCP servers (config/mcp.json)" }));
+    mcpSec.append(el("div", { className: "ays-note", textContent:
+      "External MCP servers whose tools the orchestrator can call. Each server has a transport (http/sse/stdio), a url (or command/args), and an auth mode: \"none\", \"header\" (reference ${ENV_VAR} in headers and store the secret in .env above), or \"oauth\" (browser sign-in — click Authorize below). Saved changes load into the orchestrator on the next agent start." }));
+    // Per-server status + Authorize (oauth only).
+    const status = mcpData.status || {};
+    const statusWrap = el("div", {});
+    for (const [name, s] of Object.entries(status)) {
+      const line = el("div", { className: "ays-row" });
+      line.append(el("label", { className: "ays-label", textContent: name }));
+      const state = el("span", { className: "ays-note", style: { margin: "0", flex: "1" }, textContent: `${s.transport}/${s.auth} — ${s.state}` });
+      line.append(state);
+      if (String(s.auth).toLowerCase() === "oauth") {
+        const authBtn = el("button", { className: "ays-btn", textContent: "Authorize…" });
+        authBtn.addEventListener("click", async (e) => {
+          e.preventDefault();
+          authBtn.disabled = true; authBtn.textContent = "Opening browser…";
+          try {
+            const ra = await fetch(backendBase() + "/agentY/mcp/authorize", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name }),
+            });
+            const ja = await ra.json();
+            state.textContent = ja.ok ? "✅ " + (ja.message || "authorized") : "❌ " + (ja.error || "failed");
+          } catch (err) {
+            state.textContent = "❌ " + err;
+          } finally {
+            authBtn.disabled = false; authBtn.textContent = "Authorize…";
+          }
+        });
+        line.append(authBtn);
+      }
+      statusWrap.append(line);
+    }
+    mcpSec.append(statusWrap);
+    mcpTa = el("textarea", {
+      className: "ays-input", spellcheck: false,
+      value: JSON.stringify(mcpData.config || { servers: {} }, null, 2),
+      style: { width: "100%", minHeight: "160px", fontFamily: "ui-monospace,monospace", whiteSpace: "pre" },
+    });
+    mcpErr = el("div", { className: "ays-note", style: { color: "#e07a5f" } });
+    mcpSec.append(mcpTa, mcpErr);
+    body.append(mcpSec);
+  }
+
   // ── footer ──
   const msg = el("div", { className: "ays-msg" });
   const cancelBtn = el("button", { className: "ays-btn", textContent: "Close" });
@@ -216,12 +354,21 @@ async function openAgentYSettingsModal() {
     for (const [key, { input, original }] of Object.entries(envInputs)) {
       if (input.value !== original) envChanges[key] = input.value;
     }
+    for (const { name, val } of addKeyRows) {
+      const k = (name.value || "").trim();
+      if (k) envChanges[k] = val.value;
+    }
     let pricingPayload;
     try {
       pricingPayload = JSON.parse(priceTa.value);
       priceErr.textContent = "";
     } catch (e) {
       priceErr.textContent = "Pricing JSON is invalid — not saved: " + e;
+    }
+    let mcpPayload;
+    if (mcpTa) {
+      try { mcpPayload = JSON.parse(mcpTa.value); if (mcpErr) mcpErr.textContent = ""; }
+      catch (e) { if (mcpErr) mcpErr.textContent = "MCP JSON is invalid — not saved: " + e; }
     }
     const payload = { env: envChanges, settings: collectSettings(refs) };
     if (pricingPayload !== undefined) payload.pricing = pricingPayload;
@@ -233,11 +380,22 @@ async function openAgentYSettingsModal() {
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "save failed");
+      let mcpSaved = false;
+      if (mcpPayload !== undefined) {
+        try {
+          const rm = await fetch(backendBase() + "/agentY/mcp", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: mcpPayload }),
+          });
+          mcpSaved = (await rm.json()).ok;
+        } catch (_) { /* leave mcpSaved false */ }
+      }
       const parts = [];
       if (j.env_updated && j.env_updated.length) parts.push(`${j.env_updated.length} auth key(s)`);
       if (j.settings_updated && j.settings_updated.length) parts.push(`${j.settings_updated.length} setting(s)`);
       if (j.pricing_updated) parts.push("pricing");
-      msg.textContent = parts.length ? "✅ Saved " + parts.join(", ") + ". Model changes apply on next /switch_model or restart." : "No changes to save.";
+      if (mcpSaved) parts.push("MCP servers");
+      msg.textContent = parts.length ? "✅ Saved " + parts.join(", ") + ". Model & MCP changes apply on the next agent start." : "No changes to save.";
       // Refresh originals so a second save doesn't re-send unchanged keys.
       for (const [key, o] of Object.entries(envInputs)) o.original = o.input.value;
     } catch (e) {

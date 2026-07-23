@@ -164,6 +164,44 @@ class AgentChat {
     else await this._loadThreads();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
+    this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
+  }
+
+  // ── auto-graph toggle (autoload_workflows_into_canvas) ───────────────────────
+  _setAutographUI(on, envLocked) {
+    this._autograph = !!on;
+    this._autographEnvLocked = !!envLocked;
+    if (!this.autographBtn) return;
+    this.autographBtn.classList.toggle("ay-on", this._autograph);
+    this.autographBtn.title =
+      "Auto-graph workflows onto canvas: " + (this._autograph ? "ON" : "OFF") +
+      (envLocked ? " — locked by the AGENTY_CANVAS_AUTOLOAD env var" : " — click to toggle");
+  }
+
+  async _loadAutograph() {
+    try {
+      const r = await fetch(backendBase() + "/agentY/autograph", { cache: "no-store" });
+      const j = await r.json();
+      if (j && j.ok) this._setAutographUI(!!j.enabled, !!j.env_locked);
+    } catch (_) { /* host down / route absent — leave the button in its default state */ }
+  }
+
+  async _toggleAutograph() {
+    if (this._autographEnvLocked) return; // env var wins; the setting can't take effect
+    const next = !this._autograph;
+    this._setAutographUI(next, false); // optimistic
+    try {
+      const r = await fetch(backendBase() + "/agentY/autograph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const j = await r.json();
+      if (!j || !j.ok) throw new Error((j && j.error) || "toggle failed");
+      this._setAutographUI(!!j.enabled, false);
+    } catch (_) {
+      this._setAutographUI(!next, false); // revert on failure
+    }
   }
 
   // Tell the ComfyUI extension (same origin) where the agentY host lives, using
@@ -235,6 +273,9 @@ class AgentChat {
     .ay-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--ay-border);flex-shrink:0;}
     .ay-bar select{flex:1;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
     .ay-btn{background:var(--ay-surface2);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
+    /* Toggle button in its ON state (e.g. auto-graph enabled). */
+    .ay-btn.ay-on{background:var(--ay-accent);color:#0a1a30;border-color:transparent;}
+    .ay-btn.ay-on:hover{background:var(--ay-accent2);}
     .ay-btn:hover{background:#464440;}
     .ay-btn:active{transform:translateY(1px);}
     .ay-btn.ay-send{background:var(--ay-accent);color:#0a1a30;border-color:transparent;border-radius:999px;padding:9px 18px;font-weight:600;}
@@ -327,13 +368,14 @@ class AgentChat {
     const usageBtn = el("button", { className: "ay-btn", title: "Token usage overview" });
     setButtonIcon(usageBtn, "tokenUsage", "📊");
     usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
-    const logBtn = el("button", { className: "ay-btn", title: "Message-history log viewer" });
-    setButtonIcon(logBtn, "logViewer", "📜");
-    logBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
-    const memBtn = el("button", { className: "ay-btn", title: "Long-term memory viewer" });
-    setButtonIcon(memBtn, "memoryViewer", "🧠");
-    memBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, logBtn, memBtn]));
+    // Auto-graph toggle: flips `autoload_workflows_into_canvas` on the host. The
+    // message-history and long-term-memory viewers moved OUT of this bar into the
+    // agentY Settings modal (agent_settings.js) to declutter — they're opened from
+    // there via the same window.agentYOpen* globals.
+    this.autographBtn = el("button", { className: "ay-btn", title: "Auto-graph workflows onto canvas" });
+    setButtonIcon(this.autographBtn, "autograph", "🖼");
+    this.autographBtn.addEventListener("click", () => this._toggleAutograph());
+    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, this.autographBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
