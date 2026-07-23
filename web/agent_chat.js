@@ -9,6 +9,8 @@ import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 // mirror what the old Chainlit UI offered.
 
 const DEFAULT_PORT = 5000;
+// Where /help opens: the GitHub-rendered usage guide (images render inline).
+const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agentY.md";
 // Remember which conversation was open so switching away from the sidebar tab
 // and back (ComfyUI unmounts/remounts the panel) reopens it instead of a blank
 // new chat.
@@ -51,11 +53,15 @@ function mdToHtml(s) {
   let h = escapeHtml(s);
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
   h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // [label](https://…) → clickable link that opens in a new tab.
+  h = h.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener" class="ay-link">$1</a>');
   h = h.replace(/\n/g, "<br>");
   return h;
 }
 
 const SLASH_FALLBACK = [
+  { name: "/help", description: "Open the agentY usage guide in a new browser tab" },
   { name: "/restart", description: "Restart the agent pipeline" },
   { name: "/stop", description: "Stop and shut down the agent" },
   { name: "/unload", description: "Unload Ollama models from VRAM" },
@@ -296,6 +302,8 @@ class AgentChat {
     .ay-system{background:transparent;color:var(--ay-muted);font-size:12px;align-self:center;text-align:center;max-width:100%;padding:2px 8px;}
     .ay-ask{background:rgba(91,155,245,.10);color:#f0d9c2;border:1px solid rgba(91,155,245,.35);align-self:stretch;max-width:100%;}
     .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
+    .ay-link{color:var(--ay-accent);text-decoration:underline;}
+    .ay-link:hover{color:var(--ay-accent2);}
     .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
     .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
     .ay-step>summary::-webkit-details-marker{display:none;}
@@ -1045,6 +1053,18 @@ class AgentChat {
   // ── sending ──────────────────────────────────────────────────────────────────
   async send() {
     const text = this.input.value.trim();
+
+    // /help (or /docs) — open the usage guide in a new browser tab. Handled
+    // entirely client-side; calling window.open here (inside the send() gesture
+    // stack) sidesteps the popup blocker, and the command never reaches the agent.
+    if (/^\/(help|docs)\s*$/i.test(text)) {
+      this._openDocs();
+      this.input.value = "";
+      this._autosize();
+      this._hidePop();
+      return;
+    }
+
     const canvasInputs = this._collectCanvasInputs();
     const canvasHooks = this._collectCanvasHooks();
     const canvasSelection = this._collectCanvasSelection();
@@ -1110,6 +1130,19 @@ class AgentChat {
       canvas_selection: canvasSelection,
       canvas_prompt: canvasPrompt,
     });
+  }
+
+  // Open the usage guide in a new browser tab (backs the /help command).
+  _openDocs() {
+    this._userMsg("/help");
+    let win = null;
+    try { win = window.open(DOCS_URL, "_blank", "noopener"); } catch (_) {}
+    if (win) {
+      this._sys(`📖 Opened the [agentY usage guide](${DOCS_URL}) in a new tab.`);
+    } else {
+      // Popup blocked / unavailable — surface a clickable link instead.
+      this._sys(`📖 agentY usage guide: [${DOCS_URL}](${DOCS_URL})`);
+    }
   }
 
   // ── attachments ──────────────────────────────────────────────────────────────
