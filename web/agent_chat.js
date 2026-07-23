@@ -986,6 +986,35 @@ class AgentChat {
   }
   _clearStatus() { this._statusEl = null; }
 
+  // Where to drop a freshly generated loader node. Prefer the current viewport
+  // (LiteGraph tracks the visible graph rect), so results land where the user is
+  // looking — usually right on their workflow. Fall back to just right of the
+  // existing nodes' bounding box, then to a sensible default near the origin.
+  _dropPos() {
+    try {
+      const c = app.canvas;
+      const va = (c && (c.visible_area || (c.ds && c.ds.visible_area))) || null;
+      if (va && va.length >= 4 && va[2] > 40 && va[3] > 40) {
+        // Upper-left third of the viewport — visible but off the dead-center where
+        // the user's active node usually sits.
+        return [va[0] + va[2] * 0.28, va[1] + va[3] * 0.30];
+      }
+    } catch (_) {}
+    // Fallback: to the right of everything currently on the graph.
+    try {
+      const nodes = (app.graph && app.graph._nodes) || [];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity;
+      for (const n of nodes) {
+        if (!n || !n.pos || !n.size) continue;
+        minX = Math.min(minX, n.pos[0]);
+        minY = Math.min(minY, n.pos[1]);
+        maxX = Math.max(maxX, n.pos[0] + n.size[0]);
+      }
+      if (isFinite(minX)) return [maxX + 60, minY];
+    } catch (_) {}
+    return [80, 80];
+  }
+
   // ── graph node injection (the whole point) ───────────────────────────────────
   injectNode(ev) {
     const LG = window.LiteGraph;
@@ -1003,9 +1032,11 @@ class AgentChat {
       this._sys(`⚠️ Could not add ${type} node: ${e}`);
       return;
     }
-    // Stagger positions near the canvas so multiple outputs don't stack exactly.
-    const off = this.nodeCount++ * 40;
-    node.pos = [80 + off, 80 + off];
+    // Drop near where the user is looking (the current viewport / their nodes),
+    // not at the far graph origin. Small cyclic stagger so several drops fan out.
+    const base = this._dropPos();
+    const off = (this.nodeCount++ % 8) * 34;
+    node.pos = [base[0] + off, base[1] + off];
     const val = ev.filename || ev.path;
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
     const w = (node.widgets || []).find((x) => wnames.includes(x.name));
