@@ -1439,13 +1439,13 @@ class AgentChat {
   _collectCanvasSelection() {
     const out = [];
     for (const n of this._orderedSelectedNodes()) {
-      const widgets = this._widgetSnapshot(n);
-      if (!Object.keys(widgets).length) continue; // nothing readable/editable
+      // Include EVERY selected node — even ones with no readable/editable widgets
+      // (a Reroute, Note, …) — so the agent's summary covers all of them.
       out.push({
         id: String(n.id),
         type: String((n && (n.type || n.comfyClass)) || ""),
         title: String((n && n.title) || ""),
-        widgets,
+        widgets: this._widgetSnapshot(n),
       });
     }
     return out;
