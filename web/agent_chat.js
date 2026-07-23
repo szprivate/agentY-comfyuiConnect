@@ -304,11 +304,12 @@ class AgentChat {
     .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
     .ay-link{color:var(--ay-accent);text-decoration:underline;}
     .ay-link:hover{color:var(--ay-accent2);}
-    /* "Working" marker: a blinking caret shown from the moment a turn starts
-       (user hits Enter) until it finishes, pinned to the bottom of the log. */
-    .ay-working{align-self:flex-start;display:flex;align-items:center;gap:8px;padding:6px 13px;}
-    .ay-working .ay-caret{width:9px;height:18px;border-radius:2px;background:var(--ay-accent);box-shadow:0 0 10px var(--ay-accent-soft);transform-origin:center;animation:ay-caret-pulse 1.1s ease-in-out infinite;}
-    @keyframes ay-caret-pulse{0%,100%{opacity:1;transform:scaleY(1);}50%{opacity:.25;transform:scaleY(.72);}}
+    /* "Working" marker: an animated "..." shown from the moment a turn starts
+       (user hits Enter) until it finishes, pinned to the bottom of the log. The
+       dots are cycled in JS (setInterval), not CSS — @keyframes weren't rendering
+       inside this ComfyUI sidebar panel. */
+    .ay-working{align-self:flex-start;padding:2px 13px 8px;}
+    .ay-working .ay-dots{font-family:ui-monospace,SFMono-Regular,monospace;font-size:22px;line-height:1;font-weight:700;letter-spacing:3px;color:var(--ay-muted);display:inline-block;min-width:34px;}
     .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
     .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
     .ay-step>summary::-webkit-details-marker{display:none;}
@@ -744,25 +745,39 @@ class AgentChat {
     // path funnels through here, so appending content never buries the marker.
     if (this._workingEl && this._workingEl.parentNode === this.logEl &&
         this.logEl.lastElementChild !== this._workingEl) {
-      // Only move it when something new landed after it — re-appending on every
-      // token would restart the CSS animation and freeze it on its first frame.
+      // Keep the "..." last only when new content landed after it (the JS timer
+      // owns the dot text, so moving the node here doesn't disturb the animation).
       this.logEl.appendChild(this._workingEl);
     }
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
 
-  // Show/hide the animated "agent is working" caret. Driven by _setBusy so it
+  // Show/hide the animated "agent is working" dots. Driven by _setBusy so it
   // appears the instant the pipeline starts and clears on done / stop / error.
+  // The "..." is animated in JS (a setInterval cycling . / .. / ...) rather than
+  // CSS, because @keyframes didn't render inside this ComfyUI sidebar panel.
   _setWorking(on) {
     if (on) {
       if (!this._workingEl) {
+        this._dotsEl = el("span", { className: "ay-dots", textContent: "." });
         this._workingEl = el("div", { className: "ay-working", title: "agentY is working…" },
-          [el("span", { className: "ay-caret" })]);
+          [this._dotsEl]);
       }
       this.logEl.appendChild(this._workingEl); // (re)pin to the end of the log
+      if (!this._workingTimer) {
+        let n = 1;
+        this._dotsEl.textContent = ".";
+        this._workingTimer = setInterval(() => {
+          n = (n % 3) + 1; // 1 → 2 → 3 → 1 …
+          this._dotsEl.textContent = ".".repeat(n);
+        }, 350);
+      }
       this._scroll();
-    } else if (this._workingEl && this._workingEl.parentNode) {
-      this._workingEl.parentNode.removeChild(this._workingEl);
+    } else {
+      if (this._workingTimer) { clearInterval(this._workingTimer); this._workingTimer = null; }
+      if (this._workingEl && this._workingEl.parentNode) {
+        this._workingEl.parentNode.removeChild(this._workingEl);
+      }
     }
   }
 
