@@ -174,8 +174,8 @@ class AgentChat {
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
-    this._drainNotifications(); // and any background auto-drops queued before we connected
-    this._startNotifyPoll();    // keep polling for background auto-drops while idle
+    this._startNotifyPoll();    // drain background auto-drops queued before we connected, and
+                                // poll for more only while the host has a generation in flight
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
   }
@@ -571,14 +571,17 @@ class AgentChat {
     if (typeof seq === "number" && seq > this._lastNotifySeq) { this._lastNotifySeq = seq; this._saveNotifySeq(); }
   }
 
+  // Start (or re-arm) the idle poll. Called on connect and after every turn —
+  // a turn may have queued a background generation whose completion lands minutes
+  // later. The poll then stops itself once the host reports nothing pending (see
+  // _drainNotifications), so an idle tab isn't hitting the endpoint forever.
   _startNotifyPoll() {
-    if (this._notifyTimer) return;
-    // 8 s is a good idle cadence: fast enough that a finished render appears
-    // promptly, cheap enough to leave running while connected.
-    this._notifyTimer = setInterval(() => { this._drainNotifications(); }, 8000);
+    // Drain once now. _drainNotifications arms the 8 s interval iff the host still
+    // has a generation in flight, and stops it once nothing is pending — so the
+    // idle tab isn't polling forever, yet a completion still lands promptly.
+    this._drainNotifications();
     // Don't poll while this ComfyUI tab is hidden: a backgrounded tab shouldn't
-    // hammer /agentY/notifications (that's the endless `since=0` log noise when a
-    // second ComfyUI tab is open), and skipping keeps the drop landing in the tab
+    // hammer /agentY/notifications, and skipping keeps the drop landing in the tab
     // the user is actually looking at. Drain once immediately when they return.
     if (!this._visHooked && typeof document !== "undefined") {
       this._visHooked = true;
@@ -586,6 +589,17 @@ class AgentChat {
         if (!document.hidden) this._drainNotifications();
       });
     }
+  }
+
+  _armNotifyPoll() {
+    if (this._notifyTimer) return;
+    // 8 s is a good cadence while something is in flight: fast enough that a
+    // finished render appears promptly, cheap enough to leave running.
+    this._notifyTimer = setInterval(() => { this._drainNotifications(); }, 8000);
+  }
+
+  _stopNotifyPoll() {
+    if (this._notifyTimer) { clearInterval(this._notifyTimer); this._notifyTimer = null; }
   }
 
   async _drainNotifications() {
@@ -604,6 +618,11 @@ class AgentChat {
         snap = await r.json();
       }
       for (const evt of (snap.events || [])) this._handleNotify(evt);
+      // Keep polling only while the host still has a generation in flight; once
+      // it drains to zero, stop until the next turn re-arms us. `pending` is
+      // undefined on older hosts → treat as "keep polling" (prior behavior).
+      if (snap.pending === 0) this._stopNotifyPoll();
+      else this._armNotifyPoll();
     } catch (_) {}
   }
 
@@ -1164,7 +1183,8 @@ class AgentChat {
         this._savePanel();  // persist the rendered panel so blocks survive reloads
         this._loadThreads();
         this._drainStatus();       // catch any between-/in-turn CLI notices not delivered live
-        this._drainNotifications();  // and any background auto-drops that landed this turn
+        this._startNotifyPoll();   // (re-)arm the auto-drop poll: this turn may have queued
+                                   // an async generation whose completion lands minutes later
         this._maybeDispatchQueued(); // send the next message queued while this turn ran
         break;
     }
