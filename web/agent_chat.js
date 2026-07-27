@@ -1633,8 +1633,11 @@ class AgentChat {
   // Follow every "anchor" input link back to the node(s) feeding this hook. The
   // anchor input auto-grows (anchor, anchor0, anchor1, …), so a hook may gather
   // several inputs; returns, in slot order, the origin node plus the source
-  // output slot and target input name so the exact wiring (which output feeds
-  // which input) survives into the baked subgraph chain.
+  // output slot, its declared TYPE, and the target input name so the exact wiring
+  // (which output feeds which input) survives into the baked subgraph chain.
+  // The type is what tells the agent side whether the wire carries a renderable
+  // tensor (IMAGE/MASK/LATENT/VIDEO) it must materialise to a file before the
+  // agent can see it — a mid-graph node names no file anywhere in its widgets.
   _anchorsFor(hookNode) {
     const graph = app.graph;
     if (!graph) return [];
@@ -1649,7 +1652,12 @@ class AgentChat {
       const link = graph.links ? graph.links[inp.link] : null;
       if (!link) continue;
       const node = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
-      if (node) out.push({ node, fromSlot: link.origin_slot | 0, toName: String(inp.name) });
+      if (!node) continue;
+      const slot = link.origin_slot | 0;
+      // Prefer the link's own resolved type: a reroute (or any wildcard slot)
+      // declares "*" on the node but the link carries the concrete type.
+      const outType = String(link.type || ((node.outputs || [])[slot] || {}).type || "");
+      out.push({ node, fromSlot: slot, outType, toName: String(inp.name) });
     }
     return out;
   }
@@ -1749,6 +1757,7 @@ class AgentChat {
           title: String(l.node.title || ""),
           widgets: this._widgetSnapshot(l.node),
           from_output_slot: l.fromSlot,
+          from_output_type: l.outType,
           to_input: l.toName,
         })),
       });
