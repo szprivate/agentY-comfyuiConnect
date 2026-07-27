@@ -17,6 +17,20 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== "AgentYHook") return;
 
+    // Canvases saved before the `ignore` toggle was removed carry a 5th widget
+    // value between `purpose` and `bake_to_canvas`. widgets_values is POSITIONAL,
+    // so loading one of those into the 4-widget schema would shift every value
+    // after it — an ignored hook would come back with `bake_to_canvas` on. Drop
+    // the stale slot as the node is configured. (Newer frontends may serialise
+    // widget values as an object; those need no fixing and are left alone.)
+    const configure = nodeType.prototype.configure;
+    nodeType.prototype.configure = function (info) {
+      if (info && Array.isArray(info.widgets_values) && info.widgets_values.length === 5) {
+        info = { ...info, widgets_values: info.widgets_values.filter((_, i) => i !== 2) };
+      }
+      return configure ? configure.call(this, info) : undefined;
+    };
+
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onCreated ? onCreated.apply(this, arguments) : undefined;

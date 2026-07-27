@@ -1709,8 +1709,13 @@ class AgentChat {
   _collectCanvasHooks() {
     const hooks = [];
     for (const hn of this._hookNodes()) {
+      // Disabling a hook is the standard ComfyUI gesture: bypass (Ctrl+B, mode 4)
+      // or mute (Ctrl+M, mode 2). Both mean "this node is not part of the run",
+      // which is exactly what the agent should honour — so a disabled hook is
+      // simply not collected. (This replaced a bespoke `ignore` widget, which
+      // duplicated the concept and was invisible unless you read the node.)
+      if (hn.mode === 4 || hn.mode === 2) continue;
       const w = this._widgetSnapshot(hn);
-      if (w.ignore === true || w.ignore === "true") continue; // hook disabled — skip it
       const directive = String(w.directive || "").trim();
       if (!directive) continue; // an empty hook is a no-op
       const links = this._anchorsFor(hn);

@@ -279,7 +279,10 @@ class AgentYHook(io.ComfyNode):
     hook's downstream link, yielding a self-contained plain workflow you can re-run
     yourself without the agent (at the cost of bypassing the hook).
 
-    Toggle ``ignore`` to disable a hook without deleting it — the agent skips it.
+    To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
+    (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
+    no separate ``ignore`` toggle: one gesture, the standard ComfyUI one, and it
+    reads off the canvas at a glance.
 
     On a normal ComfyUI Queue the node is always inert: it's an identity
     passthrough that nothing downstream needs, so it is never executed.
@@ -306,9 +309,9 @@ class AgentYHook(io.ComfyNode):
                 "node's output; as a 'make_workflow' it stands in for a workflow/script "
                 "the agent generates from the prompt; as 'text' it asks for a written answer "
                 "the agent drops on the canvas as a wireable 'agentY text' node. The 'anchor' "
-                "input auto-grows, so one hook can gather several inputs. Toggle 'ignore' to "
-                "disable it. Inert on a normal run; acted on by the agentY agent when it runs "
-                "the graph."
+                "input auto-grows, so one hook can gather several inputs. Bypass (Ctrl+B) or "
+                "mute it to disable it. Inert on a normal run; acted on by the agentY agent "
+                "when it runs the graph."
             ),
             inputs=[
                 io.String.Input(
@@ -325,12 +328,6 @@ class AgentYHook(io.ComfyNode):
                     "purpose",
                     options=["inline_parameter", "make_workflow", "text", "general_request", "iterate"],
                     default="inline_parameter",
-                ),
-                io.Boolean.Input(
-                    "ignore",
-                    default=False,
-                    label_on="ignored",
-                    label_off="active",
                 ),
                 io.Boolean.Input(
                     "bake_to_canvas",
@@ -370,7 +367,7 @@ class AgentYHook(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, directive="", purpose="inline_parameter", ignore=False,
+    def execute(cls, directive="", purpose="inline_parameter",
                 bake_to_canvas=False, freeze=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
