@@ -255,6 +255,15 @@ class AgentYHook(io.ComfyNode):
       and keep going until you say stop. Requires a save node that writes to
       ComfyUI's history (e.g. a SaveImage, or the bEpic viewer with
       ``save_to_output`` ON) so the agent can fetch each result to feed forward.
+    * ``qa`` — this hook is not work, it is your **quality briefing** for the graph.
+      The ``directive`` is the checklist ("skin tones warm, not orange"; "hands have
+      five fingers") and the wired ``anchors`` are **reference / mood images** the
+      output should sit beside without looking out of place. After a run, a separate
+      QA agent judges every produced image/video against it, criterion by criterion,
+      and a failing output is re-generated against exactly what it missed (bounded
+      by ``qa.max_retries`` in agentY settings). Wiring the references here is what
+      makes them references rather than inputs to the workflow — the anchor is the
+      statement. Cite a shared briefing from ``config/qa/`` with ``@name``.
 
     The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
     appears, so a single hook can gather several inputs (e.g. combine three images
@@ -326,7 +335,8 @@ class AgentYHook(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["inline_parameter", "make_workflow", "text", "general_request", "iterate"],
+                    options=["inline_parameter", "make_workflow", "text", "general_request",
+                             "iterate", "qa"],
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(

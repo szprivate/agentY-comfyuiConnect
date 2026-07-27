@@ -68,6 +68,7 @@ const SLASH_FALLBACK = [
   { name: "/unload", description: "Unload Ollama models from VRAM" },
   { name: "/clear_vram", description: "Clear ComfyUI GPU VRAM" },
   { name: "/images", description: "List images generated in this thread" },
+  { name: "/qa", description: "Show / set / clear the QA briefing outputs are checked against" },
   { name: "/clearhistory", description: "Delete all conversation history" },
   { name: "/switch_model", description: "Switch an agent's LLM" },
   { name: "/add_workflow", description: "Add a workflow (JSON path, or 'canvas <name>' for the open graph)" },

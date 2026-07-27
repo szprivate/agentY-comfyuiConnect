@@ -95,6 +95,17 @@ function buildModelSelect(groups, current) {
   return sel;
 }
 
+// One-line explanations for groups whose keys don't speak for themselves. The
+// settings form is generated from the settings file, so there is nowhere else to
+// say what a section is FOR — the TOML comments never reach the browser. Keyed by
+// group title (i.e. the settings key for object-valued groups).
+const GROUP_NOTES = {
+  qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
+    + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
+    + "briefing nothing here runs. max_retries 0 reports the verdict without "
+    + "re-generating; the judging model is llm ▸ pipeline ▸ qa_checker.",
+};
+
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).
 function makeCollapsibleGroup(title) {
   const body = el("div", { className: "ays-groupbody", style: { display: "none" } });
@@ -104,6 +115,8 @@ function makeCollapsibleGroup(title) {
     body.style.display = hidden ? "" : "none";
     head.textContent = (hidden ? "▾ " : "▸ ") + title;
   });
+  const note = GROUP_NOTES[title];
+  if (note) body.append(el("div", { className: "ays-note", textContent: note }));
   return { group: el("div", { className: "ays-group" }, [head, body]), body };
 }
 
