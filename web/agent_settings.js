@@ -73,9 +73,14 @@ function injectStyles() {
   document.head.append(el("style", { id: "agentY-settings-styles", textContent: css }));
 }
 
-function buildModelSelect(groups, current) {
+function buildModelSelect(groups, current, inheritable) {
   const sel = el("select", { className: "ays-input" });
   let matched = false;
+  if (inheritable) {
+    const o = el("option", { value: "", textContent: INHERIT_LABEL });
+    if (!current) { o.selected = true; matched = true; }
+    sel.append(o);
+  }
   for (const [group, models] of Object.entries(groups || {})) {
     if (!models || !models.length) continue;
     const og = el("optgroup", { label: group });
@@ -87,7 +92,7 @@ function buildModelSelect(groups, current) {
     sel.append(og);
   }
   // Keep the current value selectable even if no vendor advertises it.
-  if (!matched) {
+  if (!matched && current) {
     const o = el("option", { value: current, textContent: current + "  (current)" });
     o.selected = true;
     sel.insertBefore(o, sel.firstChild);
@@ -99,15 +104,51 @@ function buildModelSelect(groups, current) {
 // settings form is generated from the settings file, so there is nowhere else to
 // say what a section is FOR — the TOML comments never reach the browser. Keyed by
 // group title (i.e. the settings key for object-valued groups).
+// Display names for settings keys that read badly as-is. The form is generated
+// from the settings file, so without this the UI is stuck with whatever the TOML
+// key is called — "pipeline" for what is really "which model does which job".
+const GROUP_LABELS = {
+  llm: "Models & providers",
+  tiers: "Model tiers — set these six and you're done",
+  pipeline: "Per-role overrides",
+  system_prompts: "System prompts",
+  qa: "Output QA",
+  memory: "Memory",
+  embedder: "Embedder",
+  ollama: "Ollama",
+  anthropic: "Anthropic",
+  dashscope: "DashScope (Qwen)",
+};
+
+// Groups most people never touch. Hidden unless "Show advanced settings" is on —
+// they are provider tuning and prompt-file pointers, not day-to-day choices.
+const ADVANCED_GROUPS = new Set([
+  "system_prompts", "ollama", "anthropic", "dashscope", "embedder",
+]);
+
+// Per-role model rows: an empty value means INHERIT from the role's tier, so the
+// dropdown needs a real option for it rather than looking unset.
+const INHERIT_LABEL = "— inherit from tier —";
+
+// Friendly names for the tier rows, served by /agentY/settings so the mapping
+// lives in one place (src/agent.py) rather than being duplicated here.
+let TIER_LABELS = {};
+
 const GROUP_NOTES = {
   qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
     + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
-    + "re-generating; the judging model is llm ▸ pipeline ▸ qa_checker.",
+    + "re-generating; the judging model is the \"QA judge\" tier under "
+    + "Models & providers.",
+  tiers: "Every role takes its model from one of these six. Set them and you are "
+    + "done — per-role overrides below are for the exceptions.",
+  pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
+    + "that single job wants a different model from the rest of its tier.",
 };
 
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).
-function makeCollapsibleGroup(title) {
+function makeCollapsibleGroup(key, suffix) {
+  const title = (GROUP_LABELS[key] || key) + (suffix || "");
   const body = el("div", { className: "ays-groupbody", style: { display: "none" } });
   const head = el("div", { className: "ays-grouphead", textContent: "▸ " + title });
   head.addEventListener("click", () => {
@@ -115,9 +156,11 @@ function makeCollapsibleGroup(title) {
     body.style.display = hidden ? "" : "none";
     head.textContent = (hidden ? "▾ " : "▸ ") + title;
   });
-  const note = GROUP_NOTES[title];
+  const note = GROUP_NOTES[key];
   if (note) body.append(el("div", { className: "ays-note", textContent: note }));
-  return { group: el("div", { className: "ays-group" }, [head, body]), body };
+  const group = el("div", { className: "ays-group" }, [head, body]);
+  if (ADVANCED_GROUPS.has(key)) group.dataset.advanced = "1";
+  return { group, body };
 }
 
 // Render one leaf setting (scalar / array / model-select) as a labelled row and
@@ -126,7 +169,15 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
   const row = el("div", { className: "ays-row" });
   row.append(el("label", { className: "ays-label", textContent: key }));
   let input;
-  const underPipeline = path[0] === "llm" && path[1] === "pipeline";
+  // Both llm.tiers.* and llm.pipeline.* are model choices; only the per-role
+  // overrides may be left blank to inherit.
+  const isOverride = path[0] === "llm" && path[1] === "pipeline";
+  const underPipeline = isOverride || (path[0] === "llm" && path[1] === "tiers");
+  const label = row.firstChild;
+  if (path[0] === "llm" && path[1] === "tiers" && TIER_LABELS[key]) {
+    label.textContent = TIER_LABELS[key];
+    label.title = key;
+  }
   if (typeof val === "boolean") {
     input = el("input", { type: "checkbox", className: "ays-input" });
     input.checked = val;
@@ -138,7 +189,7 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
     refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
   } else if (underPipeline && modelGroups && Object.keys(modelGroups).length) {
-    input = buildModelSelect(modelGroups, val == null ? "" : String(val));
+    input = buildModelSelect(modelGroups, val == null ? "" : String(val), isOverride);
     refs.push({ path, get: () => input.value });
   } else {
     input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
@@ -154,7 +205,14 @@ function buildSettingsForm(container, obj, modelGroups, pathPrefix, refs) {
   for (const [key, val] of Object.entries(obj)) {
     const path = pathPrefix.concat(key);
     if (val && typeof val === "object" && !Array.isArray(val)) {
-      const { group, body } = makeCollapsibleGroup(key);
+      // "Per-role overrides (2 set)" — otherwise a collapsed group gives no hint
+      // that something in it is quietly winning over the tier above.
+      let suffix = "";
+      if (key === "pipeline") {
+        const n = Object.values(val).filter((v) => String(v || "").trim()).length;
+        suffix = n ? `  (${n} set)` : "  (all inherit)";
+      }
+      const { group, body } = makeCollapsibleGroup(key, suffix);
       container.append(group);
       buildSettingsForm(body, val, modelGroups, path, refs);
     } else {
@@ -284,8 +342,26 @@ async function openAgentYSettingsModal() {
   setSec.append(el("h3", { textContent: "Application settings (config/settings.json)" }));
   setSec.append(el("div", { className: "ays-note", textContent: "Model per stage (llm ▸ pipeline), directories, and behaviour toggles. Comments are preserved on save; only changed values are written." }));
   const setForm = el("div");
+  TIER_LABELS = data.tier_labels || {};
   buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
+
+  // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)
+  // stay hidden until asked for. They are real settings, not clutter — but showing
+  // them by default buries the handful anyone actually changes.
+  const advToggle = el("input", { type: "checkbox" });
+  const advWrap = el("label", {
+    className: "ays-note",
+    style: { display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" },
+  }, [advToggle, document.createTextNode("Show advanced settings (prompts, provider tuning, embedder)")]);
+  const applyAdvanced = () => {
+    for (const g of setForm.querySelectorAll('[data-advanced="1"]')) {
+      g.style.display = advToggle.checked ? "" : "none";
+    }
+  };
+  advToggle.addEventListener("change", applyAdvanced);
+  setSec.append(advWrap);
   setSec.append(setForm);
+  applyAdvanced();
   body.append(setSec);
 
   // ── model pricing section (config/pricing.json) ──
