@@ -19,14 +19,6 @@ function backendBase() {
   );
 }
 
-function el(tag, props = {}, children = []) {
-  const n = document.createElement(tag);
-  Object.assign(n, props);
-  if (props.style) Object.assign(n.style, props.style);
-  for (const c of [].concat(children)) if (c != null) n.append(c);
-  return n;
-}
-
 async function openMemoryViewer() {
   const base = backendBase();
   // Health-probe first so a down host doesn't open a cryptic browser error page.
@@ -56,23 +48,8 @@ async function openMemoryViewer() {
 // Expose for the chat panel's 🧠 button (web/agent_chat.js).
 window.agentYOpenMemoryViewer = openMemoryViewer;
 
-app.registerExtension({
-  name: "agentY.memoryViewer",
-  settings: [
-    {
-      id: "agentY.memoryViewer",
-      name: "Long-term memory viewer",
-      category: ["agentY", "Application", "Memory viewer"],
-      tooltip: "View, edit, and purge the agent's long-term memory (served by the agentY chat host)",
-      defaultValue: "",
-      type: (_name, _setter, _value) => {
-        const btn = el("button", { textContent: "Open Memory Viewer…" });
-        btn.style.cssText =
-          "background:#3b3936;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);" +
-          "border-radius:9px;padding:7px 14px;cursor:pointer;font-size:12.5px;";
-        btn.addEventListener("click", (e) => { e.preventDefault(); openMemoryViewer(); });
-        return btn;
-      },
-    },
-  ],
-});
+// No ComfyUI-Settings row here: the button lives in the agentY Settings modal
+// (web/agent_settings.js ▸ Viewers), and duplicating it under agentY ▸ Application
+// meant two places to find the same thing. The extension is still registered so the
+// module loads and the window.agentYOpen* global above is available to callers.
+app.registerExtension({ name: "agentY.memoryViewer" });

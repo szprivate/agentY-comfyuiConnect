@@ -303,12 +303,14 @@ async function openAgentYSettingsModal() {
   // ── viewers (moved here from the side-panel top bar) ──
   const toolsSec = el("div", { className: "ays-sec" });
   toolsSec.append(el("h3", { textContent: "Viewers" }));
-  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log and long-term memory editors — moved here from the chat panel's top bar." }));
+  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log, the long-term memory editor, and the token/cost breakdown. This is the one place they live — they used to be duplicated as rows in ComfyUI's own Settings." }));
   const logViewBtn = el("button", { className: "ays-btn", textContent: "📜  Message-history log…" });
   logViewBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
   const memViewBtn = el("button", { className: "ays-btn", textContent: "🧠  Long-term memory…" });
   memViewBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
-  toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn]));
+  const usageViewBtn = el("button", { className: "ays-btn", textContent: "📊  Token usage…" });
+  usageViewBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
+  toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn, usageViewBtn]));
   body.append(toolsSec);
 
   // ── .env auth section ──
@@ -441,11 +443,13 @@ async function openAgentYSettingsModal() {
 
   // ── footer ──
   const msg = el("div", { className: "ays-msg" });
-  const cancelBtn = el("button", { className: "ays-btn", textContent: "Close" });
   const saveBtn = el("button", { className: "ays-btn primary", textContent: "Save" });
-  const close = () => overlay.remove();
-  cancelBtn.addEventListener("click", close);
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const close = () => { document.removeEventListener("keydown", onKey); overlay.remove(); };
+  // No Close button: click the backdrop or press Escape. Both existed already, but
+  // only the backdrop was discoverable — hence Escape being wired up here too.
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", onKey);
 
   saveBtn.addEventListener("click", async () => {
     saveBtn.disabled = true;
@@ -505,7 +509,7 @@ async function openAgentYSettingsModal() {
     }
   });
 
-  const foot = el("div", { className: "ays-foot" }, [msg, cancelBtn, saveBtn]);
+  const foot = el("div", { className: "ays-foot" }, [msg, saveBtn]);
   const card = el("div", { className: "ays-card" }, [
     el("div", { className: "ays-head" }, [el("h2", { textContent: "agentY — Application Settings" })]),
     body,

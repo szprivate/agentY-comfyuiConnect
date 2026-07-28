@@ -387,21 +387,8 @@ async function openTokenUsageModal() {
 // Expose for the chat panel's 📊 button (web/agent_chat.js).
 window.agentYOpenTokenUsage = openTokenUsageModal;
 
-app.registerExtension({
-  name: "agentY.tokenUsage",
-  settings: [
-    {
-      id: "agentY.tokenUsage",
-      name: "Token usage overview",
-      category: ["agentY", "Application", "Token usage"],
-      tooltip: "Inspect input/output token usage by model and time range",
-      defaultValue: "",
-      type: (_name, _setter, _value) => {
-        injectStyles();
-        const btn = el("button", { className: "atu-btn", textContent: "Open Token Usage…" });
-        btn.addEventListener("click", (e) => { e.preventDefault(); openTokenUsageModal(); });
-        return btn;
-      },
-    },
-  ],
-});
+// No ComfyUI-Settings row here: the button lives in the agentY Settings modal
+// (web/agent_settings.js ▸ Viewers), and duplicating it under agentY ▸ Application
+// meant two places to find the same thing. The extension is still registered so the
+// module loads and the window.agentYOpen* global above is available to callers.
+app.registerExtension({ name: "agentY.tokenUsage" });
