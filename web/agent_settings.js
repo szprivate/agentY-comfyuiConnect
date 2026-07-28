@@ -33,9 +33,9 @@ function isSecret(key) {
 // groups automatically.
 const SETTINGS_GROUPS = [
   ["Connections", ["comfyui_url", "agent_server_url", "ollama_server_url"]],
-  ["ComfyUI paths", ["comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
+  ["ComfyUI paths", ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
   ["agentY output & logs", ["output_dir", "output_workflows_dir", "conversation_db", "message_history_log", "tokens_usage_log"]],
-  ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors"]],
+  ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors", "auto_update"]],
 ];
 
 function injectStyles() {
