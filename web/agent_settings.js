@@ -32,7 +32,7 @@ function isSecret(key) {
 // into an "Other" group, and object-valued keys (llm, memory, …) become their own
 // groups automatically.
 const SETTINGS_GROUPS = [
-  ["Connections", ["comfyui_url", "agent_server_url"]],
+  ["Connections", ["comfyui_url", "agent_server_url", "ollama_server_url"]],
   ["ComfyUI paths", ["comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
   ["agentY output & logs", ["output_dir", "output_workflows_dir", "conversation_db", "message_history_log", "tokens_usage_log"]],
   ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors"]],
@@ -100,10 +100,6 @@ function buildModelSelect(groups, current, inheritable) {
   return sel;
 }
 
-// One-line explanations for groups whose keys don't speak for themselves. The
-// settings form is generated from the settings file, so there is nowhere else to
-// say what a section is FOR — the TOML comments never reach the browser. Keyed by
-// group title (i.e. the settings key for object-valued groups).
 // Display names for settings keys that read badly as-is. The form is generated
 // from the settings file, so without this the UI is stuck with whatever the TOML
 // key is called — "pipeline" for what is really "which model does which job".
@@ -122,8 +118,12 @@ const GROUP_LABELS = {
 
 // Groups most people never touch. Hidden unless "Show advanced settings" is on —
 // they are provider tuning and prompt-file pointers, not day-to-day choices.
+// Scalar buckets are keyed by their display title (they have no settings key of
+// their own), object-valued groups by the settings key — the names don't collide.
 const ADVANCED_GROUPS = new Set([
-  "system_prompts", "ollama", "anthropic", "dashscope", "embedder",
+  "ComfyUI paths", "agentY output & logs", "Behaviour",
+  "system_prompts", "memory", "qa",
+  "ollama", "anthropic", "dashscope", "embedder",
 ]);
 
 // Per-role model rows: an empty value means INHERIT from the role's tier, so the
@@ -134,6 +134,9 @@ const INHERIT_LABEL = "— inherit from tier —";
 // lives in one place (src/agent.py) rather than being duplicated here.
 let TIER_LABELS = {};
 
+// One-line explanations for groups whose keys don't speak for themselves. The form
+// is generated from the settings file, so there is nowhere else to say what a
+// section is FOR — the TOML comments never reach the browser.
 const GROUP_NOTES = {
   qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
     + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
@@ -144,6 +147,14 @@ const GROUP_NOTES = {
     + "done — per-role overrides below are for the exceptions.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
     + "that single job wants a different model from the rest of its tier.",
+  memory: "Long-term memory. The store is always local FAISS. The two models here "
+    + "are NOT interchangeable: the EMBEDDER turns text into vectors so memories "
+    + "can be searched by meaning (an embedding model does only this — it cannot "
+    + "write text, and a chat model cannot embed), while the LLM rewrites memories "
+    + "in its own words and is only used for `infer` writes. Leave the llm model "
+    + "blank and it follows the Fast utility tier, endpoint and key included.",
+  embedder: "Blank api_key_env falls back to the provider's usual variable. "
+    + "Changing the model or embedding_dims invalidates the FAISS index on disk.",
 };
 
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).

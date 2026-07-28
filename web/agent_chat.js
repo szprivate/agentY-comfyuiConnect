@@ -153,6 +153,7 @@ class AgentChat {
     // that was down at connect — e.g. Ollama still starting — appears once it's up)
     // without touching the open log. Switching tabs away and back thus self-heals.
     if (this._hostUp) { this._loadThreads(); this._loadModels(); this._loadSwitchTargets(); }
+    else this._positionOffline();  // re-parenting moves the panel; keep the overlay on it
   }
 
   // Load everything the panel needs. If the host isn't up yet (e.g. it was just
@@ -180,6 +181,7 @@ class AgentChat {
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
     this._startNotifyPoll();    // drain background auto-drops queued before we connected, and
                                 // poll for more only while the host has a generation in flight
+    this._startHeartbeat();       // notice a host that crashes or is stopped while we sit idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
   }
@@ -245,6 +247,21 @@ class AgentChat {
   // restart (commands, model list, thread list). Only runs while the host is down,
   // so there's no steady-state polling. Triggered on startup-if-down and whenever a
   // stream fetch fails with a connection error.
+  // A host that crashes, or that the user stops with /stop, goes away silently:
+  // nothing else polls while the panel is idle (the notification poll deliberately
+  // stops when no generation is in flight), so the overlay never appeared and the
+  // panel just looked frozen. This is the one poll that runs whenever we believe
+  // the host is up — cheap, and it is the only thing that can notice.
+  _startHeartbeat() {
+    if (this._heartbeatTimer) return;
+    this._heartbeatTimer = setInterval(async () => {
+      if (!this._hostUp || this.streaming) return;  // a live stream is its own proof
+      if (await this._hostReachable()) return;
+      if (await this._hostReachable()) return;      // one retry: don't flap on a blip
+      this._startReconnect(false);
+    }, 5000);
+  }
+
   _startReconnect(firstBoot) {
     if (this._reconnectTimer) return;
     this._setHostUp(false);
@@ -333,12 +350,14 @@ class AgentChat {
     .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
     .ay-chip{background:var(--ay-surface2);border:1px solid var(--ay-border);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--ay-text);}
-    .ay-inrow{display:flex;gap:8px;align-items:flex-end;}
-    /* Keep the composer buttons the same height as a single-line message field so
-       nothing sits higher than its neighbours; when the textarea grows the
-       buttons stay pinned to the bottom (align-items:flex-end). */
-    .ay-inrow .ay-btn{height:40px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
-    .ay-input{flex:1;resize:none;min-height:40px;max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:10px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
+    .ay-inrow{display:flex;gap:8px;align-items:flex-end;--ay-composer-h:40px;}
+    /* The message field and the buttons beside it share ONE height so nothing sits
+       higher than its neighbours. The field's vertical padding is chosen so a single
+       line of text fits inside that height (13.5px x 1.5 line + 2px border + 2x8px
+       padding = 38.25px, under the 40px floor), and when it grows past one line the
+       buttons stay pinned to the bottom via align-items:flex-end. */
+    .ay-inrow .ay-btn{height:var(--ay-composer-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
+    .ay-input{flex:1;resize:none;min-height:var(--ay-composer-h);max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:8px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
     .ay-input:focus{border-color:rgba(91,155,245,.55);}
     .ay-input::placeholder{color:var(--ay-muted);}
     .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
@@ -363,7 +382,11 @@ class AgentChat {
     .ay-qchip .ay-qx:hover{color:var(--ay-text);}
     /* Offline overlay — dims + blocks the whole panel while the host is down,
        leaving only the "Start server" button actionable. */
-    .ay-offline-panel{position:absolute;inset:0;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(38,38,36,.86);backdrop-filter:blur(2px);}
+    /* position:fixed, with its box set from the panel's on-screen rectangle by
+       _positionOffline(). Absolute + inset:0 centred the card in the PANEL, which is
+       as tall as its content — so the button drifted somewhere down the conversation
+       instead of sitting in the middle of the screen. */
+    .ay-offline-panel{position:fixed;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(38,38,36,.86);backdrop-filter:blur(2px);}
     .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:16px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
     .ay-offline-card .ay-offline-icon{font-size:30px;line-height:1;}
     .ay-offline-card .ay-offline-title{font-weight:600;font-size:15px;color:var(--ay-text);}
@@ -453,6 +476,17 @@ class AgentChat {
 
     // Keep the built DOM detached; mount() re-parents it into the live sidebar.
     this.wrap = wrap;
+
+    // The offline overlay is position:fixed, so it has to be re-measured whenever
+    // the panel's on-screen rectangle can move: window resize, page scroll, or the
+    // sidebar being dragged wider. Capture-phase scroll catches inner scrollers too.
+    const reposition = () => this._positionOffline();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    if (window.ResizeObserver) {
+      this._wrapRO = new ResizeObserver(reposition);
+      this._wrapRO.observe(wrap);
+    }
   }
 
   // ── model quick-switch bar ───────────────────────────────────────────────────
@@ -491,11 +525,25 @@ class AgentChat {
 
   // Reflect host reachability in the UI: while down, the overlay dims + blocks
   // every control except its "Start server" button; coming back up hides it.
+  // Size/position the fixed overlay onto whatever part of the panel is on screen,
+  // so its card is centred in the VIEWPORT rather than in the conversation.
+  _positionOffline() {
+    if (!this.offlineEl || !this.wrap || this.offlineEl.style.display === "none") return;
+    const r = this.wrap.getBoundingClientRect();
+    const top = Math.max(0, r.top);
+    const bottom = Math.min(window.innerHeight, r.bottom);
+    Object.assign(this.offlineEl.style, {
+      left: `${r.left}px`, width: `${r.width}px`,
+      top: `${top}px`, height: `${Math.max(0, bottom - top)}px`,
+    });
+  }
+
   _setHostUp(up) {
     this._hostUp = up;
     if (!this.offlineEl) return;
     this.offlineEl.style.display = up ? "none" : "flex";
     if (!up) {
+      this._positionOffline();
       // Reset the card to its default actionable state each time we go offline.
       if (this._startBtn) { this._startBtn.disabled = false; this._startBtn.textContent = "▶  Start server"; }
       if (this._offlineMsg) this._offlineMsg.innerHTML = mdToHtml(OFFLINE_MSG);
@@ -1823,8 +1871,14 @@ class AgentChat {
     else this._hidePop();
   }
   _autosize() {
-    this.input.style.height = "auto";
-    this.input.style.height = Math.min(this.input.scrollHeight, 140) + "px";
+    const ta = this.input;
+    ta.style.height = "auto";
+    // scrollHeight is content + padding but EXCLUDES the border, while the field is
+    // box-sizing:border-box — so assigning it straight leaves the box a border short
+    // of what the text needs, and the browser grows it back, landing a couple of
+    // pixels taller than the buttons next to it. Add the border back explicitly.
+    const border = ta.offsetHeight - ta.clientHeight;
+    ta.style.height = Math.min(ta.scrollHeight + border, 150) + "px";
   }
   _showPop(q) {
     this._filtered = this.commands.filter((c) => c.name.slice(1).startsWith(q));
