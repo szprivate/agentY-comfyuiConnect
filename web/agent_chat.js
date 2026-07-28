@@ -97,9 +97,11 @@ const MODEL_PRESETS = {
 };
 
 // Which agent(s) the model switch targets.
+// Fallback scope list, used only until /agentY/switch_targets answers (or when the
+// host is offline). The real list is the agent's own tier map, fetched at startup,
+// so this picker and the Settings UI can never drift apart.
 const MODEL_TARGETS = [
-  ["all", "All agents"],
-  ["orchestrator", "Orchestrator"],
+  ["all", "All tiers"],
 ];
 
 class AgentChat {
@@ -150,7 +152,7 @@ class AgentChat {
     // conversation was created/deleted elsewhere) and the model list (so a vendor
     // that was down at connect — e.g. Ollama still starting — appears once it's up)
     // without touching the open log. Switching tabs away and back thus self-heals.
-    if (this._hostUp) { this._loadThreads(); this._loadModels(); }
+    if (this._hostUp) { this._loadThreads(); this._loadModels(); this._loadSwitchTargets(); }
   }
 
   // Load everything the panel needs. If the host isn't up yet (e.g. it was just
@@ -172,6 +174,7 @@ class AgentChat {
     this._setHostUp(true);
     await this._loadCommands();
     await this._loadModels();
+    await this._loadSwitchTargets();
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
@@ -738,6 +741,35 @@ class AgentChat {
       sel.append(og);
     }
     if (cur) sel.value = cur;
+  }
+
+  // Fetch what a model switch may target: the six tiers (the normal choice) plus
+  // the individual roles, which write a per-role override. Both lists come from the
+  // agent's tier map, so this menu mirrors Settings ▸ Models & providers exactly.
+  async _loadSwitchTargets() {
+    let data = null;
+    try {
+      const r = await fetch(backendBase() + "/agentY/switch_targets", { cache: "no-store" });
+      if (r.ok) data = await r.json();
+    } catch (_) { /* host down — keep the fallback list */ }
+    if (!data || !(data.tiers || []).length) return;
+    const sel = this.targetSel;
+    const cur = sel.value;
+    sel.innerHTML = "";
+    sel.append(el("option", { value: "all", textContent: "All tiers" }));
+    const tg = el("optgroup", { label: "Tier" });
+    for (const t of data.tiers) {
+      tg.append(el("option", { value: t.value, textContent: t.label }));
+    }
+    sel.append(tg);
+    if ((data.roles || []).length) {
+      const rg = el("optgroup", { label: "Single role (overrides its tier)" });
+      for (const r of data.roles) {
+        rg.append(el("option", { value: r.value, textContent: `${r.label}  ·  ${r.tier}` }));
+      }
+      sel.append(rg);
+    }
+    if (cur && sel.querySelector(`option[value="${cur}"]`)) sel.value = cur;
   }
 
   // Fetch the live vendor/model list from the host; fall back to static presets.
