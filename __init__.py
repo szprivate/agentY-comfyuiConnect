@@ -1,6 +1,6 @@
 """agentY-comfyuiConnect — canvas ↔ agent bridge.
 
-Two responsibilities:
+Three responsibilities:
 
 1. **Push** — the agentY pipeline POSTs a graph-format workflow to
    ``/agent/load_workflow``; this broadcasts it over the websocket and
@@ -15,6 +15,13 @@ Two responsibilities:
    agentY agent to run the on-canvas graph, ``web/agent_chat.js`` ships the
    captured API prompt + the hook directives and the pipeline expands them.
 
+3. **Canvas selection** — ``/agent/canvas_selection`` (read) and
+   ``/agent/set_node_params`` (write) let a caller *outside* the browser reach
+   the litegraph selection: the request is relayed to the open page over the
+   websocket and answered from there. The sidebar chat already ships its
+   selection with every message; this is how the agentY **MCP** server (running
+   under Claude, with no page of its own) sees the same thing.
+
 The hook is a **V3** node so its ``anchor`` input can *auto-grow*: connect one
 node and a fresh empty ``anchor`` slot appears, letting a single hook gather
 several inputs (e.g. combine three images in a standin, or apply one directive
@@ -25,6 +32,7 @@ import json as _json
 import os as _os
 import subprocess as _subprocess
 import sys as _sys
+import uuid as _uuid
 
 from aiohttp import web
 
@@ -202,8 +210,114 @@ try:
             _reset_incr_index(nid)  # defined later in this module; resolved at call time
         return web.json_response({"ok": True, "reset": [str(i) for i in ids]})
 
+    # ── Canvas selection bridge ───────────────────────────────────────────────
+    # Which nodes are selected — and what their widgets currently say — exists
+    # only inside the browser (litegraph state, never serialized to the server).
+    # The sidebar chat ships that snapshot along with each message, so the agentY
+    # host sees it; anything *outside* the page — the agentY MCP server running
+    # under Claude, a script — could not.
+    #
+    # These routes borrow the frontend as the source of truth: a request here
+    # goes out over the ComfyUI websocket, ``web/agent_canvas.js`` answers it by
+    # POSTing back to /agent/canvas_reply, and the pending request resolves with
+    # that answer. Nothing is cached on purpose — a remembered selection is worse
+    # than an honest "no browser answered", since the entire question is what is
+    # selected *right now*. With several ComfyUI tabs open the first reply wins.
+    _pending_replies: dict = {}   # req_id -> asyncio.Future awaiting the frontend
+    _REPLY_TIMEOUT = 3.0          # seconds; a backgrounded tab still answers this fast
+
+    async def _ask_frontend(event: str, payload: dict, timeout: float):
+        """Broadcast ``event`` to every open ComfyUI page and wait for one reply.
+
+        Returns the reply dict, or None if nobody answered in time (no page open,
+        or an old extension build with no listener for this event)."""
+        req_id = _uuid.uuid4().hex[:12]
+        fut = _asyncio.get_running_loop().create_future()
+        _pending_replies[req_id] = fut
+        try:
+            PromptServer.instance.send_sync(event, dict(payload, req_id=req_id))
+            return await _asyncio.wait_for(fut, timeout)
+        except _asyncio.TimeoutError:
+            return None
+        finally:
+            _pending_replies.pop(req_id, None)
+
+    def _clamp_timeout(request) -> float:  # noqa: ANN001
+        try:
+            return max(0.2, min(float(request.query.get("timeout", _REPLY_TIMEOUT)), 15.0))
+        except (TypeError, ValueError):
+            return _REPLY_TIMEOUT
+
+    @_routes.post("/agent/canvas_reply")
+    async def _agent_canvas_reply(request):  # noqa: ANN001
+        """The frontend answering a pending /agent/canvas_* request."""
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        fut = _pending_replies.get(str((data or {}).get("req_id", "")))
+        if fut is None or fut.done():
+            # Already answered by another tab, or the waiter timed out. Harmless.
+            return web.json_response({"ok": True, "accepted": False})
+        fut.set_result(data)
+        return web.json_response({"ok": True, "accepted": True})
+
+    @_routes.get("/agent/canvas_selection")
+    async def _agent_canvas_selection(request):  # noqa: ANN001
+        """Live read of the nodes selected on the canvas, with their widget values.
+
+        Answers 200 with ``ok: false`` when no page replies — that is a state of
+        the world (ComfyUI not open), not a server fault, and callers using a
+        raise-on-status HTTP client need to read the reason."""
+        reply = await _ask_frontend("agent.request_selection", {}, _clamp_timeout(request))
+        if reply is None:
+            return web.json_response({
+                "ok": False, "nodes": [], "count": 0,
+                "error": "no ComfyUI browser page answered — open ComfyUI in a browser "
+                         "(a background tab is fine). If it is open, its agentY extension "
+                         "is older than this route; reload the page.",
+            })
+        nodes = [n for n in (reply.get("nodes") or []) if isinstance(n, dict)]
+        return web.json_response({"ok": True, "count": len(nodes), "nodes": nodes,
+                                  "workflow": str(reply.get("workflow") or "")})
+
+    @_routes.post("/agent/set_node_params")
+    async def _agent_set_node_params(request):  # noqa: ANN001
+        """Write widget values onto a node of the live graph (no reload, no re-queue).
+
+        The counterpart to the read above: same websocket round trip, and the
+        frontend reports back which widgets it actually found on the node."""
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        node_id = str((data or {}).get("node_id", "")).strip()
+        params = (data or {}).get("params")
+        if not node_id:
+            return web.json_response({"ok": False, "error": "node_id is required"}, status=400)
+        if not isinstance(params, dict) or not params:
+            return web.json_response(
+                {"ok": False, "error": "params must be a non-empty {widget: value} mapping"},
+                status=400)
+        reply = await _ask_frontend("agent.set_node_params",
+                                    {"node_id": node_id, "params": params},
+                                    _clamp_timeout(request))
+        if reply is None:
+            return web.json_response({
+                "ok": False, "applied": [],
+                "error": "no ComfyUI browser page answered — nothing was changed.",
+            })
+        return web.json_response({
+            "ok": bool(reply.get("ok", True)),
+            "applied": [str(a) for a in (reply.get("applied") or [])],
+            "unknown": [str(u) for u in (reply.get("unknown") or [])],
+            "node": str(reply.get("node") or ""),
+            "error": str(reply.get("error") or ""),
+        })
+
     print("[agentY-comfyuiConnect] registered /agent routes "
-          "(load_workflow, register_host, start_host, pick_files, reset_collector_cursor)")
+          "(load_workflow, register_host, start_host, pick_files, reset_collector_cursor, "
+          "canvas_selection, set_node_params)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")
