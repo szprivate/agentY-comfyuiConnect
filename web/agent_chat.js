@@ -127,6 +127,8 @@ class AgentChat {
     this._consumed = {}; // nodeId -> value already sent as an input (skip re-sending unchanged)
     this.domCache = new Map(); // threadId -> {html, scroll}: live-rendered panel (thinking/step blocks) kept across conversation switches
     this._hostUp = true;
+    this._lastHealth = null; // last /agentY/health body, refreshed by _hostReachable()
+    this._bootId = null;     // boot_id of the host process we're talking to (restart detection)
     this._queue = []; // messages typed while a turn is running → auto-sent when it finishes
     // Track the last CLI-status line shown so the on-connect / on-done buffer
     // fetch never re-renders a line already delivered live during a turn.
@@ -167,11 +169,27 @@ class AgentChat {
   async _hostReachable() {
     try {
       const r = await fetch(backendBase() + "/agentY/health", { cache: "no-store" });
-      return r.ok;
+      if (!r.ok) return false;
+      try { this._lastHealth = await r.json(); } catch (_) { this._lastHealth = null; }
+      return true;
     } catch (_) { return false; }
   }
 
+  // True when the host answering us now is a DIFFERENT process from the one we
+  // were talking to before — /agentY/health carries a per-process boot_id. Without
+  // this, a restart that completes between two heartbeats (a background tab
+  // throttles timers to roughly one tick a minute) would pass unnoticed and the
+  // panel would never say the agent is back. A pure comparison: it does not
+  // consume the id, so both the heartbeat and _afterConnect can ask.
+  _hostRestarted() {
+    const id = this._lastHealth && this._lastHealth.boot_id;
+    return !!(id && this._bootId && id !== this._bootId);
+  }
+
   async _afterConnect(firstBoot) {
+    const wasDown = this._hostUp === false;
+    const restarted = this._hostRestarted();
+    this._bootId = (this._lastHealth && this._lastHealth.boot_id) || this._bootId || null;
     this._setHostUp(true);
     await this._loadCommands();
     await this._loadModels();
@@ -184,6 +202,15 @@ class AgentChat {
     this._startHeartbeat();       // notice a host that crashes or is stopped while we sit idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
+
+    // Say so in the panel. Coming back from an offline overlay is obvious enough
+    // visually, but a restart the panel rode out silently is not — and either way
+    // the useful signal is "you can type again". Transient: never persisted into
+    // the thread's saved panel HTML (see _logHtml), so restarts don't accumulate.
+    if (wasDown || restarted) {
+      this._sys(firstBoot ? "🟢 agentY host connected — ready."
+                          : "🟢 agentY host is back — ready.", { transient: true });
+    }
   }
 
   // ── auto-graph toggle (autoload_workflows_into_canvas) ───────────────────────
@@ -256,7 +283,13 @@ class AgentChat {
     if (this._heartbeatTimer) return;
     this._heartbeatTimer = setInterval(async () => {
       if (!this._hostUp || this.streaming) return;  // a live stream is its own proof
-      if (await this._hostReachable()) return;
+      if (await this._hostReachable()) {
+        // Up — but is it the same process? A restart short enough to fall between
+        // two ticks leaves us holding a stale command/model/thread list, so treat
+        // a changed boot_id exactly like a reconnect.
+        if (this._hostRestarted()) await this._afterConnect(false);
+        return;
+      }
       if (await this._hostReachable()) return;      // one retry: don't flap on a blip
       this._startReconnect(false);
     }, 5000);
@@ -1009,18 +1042,18 @@ class AgentChat {
     }
   }
 
-  // Panel snapshot without the transient working caret, so it's never persisted /
-  // restored as a stray blinking cursor with no turn running.
+  // Panel snapshot with the transient bits removed: the working caret (else it is
+  // restored as a stray blinking cursor with no turn running) and host-state
+  // notices like "host is back" (else every restart leaves a line in the saved
+  // conversation forever). Taken off a clone so the live panel is never touched.
   _logHtml() {
-    const w = this._workingEl;
-    const attached = w && w.parentNode === this.logEl;
-    if (attached) this.logEl.removeChild(w);
-    const html = this.logEl.innerHTML;
-    if (attached) this.logEl.appendChild(w);
-    return html;
+    const clone = this.logEl.cloneNode(true);
+    clone.querySelectorAll(".ay-working, .ay-transient").forEach((n) => n.remove());
+    return clone.innerHTML;
   }
-  _sys(text) {
-    this.logEl.append(el("div", { className: "ay-msg ay-system", innerHTML: mdToHtml(text) }));
+  _sys(text, opts) {
+    const cls = "ay-msg ay-system" + (opts && opts.transient ? " ay-transient" : "");
+    this.logEl.append(el("div", { className: cls, innerHTML: mdToHtml(text) }));
     this._scroll();
   }
   _userMsg(text) {
