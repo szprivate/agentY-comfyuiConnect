@@ -385,6 +385,8 @@ class AgentChat {
     .ay-step .ay-step-body{padding:8px 12px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:240px;overflow:auto;word-break:break-word;border-top:1px solid var(--ay-border);}
     .ay-step.ay-tool{border-color:rgba(127,212,160,.22);}
     .ay-step.ay-tool>summary{color:#8fd6ab;}
+    .ay-step.ay-console{border-color:rgba(150,175,220,.22);}
+    .ay-step.ay-console>summary{color:#9db8de;}
     .ay-status{font-size:11px;color:var(--ay-muted);padding:2px 12px;font-family:ui-monospace,monospace;align-self:center;}
     .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
@@ -988,6 +990,7 @@ class AgentChat {
     this.curStep = null;
     this._thinkStep = null;
     this._toolBlocks = {};
+    this._consoleEl = null;
     this.threadId = id;
     this._saveActive(id);
     this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
@@ -1141,6 +1144,27 @@ class AgentChat {
     }
     this._scroll();
   }
+  // ComfyUI's own terminal, relayed while the queue runs. A log you scroll back
+  // through, not a status line that replaces itself — so it goes in one
+  // collapsible block per turn, closed by default, because a model load can run
+  // to dozens of lines and must not bury the conversation to be available.
+  _consoleLine(text) {
+    if (!this._consoleEl || !this._consoleEl.details.isConnected) {
+      this.curAssistant = null;   // close the text bubble first; keeps ordering
+      const details = el("details", { className: "ay-step ay-console", open: false });
+      const summary = el("summary", { textContent: "🖥 ComfyUI console" });
+      const body = el("div", { className: "ay-step-body" });
+      details.append(summary, body);
+      this.logEl.append(details);
+      this._consoleEl = { details, summary, body, n: 0 };
+    }
+    const blk = this._consoleEl;
+    blk.body.textContent += (blk.n ? "\n" : "") + text;
+    blk.n += 1;
+    blk.summary.textContent = `🖥 ComfyUI console · ${blk.n} line${blk.n === 1 ? "" : "s"}`;
+    if (blk.details.open) blk.body.scrollTop = blk.body.scrollHeight;
+    this._scroll();
+  }
   _status(text) {
     if (!this._statusEl || !this._statusEl.isConnected) {
       this._statusEl = el("div", { className: "ay-status" });
@@ -1284,6 +1308,9 @@ class AgentChat {
       case "qa":
         this._status(ev.data);
         break;
+      case "console":
+        this._consoleLine(ev.data);
+        break;
       case "exec":
         if (ev.state === "start") this._status("⚙️ ComfyUI running…");
         else this._clearStatus();
@@ -1337,6 +1364,7 @@ class AgentChat {
         this.curAssistant = null;
         this._thinkStep = null;
         this._toolBlocks = {};
+        this._consoleEl = null;
         this.streaming = false;
         this._setBusy(false);
         if (rendering) {
@@ -1424,6 +1452,7 @@ class AgentChat {
     this._stopping = false;
     this._thinkStep = null;
     this._toolBlocks = {};
+    this._consoleEl = null;
     // The conversation this stream belongs to. On the very first turn the id is
     // assigned by the server and arrives in the "thread" event.
     this.streamThreadId = body.thread_id || this.threadId || null;
