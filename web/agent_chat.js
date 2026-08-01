@@ -391,6 +391,12 @@ class AgentChat {
     .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
     .ay-chip{background:var(--ay-surface2);border:1px solid var(--ay-border);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--ay-text);}
+    /* Live read-out of the canvas selection. Capped in height so selecting half a
+       graph scrolls here instead of squeezing the message field off screen. */
+    .ay-selbar{display:none;flex-wrap:wrap;gap:5px;align-items:center;max-height:66px;overflow-y:auto;}
+    .ay-selbar .ay-selcount{font-size:11px;color:var(--ay-muted);font-weight:600;}
+    .ay-selbar .ay-selchip{background:transparent;border-color:rgba(150,175,220,.35);color:#9db8de;}
+    .ay-selbar .ay-selmore{font-size:11px;color:var(--ay-muted);}
     .ay-inrow{display:flex;gap:8px;align-items:flex-end;--ay-composer-h:40px;}
     /* The message field and the buttons beside it share ONE height so nothing sits
        higher than its neighbours. The field's vertical padding is chosen so a single
@@ -483,6 +489,7 @@ class AgentChat {
 
     // input area
     this.attachEl = el("div", { className: "ay-attach" });
+    this.selBarEl = el("div", { className: "ay-selbar" });
     this.queueEl = el("div", { className: "ay-queue" });
     this.pop = el("div", { className: "ay-pop" });
     this.input = el("textarea", { className: "ay-input", placeholder: "Message agentY…  (type / for commands)" });
@@ -500,8 +507,10 @@ class AgentChat {
     this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
-    const inwrap = el("div", { className: "ay-inwrap" }, [this.pop, this.queueEl, this.attachEl, inrow, this.fileInput]);
+    const inwrap = el("div", { className: "ay-inwrap" },
+      [this.pop, this.queueEl, this.selBarEl, this.attachEl, inrow, this.fileInput]);
     wrap.append(inwrap);
+    this._startSelectionIndicator();
 
     // model quick-switch bar (bottom)
     wrap.append(this._buildModelBar());
@@ -1617,7 +1626,10 @@ class AgentChat {
       noteParts.push(`${bits.join(" + ")} from canvas`);
     }
     if (canvasHooks.length) noteParts.push(`${canvasHooks.length} canvas hook(s)`);
-    this._userMsg(text + (noteParts.length ? `  \n_(${noteParts.join(", ")})_` : ""));
+    const selNote = this._describeSelection(canvasSelection);
+    this._userMsg(text
+      + (noteParts.length ? `  \n_(${noteParts.join(", ")})_` : "")
+      + (selNote ? `  \n${selNote}` : ""));
     this.input.value = "";
     this._autosize();
     this.attachments = [];
@@ -1755,6 +1767,85 @@ class AgentChat {
       out.push(info);
     }
     return out;
+  }
+
+  // What to call a node in a summary: the title the user sees on the canvas,
+  // falling back to its type. Works on both a live litegraph node and the
+  // snapshot objects _collectCanvasSelection produces.
+  _nodeLabel(n, cap) {
+    const type = String((n && (n.type || n.comfyClass)) || "");
+    let name = String((n && n.title) || "").trim() || type || "node";
+    if (name.length > cap) name = name.slice(0, cap - 1) + "…";
+    return { name, type };
+  }
+
+  // Summarise everything selected on the canvas, for the note under the message
+  // just sent. The counts next to it describe something much narrower — the
+  // loader nodes whose file is being attached as an input — so every other
+  // selected node (the prompt you are about to ask about, the sampler you just
+  // tweaked) was invisible here, and a selection of five could read "1 image".
+  _describeSelection(sel) {
+    if (!sel || !sel.length) return "";
+    const MAX = 10;
+    const labels = sel.slice(0, MAX).map((n) => {
+      // Backticks are a code chip; everything else in the label stays literal,
+      // since mdToHtml only parses code, bold and links.
+      const { name } = this._nodeLabel(n, 34);
+      return "`#" + n.id + " " + name.replace(/`/g, "") + "`";
+    });
+    const rest = sel.length - labels.length;
+    if (rest > 0) labels.push(`+${rest} more`);
+    return `🔲 ${sel.length} node${sel.length === 1 ? "" : "s"} selected: ${labels.join(", ")}`;
+  }
+
+  // A live read-out of the canvas selection above the composer: what the agent
+  // will be told about when you press send, visible before you send anything.
+  //
+  // Polled rather than driven off onSelectionChange alone. That callback is the
+  // right signal when it fires, but it does not fire on every path a selection
+  // can change — clearing it by clicking empty canvas, undo, a node deleted out
+  // from under it — and a selection bar showing nodes you no longer have
+  // selected is worse than no bar at all. Two reads a second of already-in-memory
+  // canvas state is not a cost worth optimising against that.
+  _startSelectionIndicator() {
+    try { this._ensureSelectionTracking(); } catch (_) {}
+    const tick = () => {
+      if (!this.selBarEl || !this.selBarEl.isConnected) return;
+      let nodes = [];
+      try { nodes = this._orderedSelectedNodes(); } catch (_) { nodes = []; }
+      const sig = this._selectionSignature(nodes);
+      if (sig === this._selSig) return;
+      this._selSig = sig;
+      this._renderSelectionBar(nodes);
+    };
+    try { tick(); } catch (_) {}
+    // The canvas may not exist yet when the panel is built; polling means that
+    // resolves itself on the next tick instead of needing a ready signal.
+    this._selTimer = setInterval(tick, 500);
+  }
+
+  // Redraw only when the selection actually changed. Title and type both count:
+  // renaming a selected node should refresh the bar, not just selecting another.
+  _selectionSignature(nodes) {
+    return (nodes || []).map((n) => `${n.id}:${n.title || n.type || ""}`).join("|");
+  }
+
+  _renderSelectionBar(nodes) {
+    const bar = this.selBarEl;
+    if (!bar) return;
+    bar.innerHTML = "";
+    if (!nodes.length) { bar.style.display = "none"; return; }
+    bar.style.display = "flex";
+    const MAX = 12;
+    bar.append(el("span", { className: "ay-selcount", textContent: `🔲 ${nodes.length} selected` }));
+    for (const n of nodes.slice(0, MAX)) {
+      const { name, type } = this._nodeLabel(n, 26);
+      const chip = el("span", { className: "ay-chip ay-selchip", textContent: `#${n.id} ${name}` });
+      chip.title = `#${n.id} · ${type || "?"}`;   // full type on hover
+      bar.append(chip);
+    }
+    if (nodes.length > MAX)
+      bar.append(el("span", { className: "ay-selmore", textContent: `+${nodes.length - MAX} more` }));
   }
 
   // Snapshot every selected node (ANY type) with its widget parameter values, so
