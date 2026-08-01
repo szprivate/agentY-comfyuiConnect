@@ -105,7 +105,7 @@ function buildModelSelect(groups, current, inheritable) {
 // key is called — "pipeline" for what is really "which model does which job".
 const GROUP_LABELS = {
   llm: "Models & providers",
-  tiers: "Model tiers — set these six and you're done",
+  tiers: "Model tiers / groups",
   pipeline: "Per-role overrides",
   system_prompts: "System prompts",
   qa: "Output QA",
@@ -303,7 +303,7 @@ async function openAgentYSettingsModal() {
   // ── viewers (moved here from the side-panel top bar) ──
   const toolsSec = el("div", { className: "ays-sec" });
   toolsSec.append(el("h3", { textContent: "Viewers" }));
-  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log, the long-term memory editor, and the token/cost breakdown. This is the one place they live — they used to be duplicated as rows in ComfyUI's own Settings." }));
+  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log (includes tool calls), the long-term memory editor (everyhting the agent remembers from previous runs), and the token/cost breakdown." }));
   const logViewBtn = el("button", { className: "ays-btn", textContent: "📜  Message-history log…" });
   logViewBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
   const memViewBtn = el("button", { className: "ays-btn", textContent: "🧠  Long-term memory…" });
