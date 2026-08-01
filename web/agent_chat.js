@@ -115,6 +115,7 @@ class AgentChat {
     this.threadId = null;
     this.streaming = false;
     this.activeAsk = null; // request_id awaiting a reply
+    this.streamThreadId = null; // conversation the in-flight stream belongs to
     this.curRequestId = null; // request_id of the in-flight turn (for Stop)
     this.abortController = null; // aborts the SSE fetch on Stop
     this._stopping = false; // set while a user-initiated stop is in progress
@@ -154,8 +155,10 @@ class AgentChat {
     // conversation was created/deleted elsewhere) and the model list (so a vendor
     // that was down at connect — e.g. Ollama still starting — appears once it's up)
     // without touching the open log. Switching tabs away and back thus self-heals.
-    if (this._hostUp) { this._loadThreads(); this._loadModels(); this._loadSwitchTargets(); }
-    else this._positionOffline();  // re-parenting moves the panel; keep the overlay on it
+    if (this._hostUp) {
+      this._loadThreads(); this._loadModels(); this._loadSwitchTargets();
+      this._syncRunState();  // a turn may have finished (or started) while hidden
+    } else this._positionOffline();  // re-parenting moves the panel; keep the overlay on it
   }
 
   // Load everything the panel needs. If the host isn't up yet (e.g. it was just
@@ -196,6 +199,9 @@ class AgentChat {
     await this._loadSwitchTargets();
     if (firstBoot && !this.threadId) await this._restoreSession();
     else await this._loadThreads();
+    // A page reload drops the SSE connection without stopping the run behind it,
+    // so reconcile with the host before showing the panel as idle.
+    await this._syncRunState();
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
     this._startNotifyPoll();    // drain background auto-drops queued before we connected, and
                                 // poll for more only while the host has a generation in flight
@@ -966,7 +972,22 @@ class AgentChat {
 
   async openThread(id) {
     if (!id || id === this.threadId) return;
+    await this._renderThread(id);
+    // Whatever was just drawn is a snapshot; only the host knows whether this
+    // conversation still has a turn in flight.
+    await this._syncRunState();
+  }
+
+  async _renderThread(id) {
     this._saveCurrentDom();
+    // The DOM is about to be replaced, which orphans every node the live stream
+    // is writing into. Drop those references so that if we come back mid-turn the
+    // next event builds fresh ones in the current panel instead of appending to
+    // detached nodes nobody will ever see.
+    this.curAssistant = null;
+    this.curStep = null;
+    this._thinkStep = null;
+    this._toolBlocks = {};
     this.threadId = id;
     this._saveActive(id);
     this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
@@ -1197,11 +1218,35 @@ class AgentChat {
   }
 
   // ── SSE event dispatch ───────────────────────────────────────────────────────
+  // A stream belongs to the conversation it was started in, but the panel only
+  // ever has one DOM. Switching conversations mid-turn used to swap that DOM out
+  // from under the live node references, so the rest of the answer was appended
+  // to detached nodes and vanished — the turn finished fine server-side while the
+  // panel kept showing the snapshot taken at the moment of the switch, with no
+  // Stop button (streaming had cleared). While detached we therefore render
+  // nothing and let the backend's own message log be the record.
+  _isRendering() {
+    return !this.streamThreadId || this.streamThreadId === this.threadId;
+  }
+
+  // Events that must be handled no matter which conversation is on screen: run
+  // bookkeeping, and anything whose effect lands on the ComfyUI canvas rather
+  // than in this panel — a generated node still belongs on the graph even if the
+  // user has looked away. Everything else only paints the chat log, so it is
+  // dropped while its conversation is off-screen.
+  static ALWAYS_HANDLE = ["thread", "request", "done", "output", "canvas_patch", "notify"];
+
   _onEvent(ev) {
+    const rendering = this._isRendering();
+    if (!rendering && !AgentChat.ALWAYS_HANDLE.includes(ev.type)) {
+      if (ev.type === "ask") this.activeAsk = ev.request_id;  // still needs answering
+      return;
+    }
     switch (ev.type) {
       case "thread":
         if (ev.id && ev.id !== this.threadId) { this.threadId = ev.id; this._loadThreads(); }
         if (ev.id) this._saveActive(ev.id);
+        if (ev.id && !this.streamThreadId) this.streamThreadId = ev.id;  // server-assigned
         break;
       case "request":
         this.curRequestId = ev.request_id;
@@ -1294,7 +1339,17 @@ class AgentChat {
         this._toolBlocks = {};
         this.streaming = false;
         this._setBusy(false);
-        this._savePanel();  // persist the rendered panel so blocks survive reloads
+        if (rendering) {
+          this._savePanel();  // persist the rendered panel so blocks survive reloads
+        } else {
+          // The turn finished while its conversation was off-screen, so the only
+          // rendered panel we have for it is the mid-turn snapshot. Drop that
+          // (here and on the backend) so reopening rebuilds from the persisted
+          // messages — the complete answer, minus the collapsible blocks — rather
+          // than restoring a frozen "thinking…" that looks like a hang.
+          this._forgetStalePanel(this.streamThreadId);
+        }
+        this.streamThreadId = null;
         this._loadThreads();
         this._drainStatus();       // catch any between-/in-turn CLI notices not delivered live
         this._startNotifyPoll();   // (re-)arm the auto-drop poll: this turn may have queued
@@ -1308,8 +1363,60 @@ class AgentChat {
   }
 
   _savePanelThrottled() {
-    if (this._saveTimer || !this.threadId) return;
+    // Only ever persist the panel of the conversation actually on screen — while
+    // a stream runs off-screen this would otherwise keep writing the *displayed*
+    // thread's DOM, and never the running one's.
+    if (this._saveTimer || !this.threadId || !this._isRendering()) return;
     this._saveTimer = setTimeout(() => { this._saveTimer = null; this._savePanel(); }, 1500);
+  }
+
+  // Ask the host which conversations have a turn in flight. Used when opening a
+  // conversation (and on connect) so a panel that lost its stream — page reload,
+  // or a turn left running in another conversation — can say so and offer Stop,
+  // instead of showing a spinner that will never clear or hiding a live run.
+  async _syncRunState() {
+    if (!this._hostUp) return;
+    let runs = [];
+    try {
+      const r = await fetch(backendBase() + "/agentY/runs", { cache: "no-store" });
+      if (!r.ok) return;                       // older host: leave state alone
+      runs = (await r.json()).runs || [];
+    } catch (_) { return; }
+    const mine = runs.find((x) => x.thread_id === this.threadId);
+    if (mine && !this.streaming) {
+      // Running, but not by us — we cannot re-attach to an SSE stream we never
+      // opened, so present it honestly and keep Stop reachable.
+      this.curRequestId = mine.request_id;
+      this.streamThreadId = this.threadId;
+      this.streaming = true;
+      this.activeAsk = mine.awaiting_reply ? mine.request_id : null;
+      this._setBusy(true);
+      this._sys(mine.awaiting_reply
+        ? "⏳ This conversation has a turn waiting on your reply."
+        : "⏳ A turn is still running here. Its live output is not being streamed "
+          + "to this panel — it will appear when the turn finishes, or press Stop.");
+    } else if (!mine && this.streaming && this.streamThreadId === this.threadId) {
+      // We think we are streaming this conversation but the host disagrees: the
+      // turn ended and we missed the "done". Clear the frozen busy state.
+      this.streaming = false;
+      this.streamThreadId = null;
+      this.activeAsk = null;
+      this._setBusy(false);
+      this._clearStatus();
+    }
+  }
+
+  // Discard a rendered panel that no longer reflects the conversation, in the
+  // session cache and on the backend, so the next open falls back to the message
+  // log instead of a stale snapshot.
+  _forgetStalePanel(threadId) {
+    if (!threadId) return;
+    this.domCache.delete(threadId);
+    fetch(backendBase() + "/agentY/threads/" + threadId + "/panel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: "" }),
+    }).catch(() => {});
   }
 
   async _stream(body) {
@@ -1317,6 +1424,9 @@ class AgentChat {
     this._stopping = false;
     this._thinkStep = null;
     this._toolBlocks = {};
+    // The conversation this stream belongs to. On the very first turn the id is
+    // assigned by the server and arrives in the "thread" event.
+    this.streamThreadId = body.thread_id || this.threadId || null;
     this.abortController = new AbortController();
     this._setBusy(true);
     try {
@@ -1365,15 +1475,22 @@ class AgentChat {
   }
 
   async _stop() {
-    if (!this.streaming) return;
+    // Deliberately no `if (!this.streaming) return`. Stop is also the escape
+    // hatch for a panel that only *looks* busy — a turn whose stream we lost —
+    // and bailing out early there left no way to get the input back.
     this._stopping = true;
     this._status("⏹ Stopping…");
-    // Ask the backend to cancel the run (halts the agent loop + interrupts ComfyUI).
+    // Ask the backend to cancel the run (halts the agent loop + interrupts
+    // ComfyUI). Target the stream's own conversation, which is not necessarily
+    // the one on screen.
     try {
       await fetch(backendBase() + "/agentY/stop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: this.curRequestId, thread_id: this.threadId }),
+        body: JSON.stringify({
+          request_id: this.curRequestId,
+          thread_id: this.streamThreadId || this.threadId,
+        }),
       });
     } catch (_) {}
     // Stop consuming the SSE stream client-side.
@@ -1383,6 +1500,8 @@ class AgentChat {
     this.curAssistant = null;
     this.curStep = null;
     this.streaming = false;
+    this.streamThreadId = null;
+    this.activeAsk = null;   // a pending question dies with the run
     this._setBusy(false);
     this._savePanel();
   }
