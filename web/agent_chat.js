@@ -118,6 +118,14 @@ class AgentChat {
     this.streamThreadId = null; // conversation the in-flight stream belongs to
     this.curRequestId = null; // request_id of the in-flight turn (for Stop)
     this.abortController = null; // aborts the SSE fetch on Stop
+    // A turn we know is running but are NOT streaming — adopted from /agentY/runs
+    // after a reload or a conversation switch. There is no fetch behind it, so no
+    // `done` event and no reader EOF will ever clear `streaming`; only a re-check
+    // against the host can. Kept distinct from a stream we own for that reason.
+    this._adoptedRun = false;
+    // Identifies the stream that currently owns the shared streaming state, so a
+    // stream that finishes after being replaced can't clear its successor's state.
+    this._streamToken = 0;
     this._stopping = false; // set while a user-initiated stop is in progress
     this.attachments = []; // [{path,name}]
     this.commands = SLASH_FALLBACK;
@@ -288,12 +296,20 @@ class AgentChat {
   _startHeartbeat() {
     if (this._heartbeatTimer) return;
     this._heartbeatTimer = setInterval(async () => {
-      if (!this._hostUp || this.streaming) return;  // a live stream is its own proof
+      if (!this._hostUp) return;
+      // A stream we OWN is its own proof of life. An adopted run is not: nothing
+      // is listening for its end, and skipping the tick for it is what used to
+      // make that state permanent — the notify poll stops itself once nothing is
+      // pending, so the panel fell completely silent and sat on "a turn is still
+      // running here" until the host was restarted. Re-check those against the
+      // host instead; _syncRunState clears the state once the run is gone.
+      if (this.streaming && !this._adoptedRun) return;
       if (await this._hostReachable()) {
         // Up — but is it the same process? A restart short enough to fall between
         // two ticks leaves us holding a stale command/model/thread list, so treat
         // a changed boot_id exactly like a reconnect.
         if (this._hostRestarted()) await this._afterConnect(false);
+        else if (this._adoptedRun) await this._syncRunState();
         return;
       }
       if (await this._hostReachable()) return;      // one retry: don't flap on a blip
@@ -989,8 +1005,13 @@ class AgentChat {
     await this._syncRunState();
   }
 
-  async _renderThread(id) {
+  // `fresh` rebuilds from the persisted record, ignoring (and dropping) the
+  // session DOM cache. Needed after an adopted turn ends: the cached DOM is the
+  // mid-turn snapshot, and _saveCurrentDom below would otherwise re-cache it and
+  // hand it straight back as if it were the finished conversation.
+  async _renderThread(id, fresh = false) {
     this._saveCurrentDom();
+    if (fresh) this.domCache.delete(id);
     // The DOM is about to be replaced, which orphans every node the live stream
     // is writing into. Drop those references so that if we come back mid-turn the
     // next event builds fresh ones in the current panel instead of appending to
@@ -1375,6 +1396,7 @@ class AgentChat {
         this._toolBlocks = {};
         this._consoleEl = null;
         this.streaming = false;
+        this._adoptedRun = false;
         this._setBusy(false);
         if (rendering) {
           this._savePanel();  // persist the rendered panel so blocks survive reloads
@@ -1419,37 +1441,62 @@ class AgentChat {
       if (!r.ok) return;                       // older host: leave state alone
       runs = (await r.json()).runs || [];
     } catch (_) { return; }
-    const mine = runs.find((x) => x.thread_id === this.threadId);
+    // An adopted run belongs to the conversation it was adopted for, which is not
+    // necessarily the one on screen now — reconcile it against that one, so
+    // switching conversations can't strand it as un-clearable.
+    const watched = (this._adoptedRun && this.streamThreadId) || this.threadId;
+    const mine = runs.find((x) => x.thread_id === watched);
     if (mine && !this.streaming) {
       // Running, but not by us — we cannot re-attach to an SSE stream we never
-      // opened, so present it honestly and keep Stop reachable.
+      // opened, so present it honestly and keep Stop reachable. Flagged as
+      // adopted: the heartbeat is now the only thing that can notice it ending.
       this.curRequestId = mine.request_id;
       this.streamThreadId = this.threadId;
       this.streaming = true;
+      this._adoptedRun = true;
       this.activeAsk = mine.awaiting_reply ? mine.request_id : null;
       this._setBusy(true);
       this._sys(mine.awaiting_reply
         ? "⏳ This conversation has a turn waiting on your reply."
         : "⏳ A turn is still running here. Its live output is not being streamed "
           + "to this panel — it will appear when the turn finishes, or press Stop.");
-    } else if (!mine && this.streaming && this.streamThreadId === this.threadId) {
-      // We think we are streaming this conversation but the host disagrees: the
-      // turn ended and we missed the "done". Clear the frozen busy state.
+    } else if (!mine && this.streaming &&
+               (this._adoptedRun || this.streamThreadId === this.threadId)) {
+      // We think a turn is running but the host disagrees: it ended and we missed
+      // the "done". Clear the frozen busy state.
+      const wasAdopted = this._adoptedRun;
+      const finished = this.streamThreadId;
       this.streaming = false;
+      this._adoptedRun = false;
       this.streamThreadId = null;
       this.activeAsk = null;
       this._setBusy(false);
       this._clearStatus();
+      // Nothing streamed an adopted turn, so its answer never reached the log.
+      // The last panel snapshot for it is mid-turn (a frozen "thinking…"), so
+      // drop that first and rebuild from the persisted messages — the complete
+      // answer, minus the collapsible blocks. This is what the adopt branch
+      // above promises with "it will appear when the turn finishes".
+      if (wasAdopted && finished && finished === this.threadId) {
+        await this._forgetStalePanel(finished);
+        await this._renderThread(finished, true);
+      }
+      if (wasAdopted) {
+        this._loadThreads();         // the turn may have retitled the conversation
+        this._maybeDispatchQueued(); // anything typed while it ran, as on a normal "done"
+      }
     }
   }
 
   // Discard a rendered panel that no longer reflects the conversation, in the
   // session cache and on the backend, so the next open falls back to the message
   // log instead of a stale snapshot.
+  // Returns the backend write so a caller that re-renders straight afterwards can
+  // await it — otherwise the re-read races the clear and restores what it dropped.
   _forgetStalePanel(threadId) {
-    if (!threadId) return;
+    if (!threadId) return Promise.resolve();
     this.domCache.delete(threadId);
-    fetch(backendBase() + "/agentY/threads/" + threadId + "/panel", {
+    return fetch(backendBase() + "/agentY/threads/" + threadId + "/panel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ html: "" }),
@@ -1457,7 +1504,15 @@ class AgentChat {
   }
 
   async _stream(body) {
+    // This invocation's claim on the shared streaming state. A "done" event can
+    // dispatch a queued message (_maybeDispatchQueued), which starts the NEXT
+    // stream from inside this one's read loop; when this one then reaches EOF its
+    // `finally` would clear state — and null the abortController — now belonging
+    // to the turn that replaced it, leaving a live turn that looks idle and can't
+    // be stopped. Only the stream still holding the token may clear it.
+    const token = ++this._streamToken;
     this.streaming = true;
+    this._adoptedRun = false;  // this one we own: the reader's EOF will end it
     this._stopping = false;
     this._thinkStep = null;
     this._toolBlocks = {};
@@ -1500,9 +1555,11 @@ class AgentChat {
         this._startReconnect(false); // auto-recover the panel when the host is back
       }
     } finally {
-      this.streaming = false;
-      this.abortController = null;
-      this._setBusy(false);
+      if (this._streamToken === token) {
+        this.streaming = false;
+        this.abortController = null;
+        this._setBusy(false);
+      }
     }
   }
 
@@ -1538,6 +1595,7 @@ class AgentChat {
     this.curAssistant = null;
     this.curStep = null;
     this.streaming = false;
+    this._adoptedRun = false;
     this.streamThreadId = null;
     this.activeAsk = null;   // a pending question dies with the run
     this._setBusy(false);
