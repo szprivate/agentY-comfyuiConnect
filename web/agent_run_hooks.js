@@ -15,6 +15,10 @@ import { app } from "../../scripts/app.js";
 
 const COMMAND_ID = "agentY.runHooks";
 const LABEL = "Run agentY hooks";
+// Shorter on the button itself: it sits directly beside Run, wearing the same
+// play icon, so repeating "Run" reads as clutter. The command, the menu entry and
+// the tooltip all keep the full name.
+const BTN_LABEL = "agentY hooks";
 const TOOLTIP = "Run the agentY hook nodes on this graph (sends “Run this workflow” to the agentY panel)";
 const BTN_ID = "agentY-run-hooks-btn";
 
@@ -43,28 +47,44 @@ function toast(text, severity) {
 }
 
 // ── the injected button ───────────────────────────────────────────────────────
-// Styled off ComfyUI's own CSS variables so it tracks the active theme instead of
-// hard-coding colours that look wrong in half of them.
+// Shaped to sit next to ComfyUI's Run button as a sibling: same height, radius,
+// padding, weight and icon treatment, and the same `pi pi-play` glyph Run uses.
+// Every colour comes from PrimeVue's theme tokens (--p-primary-color and
+// friends), so it follows whatever theme is active rather than hard-coding values
+// that look wrong in half of them; the literals are only fallbacks for a theme
+// that does not define the token.
 function injectStyles() {
   if (document.getElementById("agentY-run-hooks-style")) return;
   const s = document.createElement("style");
   s.id = "agentY-run-hooks-style";
   s.textContent = `
     #${BTN_ID}{
-      display:inline-flex;align-items:center;gap:6px;cursor:pointer;
-      height:2rem;padding:0 .6rem;margin:0 .15rem;
-      font-size:.8rem;font-weight:500;line-height:1;white-space:nowrap;
-      color:var(--p-button-text-secondary-color,var(--fg-color,#ddd));
-      background:transparent;border:1px solid transparent;border-radius:6px;
-      transition:background .12s,border-color .12s;
+      display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
+      box-sizing:border-box;cursor:pointer;
+      height:2rem;padding:0 .75rem;margin:0 .25rem;
+      font-family:inherit;font-size:.875rem;font-weight:500;line-height:1;
+      white-space:nowrap;
+      color:var(--p-primary-contrast-color,#fff);
+      background:var(--p-primary-color,#2f7bf6);
+      border:1px solid var(--p-primary-color,#2f7bf6);
+      border-radius:var(--p-border-radius-md,6px);
+      transition:filter .12s ease,box-shadow .12s ease;
     }
-    #${BTN_ID}:hover{background:var(--p-button-text-secondary-hover-background,rgba(255,255,255,.08));}
-    #${BTN_ID}:active{transform:translateY(1px);}
-    #${BTN_ID} .agy-dot{
-      width:.55rem;height:.55rem;border-radius:50%;flex:0 0 auto;
-      background:var(--p-primary-color,#5b9bf5);
+    /* brightness rather than a second colour token: works whether the active
+       theme's primary is light or dark, which a fixed hover colour does not. */
+    #${BTN_ID}:hover{filter:brightness(1.1);}
+    #${BTN_ID}:active{filter:brightness(.95);transform:translateY(1px);}
+    #${BTN_ID}:focus-visible{
+      outline:none;
+      box-shadow:0 0 0 2px var(--p-content-background,#1e1e1e),
+                 0 0 0 4px var(--p-primary-color,#2f7bf6);
     }
-    @media (max-width:1100px){ #${BTN_ID} .agy-label{display:none;} }
+    #${BTN_ID} .pi{font-size:.875rem;line-height:1;}
+    /* Narrow bars: keep the icon, drop the words — the tooltip still explains it. */
+    @media (max-width:1200px){
+      #${BTN_ID}{padding:0 .5rem;}
+      #${BTN_ID} .agy-label{display:none;}
+    }
   `;
   document.head.appendChild(s);
 }
@@ -75,12 +95,12 @@ function makeButton() {
   b.type = "button";
   b.title = TOOLTIP;
   b.setAttribute("aria-label", LABEL);
-  const dot = document.createElement("span");
-  dot.className = "agy-dot";
+  const icon = document.createElement("i");
+  icon.className = "pi pi-play";       // the glyph ComfyUI's own Run button uses
   const label = document.createElement("span");
   label.className = "agy-label";
-  label.textContent = LABEL;
-  b.append(dot, label);
+  label.textContent = BTN_LABEL;
+  b.append(icon, label);
   b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); runHooks(); });
   return b;
 }
