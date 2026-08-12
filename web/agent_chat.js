@@ -33,6 +33,13 @@ function comfyBase() {
 // reload doesn't re-dump the whole server-side ring buffer.
 const STATUS_SEQ_KEY = "agentY_status_seq";
 const NOTIFY_SEQ_KEY = "agentY_notify_seq";
+// Breathing room between a node the agent drops on the canvas and its neighbours
+// — used both as the gap to the block it lands beside and as the margin that
+// counts as "already occupied" when looking for a free slot.
+const DROP_GAP = 56;
+// Assumed footprint of a node that has just been created: LiteGraph only computes
+// the real size once it is drawn, and the slot has to be chosen before that.
+const DROP_SIZE = [280, 140];
 // Shown on the offline overlay when the agentY host isn't reachable.
 const OFFLINE_MSG =
   "The agentY chat host isn't running. Start it to use the panel — a PowerShell " +
@@ -131,7 +138,6 @@ class AgentChat {
     this.commands = SLASH_FALLBACK;
     this.curAssistant = null; // DOM node currently streaming assistant text
     this.curStep = null; // {details, body}
-    this.nodeCount = 0;
     this._selOrder = []; // node ids in the order they were selected on the canvas
     this._consumed = {}; // nodeId -> value already sent as an input (skip re-sending unchanged)
     this.domCache = new Map(); // threadId -> {html, scroll}: live-rendered panel (thinking/step blocks) kept across conversation switches
@@ -1205,33 +1211,70 @@ class AgentChat {
   }
   _clearStatus() { this._statusEl = null; }
 
-  // Where to drop a freshly generated loader node. Prefer the current viewport
-  // (LiteGraph tracks the visible graph rect), so results land where the user is
-  // looking — usually right on their workflow. Fall back to just right of the
-  // existing nodes' bounding box, then to a sensible default near the origin.
-  _dropPos() {
+  // The visible graph rect ([x, y, w, h] in graph coordinates), or null when the
+  // canvas hasn't laid out yet.
+  _visibleArea() {
     try {
       const c = app.canvas;
       const va = (c && (c.visible_area || (c.ds && c.ds.visible_area))) || null;
-      if (va && va.length >= 4 && va[2] > 40 && va[3] > 40) {
-        // Upper-left third of the viewport — visible but off the dead-center where
-        // the user's active node usually sits.
-        return [va[0] + va[2] * 0.28, va[1] + va[3] * 0.30];
-      }
+      if (va && va.length >= 4 && va[2] > 40 && va[3] > 40) return [va[0], va[1], va[2], va[3]];
     } catch (_) {}
-    // Fallback: to the right of everything currently on the graph.
-    try {
-      const nodes = (app.graph && app.graph._nodes) || [];
-      let minX = Infinity, minY = Infinity, maxX = -Infinity;
-      for (const n of nodes) {
-        if (!n || !n.pos || !n.size) continue;
-        minX = Math.min(minX, n.pos[0]);
-        minY = Math.min(minY, n.pos[1]);
-        maxX = Math.max(maxX, n.pos[0] + n.size[0]);
+    return null;
+  }
+
+  // Where to drop a node the agent just made — a generated media loader, an
+  // agentY text node, anything. One rule for all of them: put it next to the
+  // nodes that are already on the graph, never out in empty space the user has to
+  // go hunting for. When part of the graph is on screen we measure only what is
+  // visible, so the drop lands beside the bit of the workflow being looked at
+  // rather than at the far edge of a large graph.
+  //   near    — a node the new one belongs beside (the hook whose answer it is),
+  //             measured instead of the visible block when it's still on canvas.
+  //   exclude — the node being placed. It is added to the graph before it is
+  //             positioned, and counting it (sitting at LiteGraph's default spot,
+  //             near the origin) would drag every drop back to the origin with it.
+  _dropPos(near = null, exclude = null) {
+    const placed = (n) => n && n !== exclude && Array.isArray(n.pos) && Array.isArray(n.size);
+    let nodes = [];
+    try { nodes = ((app.graph && app.graph._nodes) || []).filter(placed); } catch (_) {}
+    if (!nodes.length) return [80, 80];   // empty canvas: anywhere is "near"
+
+    let ref = null;
+    if (placed(near)) ref = [near];
+    if (!ref) {
+      const v = this._visibleArea();
+      if (v) {
+        const seen = nodes.filter(
+          (n) => n.pos[0] < v[0] + v[2] && n.pos[0] + n.size[0] > v[0] &&
+                 n.pos[1] < v[1] + v[3] && n.pos[1] + n.size[1] > v[1]);
+        if (seen.length) ref = seen;
       }
-      if (isFinite(minX)) return [maxX + 60, minY];
-    } catch (_) {}
-    return [80, 80];
+    }
+    if (!ref) ref = nodes;   // looking at empty space — go where the graph is
+
+    // Just past the right edge of that block, lined up with its top.
+    let maxX = -Infinity, minY = Infinity;
+    for (const n of ref) {
+      maxX = Math.max(maxX, n.pos[0] + n.size[0]);
+      minY = Math.min(minY, n.pos[1]);
+    }
+    return this._freeSpot([maxX + DROP_GAP, minY], nodes);
+  }
+
+  // Slide down from `pos` until the slot is clear of everything already on the
+  // graph — landing on top of a node is as bad as landing a screen away. Bounded:
+  // a graph stacked in one tall column would otherwise walk a very long way, and
+  // a slot a few nodes down beats a frozen panel.
+  _freeSpot(pos, nodes, size = DROP_SIZE) {
+    let [x, y] = pos;
+    for (let i = 0; i < 60; i++) {
+      const hit = nodes.find(
+        (n) => x < n.pos[0] + n.size[0] + DROP_GAP && x + size[0] + DROP_GAP > n.pos[0] &&
+               y < n.pos[1] + n.size[1] + DROP_GAP && y + size[1] + DROP_GAP > n.pos[1]);
+      if (!hit) break;
+      y = hit.pos[1] + hit.size[1] + DROP_GAP;
+    }
+    return [x, y];
   }
 
   // ── graph node injection (the whole point) ───────────────────────────────────
@@ -1251,11 +1294,10 @@ class AgentChat {
       this._sys(`⚠️ Could not add ${type} node: ${e}`);
       return;
     }
-    // Drop near where the user is looking (the current viewport / their nodes),
-    // not at the far graph origin. Small cyclic stagger so several drops fan out.
-    const base = this._dropPos();
-    const off = (this.nodeCount++ % 8) * 34;
-    node.pos = [base[0] + off, base[1] + off];
+    // Drop it beside the user's nodes rather than at the far graph origin, and
+    // clear of them — several drops in a row fan out to the right on their own,
+    // because each one is part of the graph the next is measured against.
+    node.pos = this._dropPos(null, node);
     const val = ev.filename || ev.path;
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
     const w = (node.widgets || []).find((x) => wnames.includes(x.name));
@@ -1984,17 +2026,13 @@ class AgentChat {
       w.value = text;
       try { if (w.callback) w.callback(text, app.canvas, node); } catch (_) {}
     }
-    // Position beside the hook if we can find it, else stagger near the origin.
+    // Beside the hook it answers when that's still on the canvas, otherwise
+    // beside the rest of the graph — the same rule generated media follows, so a
+    // text node never lands off in empty space away from the workflow.
     const hid = Number(ev.hook_node_id);
-    const hook = graph.getNodeById
-      ? graph.getNodeById(hid)
-      : (graph._nodes || []).find((n) => Number(n.id) === hid);
-    if (hook && Array.isArray(hook.pos)) {
-      node.pos = [hook.pos[0] + (hook.size ? hook.size[0] + 40 : 340), hook.pos[1]];
-    } else {
-      const off = this.nodeCount++ * 40;
-      node.pos = [80 + off, 80 + off];
-    }
+    const hook = (graph.getNodeById && graph.getNodeById(hid))
+      || (graph._nodes || []).find((n) => n && String(n.id) === String(ev.hook_node_id));
+    node.pos = this._dropPos(hook || null, node);
     node.title = "agentY text";
     // keep-live (default): leave the hook wired exactly as the user drew it and
     // place this node UNCONNECTED as a reference — the server injects the value
