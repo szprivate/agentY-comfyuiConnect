@@ -2270,6 +2270,45 @@ window.agentYCurrentThread = () => {
   return { id: c.threadId, title };
 };
 
+// Run the hooks on the current canvas without typing anything: used by the
+// "Run agentY hooks" button in ComfyUI's top bar (see agent_run_hooks.js).
+// Goes through the normal send() path on purpose — that is what captures the
+// graph, the hooks, the selection and any staged canvas inputs, so the button
+// and a typed "run this" reach the agent as exactly the same turn.
+// Returns a short status string; the caller surfaces it as a toast.
+window.agentYRunHooks = (text) => {
+  if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();  // builds its DOM unmounted
+  const chat = _AGENTY_CHAT;
+  // Nothing to run: a hookless graph would still cost a full (paid) turn to be
+  // told there is nothing to do, so say it here instead of sending.
+  let hooks = [];
+  try { hooks = chat._collectCanvasHooks(); } catch (_) {}
+  if (!hooks.length) {
+    return "No active agentY hooks on this graph — add an agentY hook node "
+         + "(and give it a directive) to run one.";
+  }
+  // A turn waiting on an answer would take this text AS the answer, which is not
+  // what a "run the hooks" button means. Send the user to the panel instead.
+  if (chat.activeAsk) {
+    return "agentY is waiting for an answer in the panel — reply there first.";
+  }
+  // Show the panel, so the run is visible rather than happening off-screen.
+  try {
+    const em = app.extensionManager;
+    const store = (em && em.sidebarTab) || em;
+    if (store && typeof store.toggleSidebarTab === "function") {
+      if (store.activeSidebarTabId !== "agentY-chat") store.toggleSidebarTab("agentY-chat");
+    }
+  } catch (_) {}
+  // Sampled BEFORE send(), which decides then and there whether to queue.
+  const wasBusy = chat.streaming;
+  chat.input.value = String(text || "Run this workflow");
+  chat.send();
+  return wasBusy
+    ? `Queued — ${hooks.length} hook(s) will run when the current turn finishes.`
+    : `Running ${hooks.length} agentY hook(s)…`;
+};
+
 app.registerExtension({
   name: "agentY.chat.sidebar",
   async setup() {
