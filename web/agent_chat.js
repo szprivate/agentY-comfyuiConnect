@@ -40,6 +40,29 @@ const DROP_GAP = 56;
 // Assumed footprint of a node that has just been created: LiteGraph only computes
 // the real size once it is drawn, and the slot has to be chosen before that.
 const DROP_SIZE = [280, 140];
+// How far a column of drops may grow downwards before the next one starts a new
+// column beside it. A run with a dozen outputs has to stay a block sitting next
+// to the workflow, not a stripe running off one edge of it.
+const DROP_COL_H = 1200;
+
+// Nodes this panel put on the canvas (generated media, written text). They are
+// flagged so the NEXT drop is measured against the user's workflow rather than
+// against the pile we are already building beside it — otherwise every drop
+// starts further out than the last and a long run walks off the graph. The title
+// test catches nodes dropped before the flag existed.
+function isAgentDrop(n) {
+  if (n && n.properties && n.properties.agentY_drop) return true;
+  const t = String((n && n.title) || "");
+  return t.startsWith("agentY · ") || t === "agentY text";
+}
+
+// Mark a node as ours, so later placements can tell it from the user's graph.
+function markAgentDrop(node) {
+  try {
+    node.properties = node.properties || {};
+    node.properties.agentY_drop = true;
+  } catch (_) {}
+}
 // Shown on the offline overlay when the agentY host isn't reachable.
 const OFFLINE_MSG =
   "The agentY chat host isn't running. Start it to use the panel — a PowerShell " +
@@ -1239,40 +1262,57 @@ class AgentChat {
     try { nodes = ((app.graph && app.graph._nodes) || []).filter(placed); } catch (_) {}
     if (!nodes.length) return [80, 80];   // empty canvas: anywhere is "near"
 
+    // Measure against the user's own nodes: our earlier drops are what this one is
+    // supposed to line up with, not what it should stand clear of. (They are still
+    // in `nodes`, so the slot search below keeps off them.)
+    const theirs = nodes.filter((n) => !isAgentDrop(n));
+    const pool = theirs.length ? theirs : nodes;
+
     let ref = null;
     if (placed(near)) ref = [near];
     if (!ref) {
       const v = this._visibleArea();
       if (v) {
-        const seen = nodes.filter(
+        const seen = pool.filter(
           (n) => n.pos[0] < v[0] + v[2] && n.pos[0] + n.size[0] > v[0] &&
                  n.pos[1] < v[1] + v[3] && n.pos[1] + n.size[1] > v[1]);
         if (seen.length) ref = seen;
       }
     }
-    if (!ref) ref = nodes;   // looking at empty space — go where the graph is
+    if (!ref) ref = pool;   // looking at empty space — go where the graph is
 
-    // Just past the right edge of that block, lined up with its top.
-    let maxX = -Infinity, minY = Infinity;
+    // Just past the right edge of that block, lined up with its top. Drops are
+    // allowed to run down as far as the block is tall before starting a new
+    // column, so the pile beside a workflow ends up about the shape of it.
+    let maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const n of ref) {
       maxX = Math.max(maxX, n.pos[0] + n.size[0]);
       minY = Math.min(minY, n.pos[1]);
+      maxY = Math.max(maxY, n.pos[1] + n.size[1]);
     }
-    return this._freeSpot([maxX + DROP_GAP, minY], nodes);
+    return this._freeSpot([maxX + DROP_GAP, minY], nodes, DROP_SIZE,
+                          Math.max(maxY - minY, DROP_COL_H));
   }
 
   // Slide down from `pos` until the slot is clear of everything already on the
-  // graph — landing on top of a node is as bad as landing a screen away. Bounded:
-  // a graph stacked in one tall column would otherwise walk a very long way, and
-  // a slot a few nodes down beats a frozen panel.
-  _freeSpot(pos, nodes, size = DROP_SIZE) {
+  // graph — landing on top of a node is as bad as landing a screen away. Once the
+  // column has run `colH` deep, step across into a new one instead of carrying on
+  // down, so a run with many outputs fills a block beside the workflow rather than
+  // a stripe running off one edge of it. The step across clears the widest node met
+  // on the way down, because a media loader grows well past DROP_SIZE once its
+  // preview loads. Bounded: a slot a few nodes over beats a frozen panel.
+  _freeSpot(pos, nodes, size = DROP_SIZE, colH = DROP_COL_H) {
     let [x, y] = pos;
+    const top = y;
+    let right = x + size[0];   // widest thing met in the column being filled
     for (let i = 0; i < 60; i++) {
       const hit = nodes.find(
         (n) => x < n.pos[0] + n.size[0] + DROP_GAP && x + size[0] + DROP_GAP > n.pos[0] &&
                y < n.pos[1] + n.size[1] + DROP_GAP && y + size[1] + DROP_GAP > n.pos[1]);
       if (!hit) break;
+      right = Math.max(right, hit.pos[0] + hit.size[0]);
       y = hit.pos[1] + hit.size[1] + DROP_GAP;
+      if (y > top + colH) { y = top; x = right + DROP_GAP; right = x + size[0]; }
     }
     return [x, y];
   }
@@ -1295,8 +1335,9 @@ class AgentChat {
       return;
     }
     // Drop it beside the user's nodes rather than at the far graph origin, and
-    // clear of them — several drops in a row fan out to the right on their own,
-    // because each one is part of the graph the next is measured against.
+    // clear of them — a run's worth of drops stacks into a block next to the
+    // workflow instead of each one starting where the last ended.
+    markAgentDrop(node);
     node.pos = this._dropPos(null, node);
     const val = ev.filename || ev.path;
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
@@ -2032,6 +2073,7 @@ class AgentChat {
     const hid = Number(ev.hook_node_id);
     const hook = (graph.getNodeById && graph.getNodeById(hid))
       || (graph._nodes || []).find((n) => n && String(n.id) === String(ev.hook_node_id));
+    markAgentDrop(node);
     node.pos = this._dropPos(hook || null, node);
     node.title = "agentY text";
     // keep-live (default): leave the hook wired exactly as the user drew it and
