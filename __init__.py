@@ -30,9 +30,11 @@ across two anchor nodes).
 import asyncio as _asyncio
 import json as _json
 import os as _os
+import re as _re
 import subprocess as _subprocess
 import sys as _sys
 import uuid as _uuid
+from pathlib import Path as _Path
 
 from aiohttp import web
 
@@ -871,10 +873,224 @@ class AgentYVideoCollector(io.ComfyNode):
         return io.NodeOutput(videos, "\n".join(paths))
 
 
+# ── per-project memory ────────────────────────────────────────────────────────
+# The store is a folder inside ComfyUI's user directory: one fact per file, the
+# type is the folder, the name is the filename. The agentY host reaches the same
+# folder by asking the running server where its user directory is, so a project
+# switch (which moves --user-directory, along with input/output) moves the memory
+# with it. These two nodes are the graph's way in — a graph can read a locked
+# character prompt, or record one, with no agent in the loop at all.
+_PM_PARTS = ("agentY", "project")
+_PM_TYPES = ["technical", "character", "style", "reference", "note"]
+
+
+def _pm_dir(create: bool = False):
+    """The project store under ComfyUI's user directory, or None if unavailable."""
+    try:
+        import folder_paths
+        d = _Path(folder_paths.get_user_directory()).joinpath(*_PM_PARTS)
+    except Exception:  # noqa: BLE001
+        return None
+    if create:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            return None
+    return d
+
+
+def _pm_slug(name: str) -> str:
+    """Same normalisation the host uses, so both sides agree on what a name is."""
+    return _re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+
+
+def _pm_find(key: str):
+    """Path of the entry named *key*, whatever type it was filed under."""
+    d = _pm_dir()
+    if d is None or not d.is_dir() or not key:
+        return None
+    for f in sorted(d.glob("*/*.md")):
+        if f.stem == key:
+            return f
+    return None
+
+
+class AgentYProjectMemoryGet(io.ComfyNode):
+    """Read a fact from this project's memory into the graph, as a string.
+
+    The project's memory holds what the production has established — a character's
+    prompt, the grade, a delivery spec — beside the project rather than in a chat
+    log, so it survives across conversations and switches when the project does.
+    This node wires one entry into any STRING input (a prompt, a note field) so the
+    graph runs with the project's own words and no agent involvement.
+
+    ``key`` is the entry name as the agent stored it ("hero", "grade"); spacing and
+    capitalisation don't matter. A missing entry yields ``fallback`` rather than an
+    error, so a graph shared between projects still runs where the fact is absent.
+
+    Editing the file on disk changes the value on the next run: the node fingerprints
+    the file's modification time, so ComfyUI re-reads it instead of serving the value
+    it happened to cache the first time.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYProjectMemoryGet",
+            display_name="agentY project memory (get)",
+            category="agentY",
+            description=(
+                "Read one entry from this project's memory as a STRING (character "
+                "prompt, style guide, delivery spec). Switches with the project."
+            ),
+            inputs=[
+                io.String.Input("key", default="", placeholder="hero"),
+                io.String.Input("fallback", multiline=True, default="",
+                                tooltip="Used when this project has no such entry."),
+            ],
+            outputs=[io.String.Output(display_name="text")],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, key="", fallback=""):  # noqa: ANN001, ARG003
+        # Without this the first value read would be cached for the life of the
+        # process and hand-edits to the file would never reach the graph.
+        f = _pm_find(_pm_slug(key))
+        try:
+            return f"{f}:{f.stat().st_mtime_ns}" if f else f"missing:{key}:{fallback}"
+        except Exception:  # noqa: BLE001
+            return f"unreadable:{key}"
+
+    @classmethod
+    def execute(cls, key="", fallback="") -> io.NodeOutput:  # noqa: ANN001
+        f = _pm_find(_pm_slug(key))
+        if f is None:
+            return io.NodeOutput(fallback)
+        try:
+            return io.NodeOutput(f.read_text(encoding="utf-8", errors="replace").strip())
+        except Exception:  # noqa: BLE001
+            return io.NodeOutput(fallback)
+
+
+class AgentYProjectMemorySet(io.ComfyNode):
+    """Record a fact into this project's memory from the graph.
+
+    For the thing worth keeping once a graph has produced it: the prompt that
+    finally worked, the path of the frame chosen as the locked reference. Writing
+    the same ``key`` again REPLACES the entry, so a graph that runs a hundred times
+    leaves one fact, not a hundred — but note that it writes on EVERY run, so wire
+    it where that is what you want.
+
+    ``lock`` protects an entry that has been settled: with it on, an existing entry
+    of the same name is left alone and this run passes the stored value through
+    unchanged, so re-running the graph can't quietly overwrite the reference the
+    rest of the project is matching.
+
+    The ``value`` is passed straight through, so this can sit inline on a wire.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYProjectMemorySet",
+            display_name="agentY project memory (set)",
+            category="agentY",
+            description=(
+                "Record one entry into this project's memory (replacing any entry of "
+                "the same name) and pass the value through. Switches with the project."
+            ),
+            inputs=[
+                io.String.Input("key", default="", placeholder="hero"),
+                io.String.Input("value", multiline=True, default=""),
+                io.Combo.Input("type", options=_PM_TYPES, default="note"),
+                io.Boolean.Input(
+                    "lock", default=False, label_on="keep existing", label_off="overwrite",
+                    tooltip=("ON: if this project already has an entry by this name, keep "
+                             "it and pass the STORED value through instead of writing."),
+                ),
+            ],
+            outputs=[io.String.Output(display_name="text")],
+        )
+
+    @classmethod
+    def execute(cls, key="", value="", type="note", lock=False) -> io.NodeOutput:  # noqa: ANN001, A002
+        slug, body = _pm_slug(key), str(value or "").strip()
+        existing = _pm_find(slug)
+        if lock and existing is not None:
+            try:
+                return io.NodeOutput(existing.read_text(encoding="utf-8", errors="replace").strip())
+            except Exception:  # noqa: BLE001
+                return io.NodeOutput(body)
+        if not slug or not body:
+            return io.NodeOutput(body)
+        d = _pm_dir(create=True)
+        if d is None:
+            print("[agentY project memory] no ComfyUI user directory — nothing stored")
+            return io.NodeOutput(body)
+        folder = _pm_slug(type) or "note"
+        target = d / folder / f"{slug}.md"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body + "\n", encoding="utf-8")
+            # Re-filing under a different type must not leave the old copy behind
+            # to answer with the old fact.
+            if existing is not None and existing != target:
+                existing.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agentY project memory] could not write {target}: {exc}")
+        return io.NodeOutput(body)
+
+
+class AgentYRefNote(io.ComfyNode):
+    """Say what a reference is FOR, on the wire that carries it.
+
+    Drop it between a loader and whatever consumes it — LoadImage → ref note →
+    hook anchor — and write what the agent should take from this input: "the face,
+    not the styling"; "the light, not the architecture". The agent reads the note
+    with the input, so a reference image stops being just "an image" and becomes an
+    image with a job.
+
+    Two things follow from the note living on the wire rather than in a separate
+    node: the binding can't drift (there is nothing to keep in sync — the link IS
+    the statement), and the agent still sees the real node behind it, so an anchor
+    on a ref note reads as the LoadImage it wraps, plus the role.
+
+    The output type follows the input, so it can be inserted into an existing wire
+    of any type without changing what downstream nodes receive. On a normal run it
+    is an identity passthrough.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        template = io.MatchType.Template("ref")
+        return io.Schema(
+            node_id="AgentYRefNote",
+            display_name="agentY ref note",
+            category="agentY",
+            description=(
+                "Annotate a reference input with what it is FOR ('the face, not the "
+                "styling'). Sits on the wire; identity passthrough on a normal run."
+            ),
+            inputs=[
+                io.MatchType.Input("input", template=template),
+                io.String.Input(
+                    "role", multiline=True, default="",
+                    placeholder="what to take from this reference — e.g. the face, not the styling",
+                ),
+            ],
+            outputs=[io.MatchType.Output(template=template, display_name="output")],
+        )
+
+    @classmethod
+    def execute(cls, input=None, role="") -> io.NodeOutput:  # noqa: ANN001, A002, ARG003
+        return io.NodeOutput(input)
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [AgentYHook, AgentYPython, AgentYText,
-                AgentYImageCollector, AgentYVideoCollector]
+                AgentYImageCollector, AgentYVideoCollector,
+                AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

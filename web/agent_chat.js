@@ -2262,6 +2262,28 @@ class AgentChat {
   // The type is what tells the agent side whether the wire carries a renderable
   // tensor (IMAGE/MASK/LATENT/VIDEO) it must materialise to a file before the
   // agent can see it — a mid-graph node names no file anywhere in its widgets.
+  // An `agentY ref note` is an annotation ON a wire, not a node anyone means to
+  // anchor: it says what the reference it carries is FOR. Resolve past it to the
+  // node the user thinks they wired, keeping the note's text. Doing it here rather
+  // than per-consumer is what keeps the QA references, the iterate feedback node
+  // and the hook block all seeing the LoadImage instead of the annotation.
+  _throughRefNotes(node, slot) {
+    const graph = app.graph;
+    const isNote = (n) =>
+      !!n && (n.type === "AgentYRefNote" || n.comfyClass === "AgentYRefNote");
+    let role = "";
+    for (let hop = 0; hop < 4 && isNote(node); hop++) {
+      role = role || String(this._widgetSnapshot(node).role || "").trim();
+      const inp = (node.inputs || []).find((i) => i && i.name === "input");
+      const link = inp && inp.link != null && graph.links ? graph.links[inp.link] : null;
+      const src = link && graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+      if (!src) break;          // an unwired note: report the note, with its text
+      node = src;
+      slot = link.origin_slot | 0;
+    }
+    return { node, slot, role };
+  }
+
   _anchorsFor(hookNode) {
     const graph = app.graph;
     if (!graph) return [];
@@ -2275,13 +2297,13 @@ class AgentChat {
       if (!/(?:^|\.)anchor\d*$/.test(String(inp.name || ""))) continue;
       const link = graph.links ? graph.links[inp.link] : null;
       if (!link) continue;
-      const node = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
-      if (!node) continue;
-      const slot = link.origin_slot | 0;
+      const origin = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+      if (!origin) continue;
+      const { node, slot, role } = this._throughRefNotes(origin, link.origin_slot | 0);
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
       const outType = String(link.type || ((node.outputs || [])[slot] || {}).type || "");
-      out.push({ node, fromSlot: slot, outType, toName: String(inp.name) });
+      out.push({ node, fromSlot: slot, outType, toName: String(inp.name), role });
     }
     return out;
   }
@@ -2388,6 +2410,8 @@ class AgentChat {
           from_output_slot: l.fromSlot,
           from_output_type: l.outType,
           to_input: l.toName,
+          // What an `agentY ref note` on this wire says the reference is FOR.
+          role: String(l.role || ""),
         })),
       });
     }
