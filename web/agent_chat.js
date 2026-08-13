@@ -168,6 +168,9 @@ class AgentChat {
     this._lastHealth = null; // last /agentY/health body, refreshed by _hostReachable()
     this._bootId = null;     // boot_id of the host process we're talking to (restart detection)
     this._queue = []; // messages typed while a turn is running → auto-sent when it finishes
+    // Set for one send when the message is already in the log: it went out
+    // mid-run ("↳") and came back undelivered, so re-echoing it would double it.
+    this._skipEcho = false;
     // Track the last CLI-status line shown so the on-connect / on-done buffer
     // fetch never re-renders a line already delivered live during a turn.
     this._lastStatusSeq = Number(localStorage.getItem(STATUS_SEQ_KEY) || 0) || 0;
@@ -472,6 +475,8 @@ class AgentChat {
     .ay-qchip .ay-qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .ay-qchip .ay-qx{cursor:pointer;color:var(--ay-muted);flex-shrink:0;}
     .ay-qchip .ay-qx:hover{color:var(--ay-text);}
+    .ay-qchip .ay-qnow{cursor:pointer;color:var(--ay-accent);flex-shrink:0;font-weight:700;line-height:1;}
+    .ay-qchip .ay-qnow:hover{color:var(--ay-text);}
     /* Offline overlay — dims + blocks the whole panel while the host is down,
        leaving only the "Start server" button actionable. */
     /* position:fixed, with its box set from the panel's on-screen rectangle by
@@ -838,8 +843,14 @@ class AgentChat {
   }
 
   // ── queued messages (typed while a turn is running) ──────────────────────────
-  _queueMessage(text) {
-    this._queue.push({ text: text || "", attachments: this.attachments.slice() });
+  _queueMessage(text, opts = {}) {
+    this._queue.push({
+      text: text || "",
+      attachments: this.attachments.slice(),
+      // Already shown in the log (it was sent mid-run and handed back) — don't
+      // echo it a second time when the queue dispatches it.
+      echoed: !!opts.echoed,
+    });
     this.input.value = "";
     this._autosize();
     this._hidePop();
@@ -853,12 +864,54 @@ class AgentChat {
       const label = (q.text || "(image only)") + (q.attachments.length ? `  📎${q.attachments.length}` : "");
       const chip = el("div", { className: "ay-qchip", title: "Queued — sends when the current turn finishes" }, [
         el("span", { className: "ay-qtext", textContent: "⏳ " + label }),
-        el("span", { className: "ay-qx", textContent: "✕", title: "Remove from queue" }),
       ]);
+      // "Send now": hand it to the turn that is already running instead of
+      // waiting for it to end. Text only — an interjection reaches the agent as
+      // part of a tool result, which carries no images.
+      if (this.streaming && this.curRequestId && q.text && !q.attachments.length) {
+        const now = el("span", {
+          className: "ay-qnow", textContent: "↳",
+          title: "Send now — the agent picks this up at its next step\n(Shift+click: cancel what it's doing and read this first)",
+        });
+        now.addEventListener("click", (e) => this._interject(i, e.shiftKey));
+        chip.append(now);
+      }
+      chip.append(el("span", { className: "ay-qx", textContent: "✕", title: "Remove from queue" }));
       chip.querySelector(".ay-qx").addEventListener("click", () => { this._queue.splice(i, 1); this._renderQueue(); });
       this.queueEl.append(chip);
     });
   }
+
+  // Deliver queued message #i into the RUNNING turn. The agent reads it at its
+  // next tool boundary (urgent cancels the pending call so it reads it instead).
+  // A 409 means the turn finished in the meantime — leave it queued, where it
+  // will be sent as a normal message, which is what would have happened anyway.
+  async _interject(i, urgent = false) {
+    const item = this._queue[i];
+    if (!item || !item.text) return;
+    let res = null;
+    try {
+      res = await fetch(backendBase() + "/agentY/interject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: this.curRequestId, text: item.text, urgent: !!urgent }),
+      });
+    } catch (e) {
+      this._sys("❌ Could not send that mid-run: " + e);
+      return;
+    }
+    if (!res.ok) {
+      this._sys(res.status === 409
+        ? "_The turn just finished — that message stays queued and sends next._"
+        : "❌ Mid-run send failed (" + res.status + ").");
+      this._renderQueue();
+      return;
+    }
+    this._queue.splice(i, 1);
+    this._renderQueue();
+    this._userMsg(item.text + (urgent ? "  \n_(sent mid-run — urgent)_" : "  \n_(sent mid-run)_"));
+  }
+
   // Dispatch the next queued message once the pipeline is free (called on `done`).
   _maybeDispatchQueued() {
     if (this.streaming || this.activeAsk || !this._hostUp || !this._queue.length) return;
@@ -867,6 +920,7 @@ class AgentChat {
     this.input.value = item.text || "";
     this.attachments = item.attachments || [];
     this._renderAttachments();
+    this._skipEcho = !!item.echoed;
     this.send(); // re-captures canvas state at dispatch time; clears input/attachments
   }
 
@@ -1437,6 +1491,17 @@ class AgentChat {
         this.curAssistant = null;
         this.injectNode(ev);
         break;
+      case "interject_undelivered":
+        // Sent mid-run, but the agent had already made its last tool call. It is
+        // back in the queue and goes out with the next turn; it's already in the
+        // log, so the dispatch won't echo it again.
+        for (const t of ev.texts || []) {
+          this._queue.push({ text: t, attachments: [], echoed: true });
+        }
+        this._renderQueue();
+        this._sys("_The agent had already finished its last step, so that message "
+          + "goes out with the next turn._");
+        break;
       case "canvas_patch":
         this.curAssistant = null;
         if (ev.op === "place_text") this._placeCanvasText(ev);
@@ -1768,7 +1833,10 @@ class AgentChat {
     }
     if (canvasHooks.length) noteParts.push(`${canvasHooks.length} canvas hook(s)`);
     const selNote = this._describeSelection(canvasSelection);
-    this._userMsg(text
+    // Already in the log if this came back from a mid-run send that arrived too
+    // late; echoing it again would show the same message twice.
+    if (this._skipEcho) this._skipEcho = false;
+    else this._userMsg(text
       + (noteParts.length ? `  \n_(${noteParts.join(", ")})_` : "")
       + (selNote ? `  \n${selNote}` : ""));
     this.input.value = "";
