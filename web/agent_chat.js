@@ -56,6 +56,15 @@ function isAgentDrop(n) {
   return t.startsWith("agentY · ") || t === "agentY text";
 }
 
+// Does this look like an [x, y] pair we can measure?
+// It has to be asked this way round: a live node's `pos` is a Float64Array view
+// (LiteGraph keeps position and size in one `Rectangle`) and its `size` is a
+// Proxy over another, so `Array.isArray` is false for every node on the canvas.
+// They index like arrays, which is all the placement maths ever does with them.
+function isXY(v) {
+  return !!v && Number.isFinite(v[0]) && Number.isFinite(v[1]);
+}
+
 // Mark a node as ours, so later placements can tell it from the user's graph.
 function markAgentDrop(node) {
   try {
@@ -1299,6 +1308,14 @@ class AgentChat {
     return null;
   }
 
+  // Fallback for a graph with nothing to measure: just inside the top-left of
+  // what the user is looking at. A fixed graph coordinate would be "somewhere
+  // else" for anyone who has panned away from the origin.
+  _viewCorner() {
+    const v = this._visibleArea();
+    return v ? [v[0] + 80, v[1] + 80] : [80, 80];
+  }
+
   // Where to drop a node the agent just made — a generated media loader, an
   // agentY text node, anything. One rule for all of them: put it next to the
   // nodes that are already on the graph, never out in empty space the user has to
@@ -1311,10 +1328,10 @@ class AgentChat {
   //             positioned, and counting it (sitting at LiteGraph's default spot,
   //             near the origin) would drag every drop back to the origin with it.
   _dropPos(near = null, exclude = null) {
-    const placed = (n) => n && n !== exclude && Array.isArray(n.pos) && Array.isArray(n.size);
+    const placed = (n) => n && n !== exclude && isXY(n.pos) && isXY(n.size);
     let nodes = [];
     try { nodes = ((app.graph && app.graph._nodes) || []).filter(placed); } catch (_) {}
-    if (!nodes.length) return [80, 80];   // empty canvas: anywhere is "near"
+    if (!nodes.length) return this._viewCorner();   // nothing to measure: land in view
 
     // Measure against the user's own nodes: our earlier drops are what this one is
     // supposed to line up with, not what it should stand clear of. (They are still
