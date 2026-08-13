@@ -187,8 +187,11 @@ class AgentChat {
     // handled, so the idle poll never re-drops one delivered live during a turn.
     this._lastNotifySeq = Number(localStorage.getItem(NOTIFY_SEQ_KEY) || 0) || 0;
     this._notifyTimer = null;
+    this._booted = false;   // true once _bootstrap has made the first health check
+    this._probing = false;  // an off-timer health probe is in flight
     this._injectStyles();
     this._build();
+    this._hookVisibility();
     this._bootstrap();
   }
 
@@ -200,6 +203,7 @@ class AgentChat {
     this.mountEl = elm;
     elm.innerHTML = "";
     elm.appendChild(this.wrap);
+    this._onShown();  // the panel is back on screen: is the host still there?
     // Cheap, non-destructive refresh: repopulate the thread dropdown (in case a
     // conversation was created/deleted elsewhere) and the model list (so a vendor
     // that was down at connect — e.g. Ollama still starting — appears once it's up)
@@ -216,6 +220,48 @@ class AgentChat {
   async _bootstrap() {
     if (await this._hostReachable()) { await this._afterConnect(true); }
     else this._startReconnect(true);
+    this._booted = true;  // from here on, _probeNow may check on its own
+  }
+
+  // One listener for "the user is looking at this again". A backgrounded browser
+  // tab has its timers throttled to roughly a tick a minute, so whatever the panel
+  // shows on return can be that stale — including "ready" for a host that is long
+  // gone. The sidebar's own show/hide arrives through mount() instead: ComfyUI
+  // unmounts a custom sidebar tab when you switch away from it and calls render()
+  // again when you come back.
+  _hookVisibility() {
+    if (typeof document === "undefined") return;
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) this._onShown();
+    });
+  }
+
+  // The panel just became visible. Both of these are timer-driven otherwise, and
+  // neither cadence is a good fit for this moment: the user is here to type, and
+  // the state in front of them is whatever was true when they left.
+  _onShown() {
+    this._probeNow();            // don't make them wait a tick to learn the host is gone
+    this._drainNotifications();  // and drop anything that finished while we weren't looking
+  }
+
+  // Check the host now instead of on the next tick. Nothing else can notice a host
+  // that crashed or was stopped while the panel sat idle, and the watchers that do
+  // (heartbeat at 5 s, reconnect at 2.5 s) are deliberately unhurried — it costs
+  // nothing to ask once more at the one moment someone is waiting for the answer.
+  async _probeNow() {
+    if (!this._booted) return;                        // _bootstrap owns the first check
+    if (this._probing) return;                        // a re-mount can fire this twice over
+    if (this.streaming && !this._adoptedRun) return;  // a stream we own is proof of life
+    this._probing = true;
+    try {
+      if (this._reconnectTimer) { await this._reconnectTick(); return; }  // down: back yet?
+      if (await this._hostReachable()) {
+        if (this._hostRestarted()) await this._afterConnect(false);
+        return;
+      }
+      if (await this._hostReachable()) return;  // one retry: don't flap on a blip
+      this._startReconnect(false);
+    } finally { this._probing = false; }
   }
 
   async _hostReachable() {
@@ -360,13 +406,20 @@ class AgentChat {
 
   _startReconnect(firstBoot) {
     if (this._reconnectTimer) return;
+    // Held on the instance so an off-timer attempt (_probeNow, when the panel
+    // comes back on screen) reconnects on exactly the terms the watcher would —
+    // a first boot still restores the last conversation instead of just listing.
+    this._reconnectFirst = !!firstBoot;
     this._setHostUp(false);
-    this._reconnectTimer = setInterval(async () => {
-      if (!(await this._hostReachable())) return;
-      clearInterval(this._reconnectTimer);
-      this._reconnectTimer = null;
-      this._afterConnect(!!firstBoot);
-    }, 2500);
+    this._reconnectTimer = setInterval(() => this._reconnectTick(), 2500);
+  }
+
+  async _reconnectTick() {
+    if (!this._reconnectTimer) return;
+    if (!(await this._hostReachable())) return;
+    clearInterval(this._reconnectTimer);
+    this._reconnectTimer = null;
+    this._afterConnect(this._reconnectFirst);
   }
 
   // Reopen the conversation that was active last (survives the panel being
@@ -741,15 +794,10 @@ class AgentChat {
     // has a generation in flight, and stops it once nothing is pending — so the
     // idle tab isn't polling forever, yet a completion still lands promptly.
     this._drainNotifications();
-    // Don't poll while this ComfyUI tab is hidden: a backgrounded tab shouldn't
-    // hammer /agentY/notifications, and skipping keeps the drop landing in the tab
-    // the user is actually looking at. Drain once immediately when they return.
-    if (!this._visHooked && typeof document !== "undefined") {
-      this._visHooked = true;
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) this._drainNotifications();
-      });
-    }
+    // Nothing is drained while this ComfyUI tab is hidden: a backgrounded tab
+    // shouldn't hammer /agentY/notifications, and skipping keeps the drop landing
+    // in the tab the user is actually looking at (see _drainNotifications). The
+    // catch-up when they return is _onShown's job.
   }
 
   _armNotifyPoll() {
