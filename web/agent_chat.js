@@ -2330,7 +2330,18 @@ class AgentChat {
       const { node, slot, role } = this._throughRefNotes(origin, link.origin_slot | 0);
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
-      const outType = String(link.type || ((node.outputs || [])[slot] || {}).type || "");
+      //
+      // EXCEPT when we hopped through an `agentY ref note`. Then this link starts
+      // at the NOTE, and its type is the note's wildcard (COMFY_MATCHTYPE_V3) —
+      // reporting that would say the anchor is an image whose type isn't IMAGE.
+      // Downstream, splicing looks for the anchor matching a target's type, finds
+      // none, and falls back to the first anchor wired to the hook — which is how
+      // a prompt string ended up in a Seedream image input. A note is an
+      // annotation on the wire; the type belongs to what it wraps.
+      const ownType = String(((node.outputs || [])[slot] || {}).type || "");
+      const outType = node === origin
+        ? String(link.type || ownType || "")
+        : String(ownType || link.type || "");
       out.push({ node, fromSlot: slot, outType, toName: String(inp.name), role });
     }
     return out;
