@@ -501,6 +501,22 @@ class AgentYHook(io.ComfyNode):
                         "yourself without the agent."
                     ),
                 ),
+                io.Boolean.Input(
+                    "memorize",
+                    default=False,
+                    label_on="memorize result",
+                    label_off="run every time",
+                    tooltip=(
+                        "Keep what this hook produced and put it straight back into the "
+                        "graph on later runs, instead of asking the agent to work it out "
+                        "again — so an image analysis or a written prompt is paid for "
+                        "once. The memory is released the moment anything that feeds this "
+                        "hook changes (a different image, a rewire, an upstream edit), or "
+                        "its prompt or settings change. Switching this OFF also releases "
+                        "it, which is how you force a fresh result. Stored beside the "
+                        "project, so it follows the project you are working on."
+                    ),
+                ),
                 io.Autogrow.Input("anchors", template=anchors),
             ],
             outputs=[

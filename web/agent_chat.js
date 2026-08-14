@@ -1468,9 +1468,37 @@ class AgentChat {
       w.value = val;
       try { if (w.callback) w.callback(val); } catch (_) {}
     }
-    node.title = "agentY · " + (ev.name || type);
+    // What the file is FOR beats what it is called: the next run reads the title.
+    const role = String(ev.role || "").trim();
+    node.title = "agentY · " + (role || ev.name || type);
+    if (role && ev.role_declared) this._attachRefNote(node, role);
     app.graph.setDirtyCanvas(true, true);
-    this._sys(`🧩 Added **${type}** node → \`${ev.name}\``);
+    this._sys(`🧩 Added **${type}** node → \`${ev.name}\`` + (role ? ` — _${role}_` : ""));
+  }
+
+  // The user named this output themselves, in the hook's own prompt. Put their
+  // words on the canvas as an `agentY ref note` hanging off the new node, so
+  // whatever they wire it into next is told what to take from it. Only ever on a
+  // stated role — adding a node per output to someone's graph uninvited is not a
+  // courtesy, it's clutter.
+  _attachRefNote(src, role) {
+    const LG = window.LiteGraph;
+    if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYRefNote"]) return;
+    try {
+      const note = LG.createNode("AgentYRefNote");
+      app.graph.add(note);
+      markAgentDrop(note);
+      const w = (note.widgets || []).find((x) => x && x.name === "role");
+      if (w) {
+        w.value = role;
+        try { if (w.callback) w.callback(role); } catch (_) {}
+      }
+      note.title = "agentY ref · " + role.slice(0, 40);
+      note.pos = [src.pos[0] + (src.size ? src.size[0] : 210) + DROP_GAP, src.pos[1]];
+      src.connect(0, note, 0);
+    } catch (e) {
+      // A decoration must never cost the user the node it was decorating.
+    }
   }
 
   // ── SSE event dispatch ───────────────────────────────────────────────────────
@@ -2387,6 +2415,10 @@ class AgentChat {
         // at run time and the agentY text node is placed unconnected as a reference.
         // freeze ON = bake the value into the wired target (self-contained workflow).
         freeze: w.freeze === true || w.freeze === "true",
+        // Remember what this hook produces and put it back next time, for as long
+        // as nothing feeding it changes. Off is also the forget gesture: the
+        // server drops what it stored under this hook's current key.
+        memorize: w.memorize === true || w.memorize === "true",
         output_count: outs.length,
         outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
         // Where this hook's output is wired — the producer's destination input(s).
