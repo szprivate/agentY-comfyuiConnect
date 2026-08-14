@@ -333,6 +333,28 @@ from comfy_api.latest import ComfyExtension, io
 _MAX_ANCHORS = 20
 
 
+def _agent_placed() -> dict:
+    """Schema kwargs for a node only the AGENT ever places.
+
+    ``is_dev_only`` sets litegraph's ``skip_list``, which drops the node from the
+    add-node menu and the double-click search while leaving it registered and
+    fully runnable — so ``LiteGraph.createNode`` (how the panel drops an agentY
+    text node) and a workflow that already contains one both keep working. Turn
+    ComfyUI's **Enable dev mode options** setting on to get them back in search.
+
+    Feature-detected: the field landed in early 2026, and passing an unknown
+    kwarg to the Schema dataclass would take down the whole node pack — every
+    agentY node, hook included — for a cosmetic tidy-up.
+    """
+    try:
+        from dataclasses import fields as _fields
+        if any(f.name == "is_dev_only" for f in _fields(io.Schema)):
+            return {"is_dev_only": True}
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 class AgentYHook(io.ComfyNode):
     """An agent instruction attached to the canvas. Three purposes:
 
@@ -538,6 +560,7 @@ class AgentYPython(io.ComfyNode):
             node_id="AgentYPython",
             display_name="agentY python",
             category="agentY",
+            **_agent_placed(),   # the bake step places these; you don't add them by hand
             description=(
                 "Run an agent-authored Python snippet as a node (used when baking computed "
                 "values into subgraphs). Inputs bind as in0, in1, …; set a list `outputs`. "
@@ -592,6 +615,7 @@ class AgentYText(io.ComfyNode):
             node_id="AgentYText",
             display_name="agentY text",
             category="agentY",
+            **_agent_placed(),   # place_canvas_text drops these; you don't add them by hand
             description=(
                 "A string the agent wrote (answering a 'text' hook), wireable into any "
                 "STRING input. Editable by hand; emits its text on a normal run."
