@@ -174,6 +174,27 @@ app.registerExtension({
   },
 });
 
+// The batch expander sits between a collector and the numbered image slots on a
+// model node. Teal like the image collector it usually follows, so the pair reads
+// as one idea on the canvas.
+app.registerExtension({
+  name: "agentY.expandBatch",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "AgentYImageBatchExpand") return;
+    const onCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+      this.color = "#264a4a";
+      this.bgcolor = "#1c3030";
+      if (!this.title || this.title === "AgentYImageBatchExpand") {
+        this.title = "agentY expand image batch";
+      }
+      if (!this.size || (this.size[0] === 0 && this.size[1] === 0)) this.size = [260, 240];
+      return r;
+    };
+  },
+});
+
 // The agentY python node (used when baking computed values) shares the warm
 // agentY palette. Its outputs are declared/fixed, so no output auto-grow here.
 app.registerExtension({

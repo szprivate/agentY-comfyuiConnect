@@ -1133,10 +1133,74 @@ class AgentYRefNote(io.ComfyNode):
         return io.NodeOutput(input)
 
 
+# How many images the expander can hand out. Executable nodes cannot auto-grow
+# outputs (the count is fixed at registration, same constraint as AgentYPython),
+# so this is a ceiling rather than a preference — eight covers the reference
+# counts the API video models actually accept.
+_N_EXPAND_OUT = 8
+
+
+class AgentYImageBatchExpand(io.ComfyNode):
+    """Split a batch of images into one output per image.
+
+    The problem it solves: an ``agentY image collector`` emits its files as a
+    single IMAGE **batch**, and the API model nodes take references in numbered
+    single-image slots (``image_1``, ``image_2``, …). Wire the batch straight into
+    ``image_1`` and the node takes the FIRST image and silently ignores the rest —
+    the video comes back built from one reference when you gave it five, and
+    nothing anywhere reports an error.
+
+    So: collector → this → one wire per slot. ``count`` says how many images
+    actually arrived, which is what tells you whether the slots you wired are
+    real.
+
+    A slot beyond the end of the batch emits nothing rather than repeating the
+    last image. Repeating would be the quiet failure again — a reference sheet
+    with the same character twice, that nobody notices until the render.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYImageBatchExpand",
+            display_name="agentY expand image batch",
+            category="agentY",
+            description=(
+                "Split an IMAGE batch (e.g. from an agentY image collector) into one "
+                "image per output, so each can be wired into its own numbered slot on "
+                "a model node. Wiring a batch into a single image_1 input uses only the "
+                "first image. `count` reports how many arrived."
+            ),
+            inputs=[
+                io.Image.Input("images", tooltip="The image batch to split, in order."),
+            ],
+            outputs=(
+                [io.Image.Output(display_name=f"image_{i + 1}")
+                 for i in range(_N_EXPAND_OUT)]
+                + [io.Int.Output(display_name="count")]
+            ),
+        )
+
+    @classmethod
+    def execute(cls, images=None) -> io.NodeOutput:  # noqa: ANN001
+        # A ComfyUI IMAGE is a [B, H, W, C] tensor; slicing with i:i+1 keeps the
+        # batch dimension, so each output is a valid one-image batch rather than a
+        # bare HWC array that downstream nodes would choke on.
+        items: list = []
+        if images is not None:
+            try:
+                items = [images[i:i + 1] for i in range(len(images))]
+            except TypeError:                      # not sliceable — pass it through
+                items = [images]
+        outs = items[:_N_EXPAND_OUT]
+        outs += [None] * (_N_EXPAND_OUT - len(outs))
+        return io.NodeOutput(*outs, len(items))
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [AgentYHook, AgentYPython, AgentYText,
-                AgentYImageCollector, AgentYVideoCollector,
+                AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote]
 
 
