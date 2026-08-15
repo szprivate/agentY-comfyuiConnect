@@ -2428,15 +2428,23 @@ class AgentChat {
       const hookLinks = links.filter((l) => isHook(l.node));
       const first = realLinks[0] ? realLinks[0].node : null;
       const outs = hn.outputs || [];
+      // One switch on the node ("do I want a graph I can re-run without the
+      // agent?"), two wire fields, because what gets baked depends on what the
+      // hook produces. `bake` is only ever read for make_workflow hooks and
+      // `freeze` only inside place_canvas_text, which make_workflow never
+      // reaches — so the same boolean answers both and neither side has to
+      // re-derive the purpose. Older saves are migrated in agent_hook.js.
+      const bake = w.bake === true || w.bake === "true";
       hooks.push({
         hook_node_id: String(hn.id),
         directive,
         purpose: String(w.purpose || "inline_parameter"),
-        bake: w.bake_to_canvas === true || w.bake_to_canvas === "true",
-        // freeze OFF (default) = keep the hook live: the produced value is injected
-        // at run time and the agentY text node is placed unconnected as a reference.
-        // freeze ON = bake the value into the wired target (self-contained workflow).
-        freeze: w.freeze === true || w.freeze === "true",
+        // make_workflow: nest the generated workflow into a canvas subgraph.
+        bake,
+        // The place_canvas_text purposes: OFF keeps the hook live (the value is
+        // injected at run time and the agentY text node is dropped unconnected as
+        // a reference); ON bakes it into the wired target.
+        freeze: bake,
         // Remember what this hook produces and put it back next time, for as long
         // as nothing feeding it changes. Off is also the forget gesture: the
         // server drops what it stored under this hook's current key.

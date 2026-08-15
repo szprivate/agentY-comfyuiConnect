@@ -410,21 +410,35 @@ class AgentYHook(io.ComfyNode):
     stage that yields several results forwards them all to the next hook via the
     agent, not via several slots.
 
-    ``bake_to_canvas`` (make_workflow only) — when on, the agent doesn't just
-    run the workflow it generates for this hook: it nests that workflow into a
-    ComfyUI **subgraph**, exposes inputs/outputs matching this hook's slots, drops
-    the subgraph onto the same canvas, and wires the subgraphs to mirror the hook
-    chain — "baking" the multi-step task into a reusable native workflow that runs
-    next time without the agent.
+    ``bake`` — one question: *do you want a graph you can re-run without the
+    agent?* OFF (default) **keeps the hook live** — it stays wired exactly as you
+    drew it and the agent supplies what it produced at run time. ON makes that
+    result a permanent part of the graph.
 
-    ``freeze`` (inline_parameter / text hooks) — controls what the agent does with the
-    value it produces for this hook. OFF (default) *keeps the hook live*: the hook
-    stays wired exactly as drawn, the agent injects the produced value into the
-    graph at run time, and the ``agentY text`` node it drops is left UNCONNECTED as
-    a human-readable reference. ON *freezes* the value into the graph: the agent
-    bakes the ``agentY text`` node into the wired target input and takes over the
-    hook's downstream link, yielding a self-contained plain workflow you can re-run
-    yourself without the agent (at the cost of bypassing the hook).
+    What "permanent" means follows the ``purpose``, because the two purposes
+    produce different things; it is not a second decision you make:
+
+    * **make_workflow** — the generated workflow is nested into a ComfyUI
+      **subgraph** whose inputs/outputs match this hook's slots, dropped onto the
+      same canvas beside the hook, and wired to mirror the hook chain.
+    * **text / inline_parameter / general_request** — the ``agentY text`` node is
+      baked into the wired target input and takes over the hook's downstream link
+      (kept live instead, that node is dropped UNCONNECTED as a readable
+      reference and the value is injected at run time).
+
+    This was two switches, ``bake_to_canvas`` and ``freeze``. They asked the same
+    question of two different products and were never both applicable — seeing
+    them side by side is what made them read as two ideas. Saved graphs migrate
+    on load (see ``web/agent_hook.js``); a hook with either one on comes back
+    with ``bake`` on.
+
+    ``memorize`` is a *different* axis and stays its own switch: it is about
+    paying for the same answer twice, not about permanence, and it is perfectly
+    reasonable to want a hook both memorized and baked.
+
+    Switches the selected ``purpose`` does not read are hidden rather than shown
+    inert — ``bake`` on qa / iterate hooks, ``memorize`` on qa / iterate (which
+    never deliver through ``place_canvas_text``, the only thing that stores one).
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -478,27 +492,20 @@ class AgentYHook(io.ComfyNode):
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(
-                    "bake_to_canvas",
+                    "bake",
                     default=False,
-                    label_on="bake subgraph",
-                    label_off="run only",
-                    tooltip=(
-                        "make_workflow only: also bake the generated workflow onto the "
-                        "canvas as a nested subgraph wired to mirror the hook chain."
-                    ),
-                ),
-                io.Boolean.Input(
-                    "freeze",
-                    default=False,
-                    label_on="freeze into graph",
+                    label_on="bake into graph",
                     label_off="keep hook live",
                     tooltip=(
-                        "text / inline_parameter hooks: OFF (default) keeps the hook wired as you "
-                        "drew it and drops the 'agentY text' node UNCONNECTED as a reference "
-                        "— the agent injects the produced value into the graph at run time. ON "
-                        "bakes the 'agentY text' node into the wired target input, bypassing "
-                        "the hook, so you get a self-contained plain workflow you can re-run "
-                        "yourself without the agent."
+                        "Do you want a graph you can re-run WITHOUT the agent? OFF (default) "
+                        "keeps the hook live: it stays wired as you drew it and the agent "
+                        "supplies what it produced at run time. ON makes that result a "
+                        "permanent part of the graph. What gets baked follows the purpose — "
+                        "on a make_workflow hook the generated workflow is nested into a "
+                        "ComfyUI subgraph placed beside the hook; on a text / "
+                        "inline_parameter / general_request hook the 'agentY text' node is "
+                        "baked into the wired target input, taking over the hook's link. "
+                        "Hidden on purposes that produce nothing to bake (qa, iterate)."
                     ),
                 ),
                 io.Boolean.Input(
@@ -532,7 +539,7 @@ class AgentYHook(io.ComfyNode):
 
     @classmethod
     def execute(cls, directive="", purpose="inline_parameter",
-                bake_to_canvas=False, freeze=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
+                bake=False, memorize=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).
@@ -550,7 +557,7 @@ _N_PY_OUT = 4
 class AgentYPython(io.ComfyNode):
     """Run an agent-authored Python snippet as a real ComfyUI node.
 
-    This is the companion to ``bake_to_canvas``: at runtime the orchestrator
+    This is the companion to a hook's ``bake`` switch: at runtime the orchestrator
     computes derived values (e.g. a video's length) with a Python script; to make
     such a value a **native** output of a baked subgraph — so re-running the
     workflow reproduces it *without the agent* — the same snippet is placed in this
