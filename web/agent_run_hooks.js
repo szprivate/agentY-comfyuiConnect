@@ -119,7 +119,7 @@ function injectStyles() {
     /* The menu is fixed and lives on <body>: the action bar is re-rendered on
        dock/undock and clips its own overflow, either of which would eat it. */
     #${MENU_ID}{
-      position:fixed;z-index:2000;min-width:15rem;padding:.25rem;
+      position:fixed;z-index:2000;min-width:12rem;padding:.25rem;
       display:none;flex-direction:column;
       font-family:inherit;font-size:.8125rem;
       color:var(--p-content-color,#e6e6e6);
@@ -158,12 +158,14 @@ function injectStyles() {
 // settings page: the choice is made per run, not once.
 const MENU_ITEMS = [
   { icon: "pi pi-play", title: "Full run",
-    desc: "Run the hooks and generate for real.",
+    desc: "Generate for real",
     run: () => runHooks() },
   { icon: "pi pi-eye", title: "Dry run",
-    desc: "Walk the whole hook chain and build every graph, but submit nothing. "
-        + "Generations come back as stand-in file paths, so the later hooks still "
-        + "run — it checks the logic, not the pixels.",
+    desc: "Build everything, generate nothing",
+    // The long version, on hover — a menu is glanced at, not read.
+    hint: "Walks the whole hook chain and builds every graph, but submits none of "
+        + "them. Generations come back as stand-in file paths, so the hooks after "
+        + "them still run: it checks the logic, not the pixels.",
     run: () => dryRunHooks() },
 ];
 
@@ -178,6 +180,7 @@ function menu() {
     const b = document.createElement("button");
     b.type = "button";
     b.setAttribute("role", "menuitem");
+    if (item.hint) b.title = item.hint;
     const icon = document.createElement("i");
     icon.className = item.icon;
     const text = document.createElement("span");
