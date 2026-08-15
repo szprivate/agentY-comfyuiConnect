@@ -131,16 +131,39 @@ for (const [nodeName, cfg] of Object.entries(COLLECTORS)) {
         // widget. Not serialized — it's transient state, off on every reload.
         const reset = node.addWidget(
           "toggle", "reset_increment", false, () => {},
-          { on: "reset on next Queue", off: "off" },
+          { on: "reset on next Queue", off: "off", serialize: false },
         );
         if (reset) reset.serialize = false;
 
-        const b1 = node.addWidget("button", `+ Add ${cfg.noun}…`, null, () => addFrom(node, cfg, "files"));
-        const b2 = node.addWidget("button", "+ Add folder…", null, () => addFrom(node, cfg, "folder"));
-        const b3 = node.addWidget("button", "Clear", null, () => setPaths(node, []));
-        // Buttons are transient UI — never serialize them into the workflow (only
-        // the `files` string carries state).
-        for (const b of [b1, b2, b3]) if (b) b.serialize = false;
+        // Only a real press may act. A button's callback is invoked by the canvas
+        // as callback(value, canvas, node, pos, EVENT); a value landing on the
+        // widget while a workflow loads arrives without one. Opening a workflow
+        // that carried these widgets used to pop the file picker three times and
+        // run Clear, which emptied the list the agent had just filled in — the
+        // one thing you open the graph to check.
+        const pressed = (fn) => function (...args) {
+          const ev = args[args.length - 1];
+          if (!ev || typeof ev !== "object" || !("clientX" in ev || "pointerId" in ev ||
+              "type" in ev)) return;
+          return fn.apply(this, args);
+        };
+
+        const b1 = node.addWidget("button", `+ Add ${cfg.noun}…`, null,
+                                  pressed(() => addFrom(node, cfg, "files")));
+        const b2 = node.addWidget("button", "+ Add folder…", null,
+                                  pressed(() => addFrom(node, cfg, "folder")));
+        const b3 = node.addWidget("button", "Clear", null,
+                                  pressed(() => setPaths(node, [])));
+        // Never serialize them. `serialize` alone is not enough: the workflow
+        // serializer honours it, but graphToPrompt — which is what a saved API
+        // workflow is made of — reads `options.serialize`, so the buttons were
+        // travelling in the prompt as "+ Add images…": null and coming back as
+        // callbacks on load.
+        for (const b of [b1, b2, b3]) {
+          if (!b) continue;
+          b.serialize = false;
+          b.options = Object.assign({}, b.options, { serialize: false });
+        }
 
         // Re-hide/show the reset toggle whenever load_incrementally flips.
         const inc = getWidget(node, "load_incrementally");
