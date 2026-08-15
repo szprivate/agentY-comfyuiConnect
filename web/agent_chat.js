@@ -907,6 +907,9 @@ class AgentChat {
       // Already shown in the log (it was sent mid-run and handed back) — don't
       // echo it a second time when the queue dispatches it.
       echoed: !!opts.echoed,
+      // A dry run queued behind a running turn is still a dry run when its turn
+      // comes; the flag has to survive the wait or it silently generates.
+      dryRun: !!opts.dryRun,
     });
     this.input.value = "";
     this._autosize();
@@ -978,6 +981,7 @@ class AgentChat {
     this.attachments = item.attachments || [];
     this._renderAttachments();
     this._skipEcho = !!item.echoed;
+    this._dryRunOnce = !!item.dryRun;
     this.send(); // re-captures canvas state at dispatch time; clears input/attachments
   }
 
@@ -1866,6 +1870,11 @@ class AgentChat {
   // ── sending ──────────────────────────────────────────────────────────────────
   async send() {
     const text = this.input.value.trim();
+    // One-shot: set by the "Dry run" entry on the hooks button, consumed here so
+    // the next message is an ordinary run again. Read before every early return —
+    // a /help or an ask-reply must not leave it armed for something unrelated.
+    const dryRun = !!this._dryRunOnce;
+    this._dryRunOnce = false;
 
     // First send is a user gesture — a good moment to ask (once) for browser-
     // notification permission so background auto-drops (e.g. Magnific finishing
@@ -1910,7 +1919,7 @@ class AgentChat {
     // A turn is already running (and we're not answering an ask): queue this
     // message instead of dropping it — it auto-sends when the turn finishes.
     if (this.streaming) {
-      if (text || this.attachments.length) this._queueMessage(text);
+      if (text || this.attachments.length) this._queueMessage(text, { dryRun });
       return;
     }
     const imgs = this.attachments.map((a) => a.path);
@@ -1925,6 +1934,7 @@ class AgentChat {
       noteParts.push(`${bits.join(" + ")} from canvas`);
     }
     if (canvasHooks.length) noteParts.push(`${canvasHooks.length} canvas hook(s)`);
+    if (dryRun) noteParts.push("dry run — builds everything, generates nothing");
     const selNote = this._describeSelection(canvasSelection);
     // Already in the log if this came back from a mid-run send that arrived too
     // late; echoing it again would show the same message twice.
@@ -1953,6 +1963,7 @@ class AgentChat {
       canvas_hooks: canvasHooks,
       canvas_selection: canvasSelection,
       canvas_prompt: canvasPrompt,
+      dry_run: dryRun,
     });
   }
 
@@ -2555,8 +2566,11 @@ window.agentYCurrentThread = () => {
 // Goes through the normal send() path on purpose — that is what captures the
 // graph, the hooks, the selection and any staged canvas inputs, so the button
 // and a typed "run this" reach the agent as exactly the same turn.
+// `opts.dryRun` runs the same turn with the submission removed: every hook is
+// answered and every graph is built, but nothing is handed to ComfyUI and each
+// variant comes back as a stand-in path (see src/utils/dry_run.py agent-side).
 // Returns a short status string; the caller surfaces it as a toast.
-window.agentYRunHooks = (text) => {
+window.agentYRunHooks = (text, opts = {}) => {
   if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();  // builds its DOM unmounted
   const chat = _AGENTY_CHAT;
   // Nothing to run: a hookless graph would still cost a full (paid) turn to be
@@ -2582,10 +2596,16 @@ window.agentYRunHooks = (text) => {
   } catch (_) {}
   // Sampled BEFORE send(), which decides then and there whether to queue.
   const wasBusy = chat.streaming;
-  chat.input.value = String(text || "Run this workflow");
+  const dry = !!opts.dryRun;
+  chat._dryRunOnce = dry;   // one-shot; send() consumes it
+  chat.input.value = String(text || (dry ? "Dry run this workflow" : "Run this workflow"));
   chat.send();
-  return wasBusy
-    ? `Queued — ${hooks.length} hook(s) will run when the current turn finishes.`
+  if (wasBusy) {
+    return `Queued — ${hooks.length} hook(s) ${dry ? "will be dry-run" : "will run"} `
+         + "when the current turn finishes.";
+  }
+  return dry
+    ? `Dry run — walking ${hooks.length} hook(s), building the graphs, generating nothing…`
     : `Running ${hooks.length} agentY hook(s)…`;
 };
 
