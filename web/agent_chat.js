@@ -2498,6 +2498,12 @@ class AgentChat {
       // Older saves (two fields, or three) are migrated in agent_hook.js.
       hooks.push({
         hook_node_id: String(hn.id),
+        // What the node is CALLED on the canvas. Node ids are not visible without
+        // going looking for them, so an agent that says "hook 30" is naming
+        // something the user cannot see; the title is what they can point at.
+        // Sent raw, including the default "agentY hook" — deciding whether a title
+        // is distinguishing is the server's job, not something to guess here.
+        title: String(hn.title || ""),
         directive,
         purpose: String(w.purpose || "inline_parameter"),
         // Keep what this hook produced and put it back next time, for as long as
