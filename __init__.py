@@ -410,35 +410,40 @@ class AgentYHook(io.ComfyNode):
     stage that yields several results forwards them all to the next hook via the
     agent, not via several slots.
 
-    ``bake`` — one question: *do you want a graph you can re-run without the
-    agent?* OFF (default) **keeps the hook live** — it stays wired exactly as you
-    drew it and the agent supplies what it produced at run time. ON makes that
-    result a permanent part of the graph.
+    ``remember`` — one question: *should what this hook produced outlive the run?*
+    OFF (default) means the agent does the work again next time. ON keeps it.
 
-    What "permanent" means follows the ``purpose``, because the two purposes
-    produce different things; it is not a second decision you make:
+    What "keeping it" means follows the ``purpose``, because the purposes produce
+    different things and there is only one sensible way to keep each. It is not a
+    second decision you make, which is why the switch is *labelled* differently:
 
-    * **make_workflow** — the generated workflow is nested into a ComfyUI
-      **subgraph** whose inputs/outputs match this hook's slots, dropped onto the
-      same canvas beside the hook, and wired to mirror the hook chain.
-    * **text / inline_parameter / general_request** — the ``agentY text`` node is
-      baked into the wired target input and takes over the hook's downstream link
-      (kept live instead, that node is dropped UNCONNECTED as a readable
-      reference and the value is injected at run time).
+    * **make_workflow** — labelled **bake**. What this produced is a workflow, so
+      keeping it means nesting it into a ComfyUI **subgraph** whose inputs/outputs
+      match this hook's slots, dropped onto the same canvas beside the hook and
+      wired to mirror the hook chain. The files that run produced are recorded
+      too, so re-opening the graph re-uses them instead of re-rendering.
+    * **everything else** — labelled **memorize**. What this produced is a result
+      — a written value, a prompt, a script, images, videos — so keeping it means
+      writing it to ``agent/memory/`` beside the outputs and putting it straight
+      back next time, until something feeding this hook changes.
 
-    This was two switches, ``bake_to_canvas`` and ``freeze``. They asked the same
-    question of two different products and were never both applicable — seeing
-    them side by side is what made them read as two ideas. Saved graphs migrate
-    on load (see ``web/agent_hook.js``); a hook with either one on comes back
-    with ``bake`` on.
+    The hook itself is never rewired either way. ``freeze`` used to bake a text
+    hook's value into its target input and take over the hook's downstream link;
+    it doesn't any more. The hook chain is the graph's readable statement of what
+    happens, and a switch about keeping a *result* has no business rewriting it.
 
-    ``memorize`` is a *different* axis and stays its own switch: it is about
-    paying for the same answer twice, not about permanence, and it is perfectly
-    reasonable to want a hook both memorized and baked.
+    You can flip it **in hindsight**. What a hook produced is journalled whether
+    or not the switch was on, so turning it on after a run you liked keeps that
+    run's result — you rarely know something was worth keeping until you have
+    looked at it. Turning it off is still the forget gesture: off, send anything,
+    on again.
 
-    Switches the selected ``purpose`` does not read are hidden rather than shown
-    inert — ``bake`` on qa / iterate hooks, ``memorize`` on qa / iterate (which
-    never deliver through ``place_canvas_text``, the only thing that stores one).
+    This was three switches (``bake_to_canvas``, ``freeze``, ``memorize``), then
+    two. They were always one question asked several ways. Saved graphs migrate on
+    load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
+    read comes back with ``remember`` on.
+
+    It is hidden on ``qa`` and ``iterate``, which produce nothing to keep.
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -492,36 +497,25 @@ class AgentYHook(io.ComfyNode):
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(
-                    "bake",
-                    default=False,
-                    label_on="bake into graph",
-                    label_off="keep hook live",
-                    tooltip=(
-                        "Do you want a graph you can re-run WITHOUT the agent? OFF (default) "
-                        "keeps the hook live: it stays wired as you drew it and the agent "
-                        "supplies what it produced at run time. ON makes that result a "
-                        "permanent part of the graph. What gets baked follows the purpose — "
-                        "on a make_workflow hook the generated workflow is nested into a "
-                        "ComfyUI subgraph placed beside the hook; on a text / "
-                        "inline_parameter / general_request hook the 'agentY text' node is "
-                        "baked into the wired target input, taking over the hook's link. "
-                        "Hidden on purposes that produce nothing to bake (qa, iterate)."
-                    ),
-                ),
-                io.Boolean.Input(
-                    "memorize",
+                    "remember",
                     default=False,
                     label_on="memorize result",
                     label_off="run every time",
                     tooltip=(
-                        "Keep what this hook produced and put it straight back into the "
-                        "graph on later runs, instead of asking the agent to work it out "
-                        "again — so an image analysis or a written prompt is paid for "
-                        "once. The memory is released the moment anything that feeds this "
-                        "hook changes (a different image, a rewire, an upstream edit), or "
-                        "its prompt or settings change. Switching this OFF also releases "
-                        "it, which is how you force a fresh result. Stored beside the "
-                        "project, so it follows the project you are working on."
+                        "Should what this hook produced outlive the run? OFF (default) has "
+                        "the agent work it out again next time. ON keeps it — everything it "
+                        "produced: written values and prompts, scripts, images and videos "
+                        "(by path). It goes into 'agent/memory/' next to the outputs, and "
+                        "comes straight back on later runs instead of being paid for twice. "
+                        "It is released the moment anything feeding this hook changes (a "
+                        "different image, a rewire, an upstream edit, an edited prompt), and "
+                        "switching this OFF releases it too — which is how you force a fresh "
+                        "result. You can also turn it on AFTER a run you liked: what the "
+                        "hook produced is written down either way, so the switch works in "
+                        "hindsight. On a make_workflow hook this reads 'bake into subgraph' "
+                        "instead: what that hook produced is a workflow, so keeping it means "
+                        "nesting it into a subgraph beside the hook (its outputs are kept "
+                        "too). Hidden on qa and iterate, which produce nothing to keep."
                     ),
                 ),
                 io.Autogrow.Input("anchors", template=anchors),
@@ -539,7 +533,11 @@ class AgentYHook(io.ComfyNode):
 
     @classmethod
     def execute(cls, directive="", purpose="inline_parameter",
-                bake=False, memorize=False, anchors=None) -> io.NodeOutput:  # noqa: ANN001, ARG003
+                remember=False, anchors=None, **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        # ``**_legacy`` swallows `bake` / `memorize` / `freeze` from a graph saved
+        # before the merge: the widgets migrate on load, but a prompt submitted
+        # from an un-migrated source must not fail validation over a dead switch.
+        #
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).

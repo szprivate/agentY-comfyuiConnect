@@ -13,23 +13,28 @@ import { app } from "../../scripts/app.js";
 // output and mutated the slot array mid-connection; a single fixed output is
 // simpler and unambiguous to wire.
 
-// `bake_to_canvas` and `freeze` were one question asked twice — "do I want a
-// graph I can re-run without the agent?" — of two different products, and never
-// both applicable. They are now the single `bake` switch, resolved by purpose on
-// the agent side. `memorize` is a different axis (paying for an answer twice,
-// not permanence) and stays its own switch.
-//
-// Which purposes each one means anything for, taken from where the agent
-// actually READS it rather than from what it sounds like:
-//  • bake — bake_hooks_to_canvas consults it for make_workflow hooks; for the
-//    place_canvas_text purposes it decides bake-into-target vs keep-live.
-//  • memorize — read on the place_canvas_text path only. A qa hook is expressly
-//    told never to place_canvas_text and an iterate hook runs through
-//    iterate_step, so on those two it has never done anything at all.
-const PLACES_TEXT = ["inline_parameter", "text", "general_request"];
+// `bake_to_canvas`, `freeze` and `memorize` were one question asked three ways —
+// "should what this hook produced outlive the run?" — of different products.
+// They are now the single `remember` switch, resolved by purpose on the agent
+// side. Only its LABEL differs, because what keeping it means differs:
+//  • make_workflow produces a workflow → keeping it means nesting a subgraph,
+//    which everyone calls baking. bake_hooks_to_canvas consults it.
+//  • everything else produces a result → keeping it means memorizing it to
+//    agent/memory/ beside the outputs, which hook_cache does.
+// qa and iterate produce nothing to keep: a qa hook is expressly told never to
+// place_canvas_text and an iterate hook runs through iterate_step, so the switch
+// has never done anything at all there and is hidden.
+const PRODUCES_A_RESULT = ["inline_parameter", "text", "general_request"];
 const SHOWN_FOR = {
-  bake: ["make_workflow", ...PLACES_TEXT],
-  memorize: PLACES_TEXT,
+  remember: ["make_workflow", ...PRODUCES_A_RESULT],
+};
+
+// The switch is one bit but two words, because "bake" and "memorize" are what
+// the two products are actually called and calling a subgraph "memorized" would
+// be a worse lie than carrying two labels.
+const LABELS = {
+  make_workflow: { on: "bake into subgraph", off: "re-generate every time" },
+  _: { on: "memorize result", off: "run every time" },
 };
 
 // Bumped whenever the widget LIST changes. widgets_values is positional, so the
@@ -39,34 +44,59 @@ const SHOWN_FOR = {
 // made the CURRENT layout five values too, and every hook saved after that came
 // back shifted (freeze read as bake_to_canvas, memorize read as freeze). From
 // here on the file says which layout it is and nothing has to be inferred.
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
-// v2 = [directive, purpose, bake, memorize]
+// v3 = [directive, purpose, remember]
 function migrateWidgetValues(info) {
   // Newer frontends may serialise widget values as an object keyed by name.
   // Those carry their own names and need nothing.
   if (!info || !Array.isArray(info.widgets_values)) return info;
   if (Number((info.properties || {}).agentY_schema || 0) >= SCHEMA_VERSION) return info;
   const v = info.widgets_values;
-  const keep = (a, b) => !!(a === true || a === "true" || b === true || b === "true");
+  const on = (x) => x === true || x === "true";
+  const purpose = String(v[1] || "");
+  const isWorkflow = purpose === "make_workflow";
   if (v.length >= 5) {
-    // [directive, purpose, bake_to_canvas, freeze, memorize] — the layout in use
-    // since memorize landed (14 Aug), which is every recent save.
+    // [directive, purpose, bake_to_canvas, freeze, memorize] — the layout from
+    // before the first merge. Take whichever switch this purpose actually read:
+    // a make_workflow hook read bake_to_canvas, everything else read memorize.
     //
     // A canvas last saved before 27 Jul had [directive, purpose, ignore,
     // bake_to_canvas, freeze] here, which is positionally identical and cannot be
-    // told apart. It loses: its `ignore` folds into `bake` and its `freeze`
-    // becomes `memorize`. That is the deliberate trade — the recent layout is the
-    // common one, both switches are visible on the node, and a graph untouched
-    // since July is one click to correct.
-    return { ...info, widgets_values: [v[0], v[1], keep(v[2], v[3]), v[4] === true || v[4] === "true"] };
+    // told apart. That one is read wrong, deliberately: the later layout is the
+    // common one, the switch is visible on the node, and a graph untouched since
+    // July is one click to correct.
+    return { ...info, widgets_values: [v[0], v[1], isWorkflow ? on(v[2]) : on(v[4])] };
   }
   if (v.length === 4) {
-    // [directive, purpose, bake_to_canvas, freeze] — after `ignore` went, before
-    // `memorize` arrived.
-    return { ...info, widgets_values: [v[0], v[1], keep(v[2], v[3]), false] };
+    // [directive, purpose, bake, memorize] — the two-switch layout (v2). Same
+    // rule: bake was the one make_workflow read, memorize the one the rest did.
+    //
+    // Positionally identical to the pre-27-Jul [directive, purpose,
+    // bake_to_canvas, freeze] layout, and read as v2 for the same reason.
+    return { ...info, widgets_values: [v[0], v[1], isWorkflow ? on(v[2]) : on(v[3])] };
   }
-  return info;  // three or fewer: older than both switches, positions unchanged
+  if (v.length === 3) {
+    // Either v3 already (unlikely — it would carry the property) or the oldest
+    // [directive, purpose, ignore] layout. Coercing to a boolean is right for
+    // both: `ignore` is long gone and OFF is the safe default for a keep switch.
+    return { ...info, widgets_values: [v[0], v[1], on(v[2])] };
+  }
+  return info;  // two or fewer: older than any switch, positions unchanged
+}
+
+// The label follows the purpose; the value does not change with it.
+function applyPurposeLabel(node) {
+  const w = (node.widgets || []).find((x) => x && x.name === "remember");
+  if (!w) return;
+  const purpose = String(((node.widgets || []).find((x) => x && x.name === "purpose") || {}).value || "");
+  const text = LABELS[purpose] || LABELS._;
+  if (w.options) {
+    w.options.on = text.on;
+    w.options.off = text.off;
+  }
+  w.label_on = text.on;
+  w.label_off = text.off;
 }
 
 // Approx height of one widget row, for growing/shrinking the node as switches
@@ -88,6 +118,7 @@ function getWidget(node, name) {
 // and a graph saved before this change is simply a couple of rows roomier).
 function applyPurposeVisibility(node, mode) {
   const purpose = String((getWidget(node, "purpose") || {}).value || "");
+  applyPurposeLabel(node);   // same trigger, same three call sites — keep them in step
   let delta = 0;
   for (const [name, purposes] of Object.entries(SHOWN_FOR)) {
     const w = getWidget(node, name);

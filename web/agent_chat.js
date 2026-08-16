@@ -2248,39 +2248,20 @@ class AgentChat {
     markAgentDrop(node);
     node.pos = this._dropPos(hook || null, node);
     node.title = "agentY text";
-    // keep-live (default): leave the hook wired exactly as the user drew it and
-    // place this node UNCONNECTED as a reference — the server injects the value
-    // into the base graph at run time, so nothing on the canvas is rewired. The
-    // server sets ev.keep_live from the hook's `freeze` toggle (freeze OFF => keep
-    // live). Only when freeze is ON do we take over the hook's downstream consumers.
-    if (ev.keep_live) {
-      graph.setDirtyCanvas(true, true);
-      this._sys(
-        "🧩 Placed an **agentY text** node with the answer on the canvas as a reference "
-        + "(hook left live — the value is injected into the graph at run time)."
-      );
-      return;
-    }
-    // freeze ON — take over the hook's downstream consumers: for every link out of
-    // the hook's first output, rewire that input to this text node. A LiteGraph
-    // input holds a single link, so connecting here replaces the hook's link.
-    let wired = 0;
-    const outLinks = hook && hook.outputs && hook.outputs[0] && hook.outputs[0].links;
-    if (Array.isArray(outLinks)) {
-      for (const lid of outLinks.slice()) {
-        const link = graph.links ? graph.links[lid] : null;
-        if (!link) continue;
-        const target = graph.getNodeById ? graph.getNodeById(link.target_id) : null;
-        if (!target) continue;
-        try { node.connect(0, target, link.target_slot | 0); wired++; } catch (_) {}
-      }
-    }
+    // The hook is ALWAYS left wired exactly as the user drew it, and this node is
+    // placed UNCONNECTED as a readable reference — the server injects the value
+    // into the base graph at run time, so nothing on the canvas is rewired.
+    //
+    // `freeze` used to take over the hook's downstream consumers here, rewiring
+    // every input the hook fed to point at this node instead. That destroyed the
+    // thing the user drew: the hook chain is the graph's readable statement of
+    // what happens, and a switch about keeping a RESULT has no business rewriting
+    // it. Keeping the result is what that switch does now (see hook_cache), and
+    // the server sends keep_live true for every text placement.
     graph.setDirtyCanvas(true, true);
     this._sys(
-      wired
-        ? `🧩 Placed an **agentY text** node with the answer and wired it into ${wired} input`
-          + `${wired === 1 ? "" : "s"} (froze the value into the graph, took over the hook's output).`
-        : "🧩 Placed an **agentY text** node with the answer on the canvas — wire its output where you need the string."
+      "🧩 Placed an **agentY text** node with the answer on the canvas as a reference "
+      + "(hook left live — the value is injected into the graph at run time)."
     );
   }
 
@@ -2428,27 +2409,20 @@ class AgentChat {
       const hookLinks = links.filter((l) => isHook(l.node));
       const first = realLinks[0] ? realLinks[0].node : null;
       const outs = hn.outputs || [];
-      // One switch on the node ("do I want a graph I can re-run without the
-      // agent?"), two wire fields, because what gets baked depends on what the
-      // hook produces. `bake` is only ever read for make_workflow hooks and
-      // `freeze` only inside place_canvas_text, which make_workflow never
-      // reaches — so the same boolean answers both and neither side has to
-      // re-derive the purpose. Older saves are migrated in agent_hook.js.
-      const bake = w.bake === true || w.bake === "true";
+      // One switch on the node ("should what this hook produced outlive the
+      // run?"), one field on the wire. What ON *means* is resolved by purpose on
+      // the agent side — a subgraph for make_workflow, a memorized result for
+      // everything else — so neither side re-derives it from the other's name.
+      // Older saves (two fields, or three) are migrated in agent_hook.js.
       hooks.push({
         hook_node_id: String(hn.id),
         directive,
         purpose: String(w.purpose || "inline_parameter"),
-        // make_workflow: nest the generated workflow into a canvas subgraph.
-        bake,
-        // The place_canvas_text purposes: OFF keeps the hook live (the value is
-        // injected at run time and the agentY text node is dropped unconnected as
-        // a reference); ON bakes it into the wired target.
-        freeze: bake,
-        // Remember what this hook produces and put it back next time, for as long
-        // as nothing feeding it changes. Off is also the forget gesture: the
-        // server drops what it stored under this hook's current key.
-        memorize: w.memorize === true || w.memorize === "true",
+        // Keep what this hook produced and put it back next time, for as long as
+        // nothing feeding it changes. Off is also the forget gesture: the server
+        // drops what it KEPT under this hook's current key (the journal
+        // underneath survives, which is what lets this be flipped in hindsight).
+        remember: w.remember === true || w.remember === "true",
         output_count: outs.length,
         outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
         // Where this hook's output is wired — the producer's destination input(s).
