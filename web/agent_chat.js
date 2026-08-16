@@ -1379,10 +1379,40 @@ class AgentChat {
   //   exclude — the node being placed. It is added to the graph before it is
   //             positioned, and counting it (sitting at LiteGraph's default spot,
   //             near the origin) would drag every drop back to the origin with it.
+  // The graph this turn's output belongs to: the one it was started from.
+  //
+  // Falls back to whatever is active when there is no pinned graph (a node placed
+  // outside a turn) or when the pinned one has gone (its tab was closed). Never
+  // throws and never refuses to place — a node that lands in a slightly wrong
+  // place is recoverable; one that vanishes because the placement bailed is not.
+  _targetGraph() {
+    const g = this._turnGraph;
+    if (g && typeof g.add === "function" && Array.isArray(g._nodes)) return g;
+    return app.graph;
+  }
+
+  // Say it once per turn, and only when it is actually true: nodes went somewhere
+  // the user is not currently looking, which is otherwise indistinguishable from
+  // nothing having happened.
+  _noteOffscreenDrop() {
+    const g = this._targetGraph();
+    if (!g || g === app.graph || this._saidOffscreen) return;
+    this._saidOffscreen = true;
+    this._sys("📍 Placed on the workflow this run started from — switch back to "
+      + "that tab to see it. (The agent opened another workflow on the canvas "
+      + "meanwhile; its results still belong to yours.)");
+  }
+
   _dropPos(near = null, exclude = null) {
     const placed = (n) => n && n !== exclude && isXY(n.pos) && isXY(n.size);
     let nodes = [];
-    try { nodes = ((app.graph && app.graph._nodes) || []).filter(placed); } catch (_) {}
+    // Measured on the graph the node is going to LAND on, not the active one —
+    // otherwise a drop is laid out to miss the nodes of a workflow it will never
+    // be part of, and lands on top of the ones it will.
+    try {
+      const g = this._targetGraph();
+      nodes = ((g && g._nodes) || []).filter(placed);
+    } catch (_) {}
     if (!nodes.length) return this._viewCorner();   // nothing to measure: land in view
 
     // Measure against the user's own nodes: our earlier drops are what this one is
@@ -1452,7 +1482,8 @@ class AgentChat {
     let node;
     try {
       node = LG.createNode(type);
-      app.graph.add(node);
+      this._targetGraph().add(node);
+      this._noteOffscreenDrop();
     } catch (e) {
       this._sys(`⚠️ Could not add ${type} node: ${e}`);
       return;
@@ -1476,7 +1507,7 @@ class AgentChat {
     const role = String(ev.role || "").trim();
     node.title = "agentY · " + (role || ev.name || type);
     if (role && ev.role_declared) this._attachRefNote(node, role);
-    app.graph.setDirtyCanvas(true, true);
+    this._targetGraph().setDirtyCanvas(true, true);
     this._sys(`🧩 Added **${type}** node → \`${ev.name}\`` + (role ? ` — _${role}_` : ""));
   }
 
@@ -1490,7 +1521,8 @@ class AgentChat {
     if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYRefNote"]) return;
     try {
       const note = LG.createNode("AgentYRefNote");
-      app.graph.add(note);
+      this._targetGraph().add(note);
+      this._noteOffscreenDrop();
       markAgentDrop(note);
       const w = (note.widgets || []).find((x) => x && x.name === "role");
       if (w) {
@@ -1601,6 +1633,9 @@ class AgentChat {
         break;
       case "canvas_patch":
         this.curAssistant = null;
+        // Only the ops that actually put something on a graph say where it went;
+        // a review being released places nothing and must not claim otherwise.
+        if (ev.op !== "review_released") this._noteOffscreenDrop();
         if (ev.op === "place_text") this._placeCanvasText(ev);
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
@@ -1636,6 +1671,9 @@ class AgentChat {
         this._sys("❌ " + ev.message);
         break;
       case "done":
+        // Unpin: outside a turn, "the graph in front of you" is the right answer
+        // again, and holding a reference to a closed workflow keeps it alive.
+        this._turnGraph = null;
         this._clearStatus();
         this.curStep = null;
         this.curAssistant = null;
@@ -1894,6 +1932,14 @@ class AgentChat {
       return;
     }
 
+    // Pin this turn to the graph it was started FROM, before anything can move
+    // it. The agent opens its own workflows on the canvas (autograph, a filed dry
+    // run, a bake), and ComfyUI makes each opened workflow the ACTIVE one — so
+    // `app.graph` half way through a turn is no longer the graph the user was
+    // working on. Every node the turn produces belongs to the graph that asked
+    // for it, not to whatever happens to be in front at the moment it lands.
+    this._turnGraph = app.graph || null;
+    this._saidOffscreen = false;
     const canvasInputs = this._collectCanvasInputs();
     const canvasHooks = this._collectCanvasHooks();
     const canvasSelection = this._collectCanvasSelection();
@@ -2183,7 +2229,7 @@ class AgentChat {
 
   // Apply an agent-initiated node edit to the live graph (no refresh, no re-queue).
   _applyCanvasPatch(ev) {
-    const graph = app.graph;
+    const graph = this._targetGraph();
     const nid = Number(ev.node_id);
     const node = graph && (graph.getNodeById
       ? graph.getNodeById(nid)
@@ -2206,7 +2252,7 @@ class AgentChat {
       try { if (w.callback) w.callback(value, app.canvas, node); } catch (_) {}
       applied.push(name);
     }
-    app.graph.setDirtyCanvas(true, true);
+    this._targetGraph().setDirtyCanvas(true, true);
     const title = (node.title || node.type || ("#" + ev.node_id));
     if (applied.length) {
       this._sys(`✏️ Updated **${title}** — set ${applied.map((a) => "`" + a + "`").join(", ")}.`);
@@ -2226,7 +2272,7 @@ class AgentChat {
   // ballots and no way to tell which one is being read.
   _reviewCollector(ev) {
     const LG = window.LiteGraph;
-    const graph = app.graph;
+    const graph = this._targetGraph();
     const files = (ev.files || []).map(String).filter(Boolean);
     if (!graph || !LG) return;
     const key = String(ev.collector_key || "");
@@ -2301,7 +2347,7 @@ class AgentChat {
   // consume the string on a normal run. The hook node itself is left in place.
   _placeCanvasText(ev) {
     const LG = window.LiteGraph;
-    const graph = app.graph;
+    const graph = this._targetGraph();
     const text = String(ev.text || "");
     if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYText"]) {
       this._sys("⚠️ Wrote the answer, but this ComfyUI has no **agentY text** node registered — "
