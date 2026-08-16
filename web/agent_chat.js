@@ -1398,9 +1398,11 @@ class AgentChat {
     const g = this._targetGraph();
     if (!g || g === app.graph || this._saidOffscreen) return;
     this._saidOffscreen = true;
-    this._sys("📍 Placed on the workflow this run started from — switch back to "
+    // Deliberately not "placed": this also covers edits and deletions, and a
+    // delete you cannot see is the one most worth being told about.
+    this._sys("📍 Applied to the workflow this run started from — switch back to "
       + "that tab to see it. (The agent opened another workflow on the canvas "
-      + "meanwhile; its results still belong to yours.)");
+      + "meanwhile; this run's changes still belong to yours.)");
   }
 
   _dropPos(near = null, exclude = null) {
@@ -1639,6 +1641,7 @@ class AgentChat {
         if (ev.op === "place_text") this._placeCanvasText(ev);
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
+        else if (ev.op === "delete_nodes") this._deleteNodes(ev);
         else this._applyCanvasPatch(ev);
         break;
       case "system":
@@ -2326,6 +2329,45 @@ class AgentChat {
       + ". Remove the rows you don't want, add your own files or reorder them, then "
       + "say **continue** — or **stop** to end the run here."
     );
+  }
+
+  // Remove nodes the agent was asked to delete.
+  //
+  // Wrapped in beforeChange/afterChange, which is what ComfyUI's changeTracker
+  // listens to for Ctrl+Z. The extension has never called these for any of its
+  // canvas edits, so none of them were undoable; it matters most here, because
+  // this is the only one that destroys something. (The others are worth wrapping
+  // too — a separate job, and not one to do in the same change as deletion.)
+  _deleteNodes(ev) {
+    const graph = this._targetGraph();
+    if (!graph) return;
+    const ids = (ev.node_ids || []).map(String);
+    const gone = [];
+    const changed = typeof graph.beforeChange === "function"
+      && typeof graph.afterChange === "function";
+    if (changed) { try { graph.beforeChange(); } catch (_) {} }
+    try {
+      for (const id of ids) {
+        const node = graph.getNodeById
+          ? graph.getNodeById(Number(id))
+          : (graph._nodes || []).find((n) => n && String(n.id) === id);
+        if (!node) continue;
+        gone.push(`#${id} ${node.title || node.type || ""}`.trim());
+        // remove() takes the node's links with it; litegraph owns that bookkeeping
+        // and doing it by hand is how you end up with links pointing at nothing.
+        try { graph.remove(node); } catch (_) {}
+      }
+    } finally {
+      if (changed) { try { graph.afterChange(); } catch (_) {} }
+    }
+    graph.setDirtyCanvas(true, true);   // the dispatch already said where this landed
+    if (!gone.length) {
+      this._sys("⚠️ Nothing to delete — those nodes are no longer on the graph.");
+      return;
+    }
+    const why = ev.reason ? ` — ${ev.reason}` : "";
+    this._sys(`🗑️ Removed ${gone.length} node${gone.length === 1 ? "" : "s"}: `
+      + `${gone.join(", ")}${why}. **Ctrl+Z** puts them back.`);
   }
 
   // The halt is over — the user continued or stopped. The collector node stays
