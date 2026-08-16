@@ -35,8 +35,23 @@ const SETTINGS_GROUPS = [
   ["Connections", ["comfyui_url", "agent_server_url", "ollama_server_url"]],
   ["ComfyUI paths", ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
   ["agentY output & logs", ["output_dir", "output_workflows_dir", "conversation_db", "message_history_log", "tokens_usage_log"]],
-  ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors", "auto_update"]],
+  ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors",
+                 "canvas_full_graph", "auto_update"]],
 ];
+
+// Per-key notes, for the few settings whose name does not carry the trade-off.
+// The TOML comments never reach the browser, and this is the only place a switch
+// can say what turning it on costs.
+const KEY_NOTES = {
+  canvas_full_graph:
+    "Lets the agent see and edit EVERY node on the workflow you have open, not "
+    + "just the ones you have selected — so \"set the sampler to 30 steps\" works "
+    + "without you clicking the sampler first. Off (default) it sees only your "
+    + "selection. The cost is tokens: the node list rides along on every canvas "
+    + "turn whether or not the turn is about the graph (~250 for a 20-node "
+    + "workflow, ~1.5k for 200). Worth it if you edit graphs by chatting; not if "
+    + "you mostly generate.",
+};
 
 function injectStyles() {
   if (document.getElementById("agentY-settings-styles")) return;
@@ -177,6 +192,12 @@ function makeCollapsibleGroup(key, suffix) {
 // Render one leaf setting (scalar / array / model-select) as a labelled row and
 // register its ref for save-time collection.
 function renderLeafRow(container, key, val, path, modelGroups, refs) {
+  // A switch whose name does not carry its trade-off gets the trade-off, above
+  // the row. Hovering is not discovery: nobody hovers a setting they have not
+  // already decided to think about.
+  if (KEY_NOTES[key]) {
+    container.append(el("div", { className: "ays-note", textContent: KEY_NOTES[key] }));
+  }
   const row = el("div", { className: "ays-row" });
   row.append(el("label", { className: "ays-label", textContent: key }));
   let input;
