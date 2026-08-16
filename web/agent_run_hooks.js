@@ -103,6 +103,20 @@ function injectStyles() {
       /* A hairline seam, from the contrast colour so it reads on any primary. */
       box-shadow:inset 1px 0 0 color-mix(in srgb,var(--p-primary-contrast-color,#fff) 30%,transparent);
     }
+    /* Halted: the run is waiting on you, so the control stops looking like every
+       other button in the bar. A slow pulse rather than a colour swap — the group
+       has to keep reading as the same control it was a moment ago, and a button
+       that changes colour AND label reads as a different button appearing. */
+    #${BTN_ID}.agy-halted,#${GROUP_ID}:has(.agy-halted) #${ARROW_ID}{
+      background:var(--p-amber-500,#f59e0b);
+      border-color:var(--p-amber-500,#f59e0b);
+      color:#1a1205;
+    }
+    #${BTN_ID}.agy-halted{animation:agyHaltPulse 2.4s ease-in-out infinite;}
+    @keyframes agyHaltPulse{0%,100%{filter:none;}50%{filter:brightness(1.12);}}
+    @media (prefers-reduced-motion:reduce){
+      #${BTN_ID}.agy-halted{animation:none;}
+    }
     /* brightness rather than a second colour token: works whether the active
        theme's primary is light or dark, which a fixed hover colour does not. */
     #${BTN_ID}:hover,#${ARROW_ID}:hover{filter:brightness(1.1);}
@@ -156,7 +170,23 @@ function injectStyles() {
 // ── the drop-down ─────────────────────────────────────────────────────────────
 // Two ways to run the same hooks, so it belongs on the button rather than in a
 // settings page: the choice is made per run, not once.
-const MENU_ITEMS = [
+// While a `review` hook has the chain stopped, the two things you can do are not
+// "run" and "dry run" — the run is already half done and waiting on you. Note
+// that nothing is executing during a halt (it sits BETWEEN stages), so there is
+// no Pause here: the pause is the state, Continue and Stop are the exits.
+let _halted = false;
+
+function sendToPanel(text) {
+  if (typeof window.agentYRunHooks !== "function") {
+    toast("agentY panel is not loaded yet — open the agentY sidebar tab once.", "warn");
+    return;
+  }
+  let msg = "";
+  try { msg = window.agentYRunHooks(text, {}); } catch (e) { msg = "Failed: " + e; }
+  if (msg) toast(msg, /^(No active|agentY is waiting|Failed)/.test(msg) ? "warn" : "info");
+}
+
+const RUN_ITEMS = [
   { icon: "pi pi-play", title: "Full run",
     desc: "Generate for real",
     run: () => runHooks() },
@@ -169,14 +199,33 @@ const MENU_ITEMS = [
     run: () => dryRunHooks() },
 ];
 
+const HALT_ITEMS = [
+  { icon: "pi pi-play", title: "Continue with these",
+    desc: "Run the rest with what's in the collector",
+    hint: "Carries on through the remaining stages using exactly what the review "
+        + "collector holds right now — so edit it first if you want to drop, add "
+        + "or reorder anything.",
+    run: () => sendToPanel("continue") },
+  { icon: "pi pi-times", title: "Stop",
+    desc: "End the run here",
+    hint: "Ends the run at the review hook. What was already produced is kept, and "
+        + "the collector stays on the canvas as the record of it.",
+    run: () => sendToPanel("stop") },
+];
+
+function menuItems() { return _halted ? HALT_ITEMS : RUN_ITEMS; }
+
 let _menu = null;
+let _menuHalted = null;   // which set the built menu is showing
 
 function menu() {
-  if (_menu && document.body.contains(_menu)) return _menu;
+  if (_menu && document.body.contains(_menu) && _menuHalted === _halted) return _menu;
+  if (_menu) _menu.remove();
+  _menuHalted = _halted;
   const m = document.createElement("div");
   m.id = MENU_ID;
   m.setAttribute("role", "menu");
-  for (const item of MENU_ITEMS) {
+  for (const item of menuItems()) {
     const b = document.createElement("button");
     b.type = "button";
     b.setAttribute("role", "menuitem");
@@ -262,25 +311,22 @@ function makeButton() {
   const b = document.createElement("button");
   b.id = BTN_ID;
   b.type = "button";
-  b.title = TOOLTIP;
-  b.setAttribute("aria-label", LABEL);
   const icon = document.createElement("i");
-  icon.className = "pi pi-play";       // the glyph ComfyUI's own Run button uses
   const label = document.createElement("span");
   label.className = "agy-label";
-  label.textContent = BTN_LABEL;
   b.append(icon, label);
   b.addEventListener("click", (e) => {
     e.preventDefault(); e.stopPropagation();
     closeMenu();
-    runHooks();
+    // The default action is whatever the wide half currently says it is.
+    if (_halted) sendToPanel("continue");
+    else runHooks();
   });
 
-  // The arrow half: full run stays one click, everything else is behind it.
+  // The arrow half: the default stays one click, everything else is behind it.
   const arrow = document.createElement("button");
   arrow.id = ARROW_ID;
   arrow.type = "button";
-  arrow.title = "Run options — full run or dry run";
   arrow.setAttribute("aria-label", "agentY hook run options");
   arrow.setAttribute("aria-haspopup", "menu");
   arrow.setAttribute("aria-expanded", "false");
@@ -294,7 +340,51 @@ function makeButton() {
   });
 
   group.append(b, arrow);
+  paintButton(group);
   return group;
+}
+
+// The button wears the state: "agentY hooks" normally, "Continue with these"
+// while a review hook has the chain stopped. Same button rather than a second
+// one — a Continue that appears somewhere else is a Continue you have to find,
+// and this is the control the run was started from.
+function paintButton(root) {
+  const scope = root || document;
+  const b = scope.querySelector ? scope.querySelector("#" + BTN_ID) : null;
+  const arrow = scope.querySelector ? scope.querySelector("#" + ARROW_ID) : null;
+  if (!b) return;
+  const icon = b.querySelector("i");
+  const label = b.querySelector(".agy-label");
+  if (_halted) {
+    b.title = "Continue the halted hook run with whatever the review collector "
+      + "holds right now";
+    b.setAttribute("aria-label", "Continue the halted agentY hook run");
+    if (icon) icon.className = "pi pi-play";
+    if (label) label.textContent = "Continue with these";
+    b.classList.add("agy-halted");
+    if (arrow) arrow.title = "Continue with these, or stop the run";
+  } else {
+    b.title = TOOLTIP;
+    b.setAttribute("aria-label", LABEL);
+    if (icon) icon.className = "pi pi-play";   // ComfyUI's own Run glyph
+    if (label) label.textContent = BTN_LABEL;
+    b.classList.remove("agy-halted");
+    if (arrow) arrow.title = "Run options — full run or dry run";
+  }
+}
+
+// The panel tells us when a review halt starts and ends. Also read once on load,
+// so a page refreshed mid-halt comes back showing Continue rather than Run.
+function watchHalt() {
+  _halted = !!window.agentYReviewHalted;
+  paintButton();
+  window.addEventListener("agentY:review", (e) => {
+    const next = !!(e && e.detail && e.detail.halted);
+    if (next === _halted) return;
+    _halted = next;
+    closeMenu();
+    paintButton();
+  });
 }
 
 // Where to put it: inside the action bar (the floating panel that carries Run),
@@ -373,5 +463,6 @@ app.registerExtension({
   async setup() {
     watch();
     watchDismiss();
+    watchHalt();
   },
 });

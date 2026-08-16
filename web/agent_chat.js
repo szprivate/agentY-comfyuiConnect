@@ -1602,6 +1602,8 @@ class AgentChat {
       case "canvas_patch":
         this.curAssistant = null;
         if (ev.op === "place_text") this._placeCanvasText(ev);
+        else if (ev.op === "review_collector") this._reviewCollector(ev);
+        else if (ev.op === "review_released") this._reviewReleased(ev);
         else this._applyCanvasPatch(ev);
         break;
       case "system":
@@ -2211,6 +2213,86 @@ class AgentChat {
     } else {
       this._sys(`⚠️ No matching widget on **${title}** to update.`);
     }
+  }
+
+  // A `review` hook stopped the chain. Put what the stage produced into an
+  // "agentY image collector" beside that hook and wire it into the hook's anchor,
+  // so the node the user edits IS the input the next stage will read.
+  //
+  // Re-used, not re-created, when a halt happens again at the same hook: the node
+  // is found by the `agentY_review_key` property rather than by position or title,
+  // so the user is free to move it, rename it, or wire it somewhere else as well.
+  // Creating a second one each time would leave the canvas with a pile of stale
+  // ballots and no way to tell which one is being read.
+  _reviewCollector(ev) {
+    const LG = window.LiteGraph;
+    const graph = app.graph;
+    const files = (ev.files || []).map(String).filter(Boolean);
+    if (!graph || !LG) return;
+    const key = String(ev.collector_key || "");
+    const TYPE = "AgentYImageCollector";
+    if (!LG.registered_node_types || !LG.registered_node_types[TYPE]) {
+      this._sys("⚠️ The **agentY image collector** node isn't registered, so there is "
+        + "nowhere to put the outputs for review. Update the agentY extension.");
+      return;
+    }
+    const hookId = String(ev.hook_node_id || "");
+    const hook = (graph._nodes || []).find((n) => n && String(n.id) === hookId) || null;
+
+    let node = (graph._nodes || []).find(
+      (n) => n && n.properties && n.properties.agentY_review_key === key);
+    const fresh = !node;
+    if (!node) {
+      node = LG.createNode(TYPE);
+      if (!node) return;
+      node.properties = node.properties || {};
+      node.properties.agentY_review_key = key;
+      graph.add(node);
+      markAgentDrop(node);
+      node.pos = this._dropPos(hook, node);
+      node.title = "review — pick what continues";
+    }
+    const w = (node.widgets || []).find((x) => x && x.name === "files");
+    if (w) {
+      w.value = files.join("\n");
+      try { if (w.callback) w.callback(w.value, app.canvas, node); } catch (_) {}
+    }
+    // Wire it into the review hook's anchor, so the choice is visibly the thing
+    // that feeds the rest of the chain. Only on creation: if the user has since
+    // rewired it deliberately, that is their graph and not ours to correct.
+    let wired = false;
+    if (fresh && hook) {
+      const slot = (hook.inputs || []).findIndex(
+        (i) => i && /^anchor/i.test(String(i.name || "")) && i.link == null);
+      if (slot >= 0) {
+        try { node.connect(0, hook, slot); wired = true; } catch (_) {}
+      }
+    }
+    graph.setDirtyCanvas(true, true);
+    window.agentYReviewHalted = true;
+    try {
+      window.dispatchEvent(new CustomEvent("agentY:review", { detail: { halted: true } }));
+    } catch (_) {}
+    this._sys(
+      `⏸️ **Stopped for review** — ${files.length} output(s) are in the `
+      + `**${node.title}** collector`
+      + (wired ? ` (wired into hook #${hookId})` : "")
+      + ". Remove the rows you don't want, add your own files or reorder them, then "
+      + "say **continue** — or **stop** to end the run here."
+    );
+  }
+
+  // The halt is over — the user continued or stopped. The collector node stays
+  // exactly where it is: it is the record of what that stage ran with, and
+  // deleting it would take the evidence away the moment it became history.
+  _reviewReleased(ev) {
+    window.agentYReviewHalted = false;
+    try {
+      window.dispatchEvent(new CustomEvent("agentY:review", { detail: { halted: false } }));
+    } catch (_) {}
+    this._sys(String(ev.answer) === "stop"
+      ? "🛑 Run stopped at the review — nothing further was queued."
+      : "▶️ Continuing with what the collector holds.");
   }
 
   // Place the agent's written answer to a TEXT hook onto the canvas as an

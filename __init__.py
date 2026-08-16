@@ -402,6 +402,23 @@ class AgentYHook(io.ComfyNode):
       by ``qa.max_retries`` in agentY settings). Wiring the references here is what
       makes them references rather than inputs to the workflow — the anchor is the
       statement. Cite a shared briefing from ``config/qa/`` with ``@name``.
+    * ``review`` — a deliberate **STOP** in the chain, so you can choose what goes
+      on to the next stage. Place it between the stage that produces candidates
+      (reference frames, start images) and the expensive stage that consumes them
+      (a video). The stage before it runs; what it produced is gathered into an
+      ``agentY image collector`` placed beside this hook and wired into its anchor;
+      the run stops there and asks you.
+
+      That collector is the ballot. **Edit it** — delete the rows you don't want,
+      add files of your own, reorder them — then say ``continue`` in the panel (or
+      press the action-bar button, which reads *Continue with these* while a run is
+      halted) and the rest of the chain runs with exactly what is in it. ``stop``
+      ends the run instead; nothing produced is deleted either way.
+
+      Same shape as ``qa`` — produces nothing, never executed, sits in the same
+      place in a chain. The difference is who judges: ``qa`` asks a model and
+      carries on by itself, ``review`` stops and asks you. The ``directive`` is the
+      question you want put to yourself ("which two read best as a wide?").
 
     The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
     appears, so a single hook can gather several inputs (e.g. combine three images
@@ -493,7 +510,7 @@ class AgentYHook(io.ComfyNode):
                 io.Combo.Input(
                     "purpose",
                     options=["inline_parameter", "make_workflow", "text", "general_request",
-                             "iterate", "qa"],
+                             "iterate", "qa", "review"],
                     default="inline_parameter",
                 ),
                 io.Boolean.Input(
