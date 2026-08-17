@@ -5,7 +5,7 @@ import { hookReaches } from "./agent_hook.js";
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
 // GUI: the agent's *text* streams into this panel, while every generated image /
-// video is dropped onto the ComfyUI graph as a LoadImage / video-loader node
+// video is dropped onto the ComfyUI graph as an image / video loader node
 // (see onOutput → injectNode). Conversations, slash commands, and thread history
 // mirror what the old Chainlit UI offered.
 
@@ -1476,7 +1476,13 @@ class AgentChat {
   // ── graph node injection (the whole point) ───────────────────────────────────
   injectNode(ev) {
     const LG = window.LiteGraph;
-    const cands = ev.node_candidates || (ev.kind === "video" ? ["VHS_LoadVideo", "LoadVideo"] : ["LoadImage"]);
+    // First one this ComfyUI actually has. The server sends the list (see
+    // _NODE_CANDIDATES in agentY_server.py) and puts the Video Helper Suite
+    // "(Path)" loaders in front, because those read the file where it already is
+    // instead of naming a copy in the input directory.
+    const cands = ev.node_candidates
+      || (ev.kind === "video" ? ["VHS_LoadVideoPath", "VHS_LoadVideo", "LoadVideo"]
+                              : ["VHS_LoadImagePath", "LoadImage"]);
     const type = cands.find((t) => LG && LG.registered_node_types && LG.registered_node_types[t]);
     if (!type) {
       this._sys(`⚠️ ${ev.kind} saved at \`${ev.path}\` — no loader node available in this ComfyUI. Load it manually.`);
@@ -1496,11 +1502,18 @@ class AgentChat {
     // workflow instead of each one starting where the last ended.
     markAgentDrop(node);
     node.pos = this._dropPos(null, node);
-    const val = ev.filename || ev.path;
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
     const w = (node.widgets || []).find((x) => wnames.includes(x.name));
     if (w) {
-      if (w.options && Array.isArray(w.options.values) && ev.filename && !w.options.values.includes(ev.filename)) {
+      // Two shapes of loader, two different things to write into them. A combo
+      // widget is a list of what sits in ComfyUI's input directory, so it takes
+      // the staged filename; a free-text widget — VHS's "(Path)" loaders — takes
+      // the absolute path and reads the original where it was written. Handing
+      // either one the other's value leaves a node pointing at nothing, and the
+      // node looks perfectly normal until it runs.
+      const isCombo = !!(w.options && Array.isArray(w.options.values));
+      const val = (isCombo ? ev.filename : ev.path) || ev.filename || ev.path;
+      if (isCombo && ev.filename && !w.options.values.includes(ev.filename)) {
         w.options.values.push(ev.filename);
       }
       w.value = val;
