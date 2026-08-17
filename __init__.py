@@ -417,8 +417,13 @@ class AgentYHook(io.ComfyNode):
 
       Same shape as ``qa`` — produces nothing, never executed, sits in the same
       place in a chain. The difference is who judges: ``qa`` asks a model and
-      carries on by itself, ``review`` stops and asks you. The ``directive`` is the
-      question you want put to yourself ("which two read best as a wide?").
+      carries on by itself, ``review`` stops and asks you.
+
+      This is the one purpose with **no prompt**: a stop has nothing to instruct,
+      so the ``directive`` box is hidden and an empty review hook is complete. If
+      you want a particular question put to you, **title the node** ("pick two
+      for the video") — the title travels with the hook and is what the agent
+      asks. Untitled, it asks which outputs should go on.
 
     The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
     appears, so a single hook can gather several inputs (e.g. combine three images
@@ -460,7 +465,8 @@ class AgentYHook(io.ComfyNode):
     load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
     read comes back with ``remember`` on.
 
-    It is hidden on ``qa`` and ``iterate``, which produce nothing to keep.
+    It is hidden on ``qa``, ``review`` and ``iterate``, which produce nothing to
+    keep.
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -532,7 +538,8 @@ class AgentYHook(io.ComfyNode):
                         "hindsight. On a make_workflow hook this reads 'bake into subgraph' "
                         "instead: what that hook produced is a workflow, so keeping it means "
                         "nesting it into a subgraph beside the hook (its outputs are kept "
-                        "too). Hidden on qa and iterate, which produce nothing to keep."
+                        "too). Hidden on qa, review and iterate, which produce nothing "
+                        "to keep."
                     ),
                 ),
                 io.Autogrow.Input("anchors", template=anchors),

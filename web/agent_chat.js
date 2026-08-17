@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
+import { hookReaches } from "./agent_hook.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
@@ -2564,7 +2565,12 @@ class AgentChat {
       if (hn.mode === 4 || hn.mode === 2) continue;
       const w = this._widgetSnapshot(hn);
       const directive = String(w.directive || "").trim();
-      if (!directive) continue; // an empty hook is a no-op
+      const purpose = String(w.purpose || "inline_parameter");
+      // An empty hook is a no-op — every purpose but one IS its directive. A
+      // review hook is the exception: it says everything it has to say by being
+      // a review hook wired where it is, so its prompt box is hidden on the node
+      // and there is nothing to type. See hookReaches in agent_hook.js.
+      if (!hookReaches(purpose, directive)) continue;
       const links = this._anchorsFor(hn);
       const isHook = (n) =>
         !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
@@ -2593,7 +2599,7 @@ class AgentChat {
         // is distinguishing is the server's job, not something to guess here.
         title: String(hn.title || ""),
         directive,
-        purpose: String(w.purpose || "inline_parameter"),
+        purpose,
         // Keep what this hook produced and put it back next time, for as long as
         // nothing feeding it changes. Off is also the forget gesture: the server
         // drops what it KEPT under this hook's current key (the journal

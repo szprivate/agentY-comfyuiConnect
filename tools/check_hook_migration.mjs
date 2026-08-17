@@ -28,12 +28,29 @@ const text = readFileSync(SRC, "utf8").replace(
   /^import \{ app \} from .*$/m, "const app = globalThis.__ay;");
 const copy = join(mkdtempSync(join(tmpdir(), "ayhook-")), "agent_hook.mjs");
 writeFileSync(copy, text, "utf8");
-await import("file://" + copy.replace(/\\/g, "/"));
+const mod = await import("file://" + copy.replace(/\\/g, "/"));
 
 const ext = captured.find((e) => e.name === "agentY.hookNode");
 assert.ok(ext, "the hook extension registered itself");
 
-function migrate(widgets_values, properties) {
+// Stands in for the node's own layout: one row per visible widget, plus the
+// directive's textarea when it is showing. Rough on purpose — what is being
+// checked is that hiding the box makes the node shorter, not by how much.
+function widgets(purpose) {
+  return [
+    { name: "directive", value: "" },
+    { name: "purpose", value: purpose, callback: null },
+    { name: "remember", value: false, options: {} },
+  ];
+}
+
+function computeSize() {
+  const shown = (this.widgets || []).filter((w) => !w.hidden);
+  const box = shown.find((w) => w.name === "directive");
+  return [300, 30 + shown.length * 24 + (box ? 60 : 0)];
+}
+
+function migrate(widgets_values, properties, title) {
   let seen = null;
   const nodeType = function () {};
   nodeType.prototype.configure = function (info) { seen = info; };
@@ -45,11 +62,37 @@ function migrate(widgets_values, properties) {
       { name: "remember", value: false, options: {} },
     ],
     properties: properties || {},
+    title: title === undefined ? "agentY hook" : title,
     size: [300, 280],
     setDirtyCanvas() {},
+    computeSize,
   };
   nodeType.prototype.configure.call(node, { widgets_values, properties: node.properties });
-  return { values: seen.widgets_values, node };
+  return { values: seen.widgets_values, node, box: () => node.widgets[0].value };
+}
+
+// A fresh node, then the user picking a different purpose from the combo — the
+// path that decides what the node looks like while it is being built, which is
+// not the path `migrate` exercises (that one is a graph being loaded).
+function fresh(purpose) {
+  const nodeType = function () {};
+  nodeType.prototype.onNodeCreated = function () {};
+  ext.beforeRegisterNodeDef(nodeType, { name: "AgentYHook" });
+  const node = {
+    widgets: widgets(purpose),
+    properties: {},
+    size: [300, 280],
+    setDirtyCanvas() {},
+    computeSize,
+  };
+  nodeType.prototype.onNodeCreated.call(node);
+  node.pick = (next) => {
+    const w = node.widgets.find((x) => x.name === "purpose");
+    w.value = next;
+    w.callback(next);
+  };
+  node.box = () => node.widgets.find((x) => x.name === "directive");
+  return node;
 }
 
 const T = [];
@@ -116,6 +159,83 @@ t("the switch is hidden on the purposes that produce nothing to keep", () => {
   }
   const n = migrate(["d", "text", false, false]).node;
   assert.strictEqual(n.widgets.find((w) => w.name === "remember").hidden, false);
+});
+
+// A review hook is a stop, not a request: there is nothing to instruct, so the
+// prompt box is hidden. Which only works if an empty review hook still counts as
+// a hook — see hookReaches, and the guard in agent_chat.js that calls it.
+t("the prompt box is hidden on review, and nowhere else", () => {
+  assert.strictEqual(fresh("review").box().hidden, true);
+  for (const p of ["inline_parameter", "make_workflow", "text", "general_request",
+                   "iterate", "qa"]) {
+    assert.strictEqual(fresh(p).box().hidden, false, p);
+  }
+});
+
+t("an empty review hook still reaches the agent; every other empty one does not", () => {
+  assert.strictEqual(mod.hookReaches("review", ""), true);
+  assert.strictEqual(mod.hookReaches("review", "   "), true);
+  for (const p of ["inline_parameter", "make_workflow", "text", "qa"]) {
+    assert.strictEqual(mod.hookReaches(p, ""), false, p);
+    assert.strictEqual(mod.hookReaches(p, "do it"), true, p);
+  }
+});
+
+t("switching to review shrinks the node, and switching back restores its height", () => {
+  const n = fresh("inline_parameter");
+  n.size[1] = 340;                     // the user made it roomy
+  n.pick("review");
+  assert.ok(n.size[1] < 340, `still ${n.size[1]} tall with no box to fill it`);
+  n.pick("text");
+  assert.strictEqual(n.size[1], 340, "their own height came back, not a computed one");
+});
+
+t("a review hook saved before the box was hidden loads compact", () => {
+  // The one case where a load SHRINKS a node: the saved height was sized around
+  // a box that is no longer drawn.
+  const { node } = migrate(["", "review", false], { agentY_schema: 3 });
+  assert.strictEqual(node.widgets.find((w) => w.name === "directive").hidden, true);
+  assert.ok(node.size[1] < 280, `loaded ${node.size[1]} tall`);
+});
+
+// A question typed into the box before it was hidden would otherwise be stranded
+// there: invisible, uneditable, and still the thing the agent asks.
+t("a leftover question moves to the title, where it can be seen and changed", () => {
+  const m = migrate(["which two read best as a wide?", "review", false], { agentY_schema: 3 });
+  assert.strictEqual(m.node.title, "which two read best as a wide?");
+  assert.strictEqual(m.box(), "", "and is not left behind in the box as well");
+});
+
+t("a hook the user named keeps its name", () => {
+  const m = migrate(["which two?", "review", false], { agentY_schema: 3 }, "the big choice");
+  assert.strictEqual(m.node.title, "the big choice");
+  assert.strictEqual(m.box(), "which two?", "left where it is rather than dropped");
+});
+
+t("a paragraph is not a title, and is left alone", () => {
+  const long = "pick the ones where the light matches ".repeat(3);
+  const m = migrate([long, "review", false], { agentY_schema: 3 });
+  assert.strictEqual(m.node.title, "agentY hook");
+  assert.strictEqual(m.box(), long);
+});
+
+t("nothing is promoted on any other purpose", () => {
+  for (const p of ["inline_parameter", "make_workflow", "text", "qa"]) {
+    const m = migrate(["do it", p, false], { agentY_schema: 3 });
+    assert.strictEqual(m.node.title, "agentY hook", p);
+    assert.strictEqual(m.box(), "do it", p);
+  }
+});
+
+t("a normal hook's saved height is still never shrunk", () => {
+  const { node } = migrate(["d", "text", false], { agentY_schema: 3 });
+  assert.strictEqual(node.size[1], 280);
+});
+
+t("a node that arrives already set to review is compact from the start", () => {
+  // Pasted, or dropped on the canvas by the agent: no purpose change to react to.
+  assert.ok(fresh("review").size[1] < 280);
+  assert.strictEqual(fresh("text").size[1], 280, "and an ordinary one is untouched");
 });
 
 let bad = 0;
