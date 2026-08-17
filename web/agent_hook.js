@@ -107,6 +107,54 @@ function migrateWidgetValues(info) {
   return info;  // two or fewer: older than any switch, positions unchanged
 }
 
+// Connect `node`'s first output into a free `anchors.anchorN` on `hook`.
+//
+// This failed silently on the graph that mattered most: a review hook that
+// already had its one anchor taken by the previous stage had no free slot, the
+// search returned -1, and the collector was left dangling. A dangling node is
+// invisible to everything downstream — the hook block reads anchors off live
+// links, and the captured graph does not carry it either — so the run reported
+// a collector nobody could find, and the next turn could not see it to resume
+// from.
+//
+// The slots auto-grow, but only in response to a connection: a workflow loaded
+// from disk comes back with exactly the slots it was saved with. So when every
+// one is taken, one is added here, using the name ComfyUI's own autogrow would
+// give it (`<container>.<prefix><n>` — the same rule as `inputs.in0` on the
+// python node). Returns whether the wire actually went in; the caller says so
+// either way, because "I put it beside the hook" and "it feeds the next stage"
+// are different promises.
+export function wireIntoAnchor(node, hook) {
+  const anchors = (hook.inputs || [])
+    .map((inp, i) => ({ inp, i }))
+    .filter(({ inp }) => inp && /^anchors?[.\d]/i.test(String(inp.name || "")));
+  if (!anchors.length) return false;
+  let slot = anchors.findIndex(({ inp }) => inp.link == null);
+  slot = slot >= 0 ? anchors[slot].i : -1;
+  if (slot < 0) {
+    // All taken. Grow one rather than overwrite a link the user drew.
+    try {
+      const last = String(anchors[anchors.length - 1].inp.name || "");
+      const dot = last.lastIndexOf(".");
+      const container = dot > 0 ? last.slice(0, dot) : "anchors";
+      const leaf = dot > 0 ? last.slice(dot + 1) : last;
+      const n = parseInt((leaf.match(/\d+$/) || ["0"])[0], 10) + 1;
+      const prefix = leaf.replace(/\d+$/, "") || "anchor";
+      hook.addInput(`${container}.${prefix}${n}`, "*");
+      slot = hook.inputs.length - 1;
+    } catch (_) {
+      return false;
+    }
+  }
+  try {
+    node.connect(0, hook, slot);
+  } catch (_) {
+    return false;
+  }
+  const inp = (hook.inputs || [])[slot];
+  return !!(inp && inp.link != null);
+}
+
 // The label follows the purpose; the value does not change with it.
 function applyPurposeLabel(node) {
   const w = (node.widgets || []).find((x) => x && x.name === "remember");

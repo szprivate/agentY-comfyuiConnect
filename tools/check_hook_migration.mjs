@@ -238,6 +238,82 @@ t("a node that arrives already set to review is compact from the start", () => {
   assert.strictEqual(fresh("text").size[1], 280, "and an ordinary one is untouched");
 });
 
+// Wiring the review collector into a hook anchor. It failed silently on the one
+// graph that mattered — a review hook whose only anchor was already taken by the
+// stage before it — and left the collector dangling, which is invisible to every
+// downstream reader: the hook block reads anchors off live links, and the
+// captured graph does not carry an unconnected node either.
+function fakeHook(...names) {
+  return {
+    inputs: names.map((n) => (typeof n === "string" ? { name: n, link: null } : n)),
+    addInput(name) { this.inputs.push({ name, link: null }); },
+  };
+}
+
+function fakeNode(hook) {
+  return {
+    connect(_out, target, slot) {
+      if (!target.inputs[slot]) throw new Error("no such slot");
+      target.inputs[slot].link = 99;
+      return true;
+    },
+    hook,
+  };
+}
+
+t("it takes the free anchor when there is one", () => {
+  const hook = fakeHook({ name: "anchors.anchor0", link: 7 }, "anchors.anchor1");
+  assert.strictEqual(mod.wireIntoAnchor(fakeNode(hook), hook), true);
+  assert.strictEqual(hook.inputs[1].link, 99);
+  assert.strictEqual(hook.inputs[0].link, 7, "it left the existing wire alone");
+});
+
+t("a hook with every anchor taken grows one instead of failing", () => {
+  // THE bug: a review hook fed by the previous stage, loaded from a saved
+  // workflow, comes back with exactly the one slot — and it is full.
+  const hook = fakeHook({ name: "anchors.anchor0", link: 7 });
+  assert.strictEqual(mod.wireIntoAnchor(fakeNode(hook), hook), true);
+  assert.strictEqual(hook.inputs.length, 2);
+  assert.strictEqual(hook.inputs[1].name, "anchors.anchor1",
+                     "the name ComfyUI's own autogrow would have given it");
+  assert.strictEqual(hook.inputs[0].link, 7, "and it did NOT overwrite the stage before it");
+});
+
+t("the grown slot keeps counting from the highest one there", () => {
+  const hook = fakeHook({ name: "anchors.anchor0", link: 1 },
+                        { name: "anchors.anchor1", link: 2 });
+  mod.wireIntoAnchor(fakeNode(hook), hook);
+  assert.strictEqual(hook.inputs[2].name, "anchors.anchor2");
+});
+
+t("non-anchor inputs are not mistaken for anchors", () => {
+  const hook = fakeHook({ name: "images", link: null },
+                        { name: "anchors.anchor0", link: 7 });
+  mod.wireIntoAnchor(fakeNode(hook), hook);
+  assert.strictEqual(hook.inputs[0].link, null, "the images input was left alone");
+  assert.strictEqual(hook.inputs[2].name, "anchors.anchor1");
+});
+
+t("a hook with no anchors at all reports failure rather than inventing one", () => {
+  const hook = fakeHook({ name: "images", link: null });
+  assert.strictEqual(mod.wireIntoAnchor(fakeNode(hook), hook), false);
+  assert.strictEqual(hook.inputs.length, 1);
+});
+
+t("a connect that does not take is reported as not wired", () => {
+  // The caller says "wired" or "could not wire" from this, and the difference is
+  // whether the user has to go and connect it themselves.
+  const hook = fakeHook("anchors.anchor0");
+  const node = { connect() { return true; } };   // claims success, wires nothing
+  assert.strictEqual(mod.wireIntoAnchor(node, hook), false);
+});
+
+t("a node that throws while connecting does not take the halt down with it", () => {
+  const hook = fakeHook("anchors.anchor0");
+  const node = { connect() { throw new Error("litegraph said no"); } };
+  assert.strictEqual(mod.wireIntoAnchor(node, hook), false);
+});
+
 let bad = 0;
 for (const [name, fn] of T) {
   try { fn(); console.log("  ok   " + name); }

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
-import { hookReaches } from "./agent_hook.js";
+import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
@@ -2323,14 +2323,7 @@ class AgentChat {
     // Wire it into the review hook's anchor, so the choice is visibly the thing
     // that feeds the rest of the chain. Only on creation: if the user has since
     // rewired it deliberately, that is their graph and not ours to correct.
-    let wired = false;
-    if (fresh && hook) {
-      const slot = (hook.inputs || []).findIndex(
-        (i) => i && /^anchor/i.test(String(i.name || "")) && i.link == null);
-      if (slot >= 0) {
-        try { node.connect(0, hook, slot); wired = true; } catch (_) {}
-      }
-    }
+    const wired = fresh && hook ? wireIntoAnchor(node, hook) : false;
     graph.setDirtyCanvas(true, true);
     window.agentYReviewHalted = true;
     try {
@@ -2339,7 +2332,10 @@ class AgentChat {
     this._sys(
       `⏸️ **Stopped for review** — ${files.length} output(s) are in the `
       + `**${node.title}** collector`
-      + (wired ? ` (wired into hook #${hookId})` : "")
+      + (wired
+        ? `, wired into hook #${hookId}`
+        : ` (it could **not** be wired into hook #${hookId} — connect its output to a `
+          + "free `anchor` on that hook yourself, or the next stage will not read it)")
       + ". Remove the rows you don't want, add your own files or reorder them, then "
       + "say **continue** — or **stop** to end the run here."
     );
