@@ -124,6 +124,7 @@ const GROUP_LABELS = {
   pipeline: "Per-role overrides",
   system_prompts: "System prompts",
   qa: "Output QA",
+  slack: "Slack bridge",
   memory: "Memory",
   embedder: "Embedder",
   ollama: "Ollama",
@@ -170,6 +171,17 @@ const GROUP_NOTES = {
     + "blank and it follows the Fast utility tier, endpoint and key included.",
   embedder: "Blank api_key_env falls back to the provider's usual variable. "
     + "Changing the model or embedding_dims invalidates the FAISS index on disk.",
+  slack: "A SECOND way in, alongside this panel — never instead of it. Every turn "
+    + "is mirrored to your Slack DM as it runs, INCLUDING the ones you start here, "
+    + "so you can queue a render at the desk and watch it finish from a phone; a DM "
+    + "back drives the same conversation this panel is in. Needs a Slack app of your "
+    + "own: put its bot token (xoxb-…), an app-level token with connections:write "
+    + "(xapp-…) and your Slack member id in Authentication above, then turn `enabled` "
+    + "on — it takes effect on the next agent start. The connection is outbound "
+    + "(Socket Mode), so nothing here has to be reachable from the internet. "
+    + "SLACK_ALLOWED_USERS is not optional: empty means every message is refused, "
+    + "because anyone who can DM the bot could otherwise run generations and tools "
+    + "on this machine. Full walkthrough in docs/slack.md.",
 };
 
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).
