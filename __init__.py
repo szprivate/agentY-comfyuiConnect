@@ -583,6 +583,16 @@ class AgentYPython(io.ComfyNode):
     runs with those bound as ``in0``, ``in1``, … and as a list ``inputs``; assign
     a list named ``outputs`` (``outputs[0]`` → this node's first output slot, etc.).
 
+    A snippet reads a slot by its own NAME: wire in0 and in2 and you get ``in0``
+    and ``in2``, not ``in0`` and ``in1``. (``inputs`` is the positional list of
+    whatever is actually wired, so ``inputs[1]`` there is in2's value.)
+
+    Note for anything WRITING one of these into a graph: the slot is addressed as
+    ``inputs.in0``, not ``in0`` — the autogrow container is called ``inputs`` and
+    its template prefix is ``in``, exactly as the hook's anchors are
+    ``anchors.anchor0``. A bare ``in0`` does not match the schema; it is accepted
+    at run time so old graphs still work, but it is not the name to write.
+
     SECURITY: this executes arbitrary Python embedded in the workflow whenever the
     graph runs. It is intended for your own, self-hosted, agent-built workflows —
     do NOT run baked workflows from untrusted sources. Set the env var
@@ -617,15 +627,36 @@ class AgentYPython(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, code="", inputs=None) -> io.NodeOutput:  # noqa: ANN001
+    def execute(cls, code="", inputs=None, **extra) -> io.NodeOutput:  # noqa: ANN001
         import os
+        import re
         import builtins
         if os.environ.get("AGENTY_PYTHON_NODE_DISABLED") in ("1", "true", "True"):
             return io.NodeOutput(*([None] * _N_PY_OUT))
-        vals = list((inputs or {}).values())
-        ns: dict = {"__builtins__": builtins, "inputs": vals, "outputs": []}
-        for i, v in enumerate(vals):
-            ns[f"in{i}"] = v
+        # An autogrow container arrives as one dict — {"in0": …} under `inputs`,
+        # addressed in the prompt as `inputs.in0`. A graph that names the slot
+        # bare (`in0`) instead does not match the schema, so ComfyUI hands it
+        # through as a loose keyword and the call used to die with "unexpected
+        # keyword argument 'in0'". Both are accepted: the graph that produced one
+        # of those is already saved on someone's canvas, and refusing to run it
+        # teaches them nothing they can act on.
+        bound: dict = dict(inputs or {})
+        for key, value in (extra or {}).items():
+            if re.fullmatch(r"in\d+", str(key)):
+                bound.setdefault(str(key), value)
+
+        # Bind by SLOT NAME, not by position. Wiring in0 and in2 used to bind in2's
+        # value to `in1` — the values were collapsed in order, so a gap silently
+        # renumbered everything after it and the snippet read the wrong input.
+        # `inputs` stays the positional list of what is actually wired.
+        def _idx(name: str) -> int:
+            return int(str(name)[2:] or 0)
+
+        ordered = sorted(bound.items(), key=lambda kv: _idx(kv[0]))
+        ns: dict = {"__builtins__": builtins,
+                    "inputs": [v for _k, v in ordered], "outputs": []}
+        for name, value in ordered:
+            ns[str(name)] = value
         try:
             exec(code or "", ns)  # noqa: S102 — deliberate; see SECURITY note above
         except Exception as exc:  # noqa: BLE001
