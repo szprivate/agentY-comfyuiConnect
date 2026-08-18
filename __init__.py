@@ -1142,18 +1142,28 @@ class AgentYProjectMemorySet(io.ComfyNode):
 
 
 class AgentYRefNote(io.ComfyNode):
-    """Say what a reference is FOR, on the wire that carries it.
+    """Name a reference, and say what it is FOR, on the wire that carries it.
 
-    Drop it between a loader and whatever consumes it — LoadImage → ref note →
+    Drop it between a loader and whatever consumes it — LoadImage → add tag →
     hook anchor — and write what the agent should take from this input: "the face,
     not the styling"; "the light, not the architecture". The agent reads the note
     with the input, so a reference image stops being just "an image" and becomes an
     image with a job.
 
-    Two things follow from the note living on the wire rather than in a separate
-    node: the binding can't drift (there is nothing to keep in sync — the link IS
-    the statement), and the agent still sees the real node behind it, so an anchor
-    on a ref note reads as the LoadImage it wraps, plus the role.
+    ``tag`` is the short handle for that same reference — ``hero_face``,
+    ``alley_light``. Once a tag exists anywhere on the canvas, typing ``#`` in any
+    ``agentY hook`` prompt box opens a menu of every tag in the scene, so a
+    directive can say ``#hero_face`` and mean exactly this wire. Without a tag the
+    node behaves exactly as it always has: the prompt is the whole statement.
+
+    Two things follow from the annotation living on the wire rather than in a
+    separate node: the binding can't drift (there is nothing to keep in sync — the
+    link IS the statement), and the agent still sees the real node behind it, so an
+    anchor on a tag node reads as the LoadImage it wraps, plus the tag and the role.
+
+    The class is still ``AgentYRefNote`` — it was called "agentY ref note" until
+    the tag field arrived, and the class id is what every saved graph and the agent
+    side key off. Renaming it would orphan every canvas that already has one.
 
     The output type follows the input, so it can be inserted into an existing wire
     of any type without changing what downstream nodes receive. On a normal run it
@@ -1165,14 +1175,27 @@ class AgentYRefNote(io.ComfyNode):
         template = io.MatchType.Template("ref")
         return io.Schema(
             node_id="AgentYRefNote",
-            display_name="agentY ref note",
+            display_name="agentY add tag",
             category="agentY",
             description=(
-                "Annotate a reference input with what it is FOR ('the face, not the "
-                "styling'). Sits on the wire; identity passthrough on a normal run."
+                "Tag the reference on this wire and say what it is FOR ('the face, not "
+                "the styling'). The tag is what '#' offers in every hook prompt box. "
+                "Sits on the wire; identity passthrough on a normal run."
             ),
             inputs=[
                 io.MatchType.Input("input", template=template),
+                # Optional so an API-format prompt saved before this field existed
+                # still validates — those carry `role` and nothing else.
+                io.String.Input(
+                    "tag", default="", optional=True,
+                    placeholder="tag name — e.g. hero_face (then #hero_face in any hook)",
+                    tooltip=(
+                        "A short name for this reference. Every tag on the canvas is "
+                        "offered in an agentY hook's prompt box when you type '#', so a "
+                        "directive can point at this exact wire by name instead of "
+                        "describing it. Letters, digits, '_' and '-'; no spaces."
+                    ),
+                ),
                 io.String.Input(
                     "role", multiline=True, default="",
                     placeholder="what to take from this reference — e.g. the face, not the styling",
@@ -1182,7 +1205,7 @@ class AgentYRefNote(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, input=None, role="") -> io.NodeOutput:  # noqa: ANN001, A002, ARG003
+    def execute(cls, input=None, role="", tag="") -> io.NodeOutput:  # noqa: ANN001, A002, ARG003
         return io.NodeOutput(input)
 
 

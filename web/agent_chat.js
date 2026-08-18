@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
+import { normaliseTag } from "./agent_tags.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
@@ -1561,10 +1562,12 @@ class AgentChat {
   }
 
   // The user named this output themselves, in the hook's own prompt. Put their
-  // words on the canvas as an `agentY ref note` hanging off the new node, so
+  // words on the canvas as an `agentY add tag` hanging off the new node, so
   // whatever they wire it into next is told what to take from it. Only ever on a
   // stated role — adding a node per output to someone's graph uninvited is not a
-  // courtesy, it's clutter.
+  // courtesy, it's clutter. The tag field is left EMPTY: a name is what the `#`
+  // menu offers everywhere, and one invented from a sentence is a name nobody
+  // chose and nobody would type.
   _attachRefNote(src, role) {
     const LG = window.LiteGraph;
     if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYRefNote"]) return;
@@ -1578,7 +1581,7 @@ class AgentChat {
         w.value = role;
         try { if (w.callback) w.callback(role); } catch (_) {}
       }
-      note.title = "agentY ref · " + role.slice(0, 40);
+      note.title = "agentY tag · " + role.slice(0, 40);
       note.pos = [src.pos[0] + (src.size ? src.size[0] : 210) + DROP_GAP, src.pos[1]];
       src.connect(0, note, 0);
     } catch (e) {
@@ -2495,18 +2498,25 @@ class AgentChat {
   // The type is what tells the agent side whether the wire carries a renderable
   // tensor (IMAGE/MASK/LATENT/VIDEO) it must materialise to a file before the
   // agent can see it — a mid-graph node names no file anywhere in its widgets.
-  // An `agentY ref note` is an annotation ON a wire, not a node anyone means to
-  // anchor: it says what the reference it carries is FOR. Resolve past it to the
-  // node the user thinks they wired, keeping the note's text. Doing it here rather
-  // than per-consumer is what keeps the QA references, the iterate feedback node
-  // and the hook block all seeing the LoadImage instead of the annotation.
+  // An `agentY add tag` node is an annotation ON a wire, not a node anyone means
+  // to anchor: it names the reference it carries and says what it is FOR. Resolve
+  // past it to the node the user thinks they wired, keeping the tag and the text.
+  // Doing it here rather than per-consumer is what keeps the QA references, the
+  // iterate feedback node and the hook block all seeing the LoadImage instead of
+  // the annotation.
   _throughRefNotes(node, slot) {
     const graph = app.graph;
     const isNote = (n) =>
       !!n && (n.type === "AgentYRefNote" || n.comfyClass === "AgentYRefNote");
     let role = "";
+    let tag = "";
     for (let hop = 0; hop < 4 && isNote(node); hop++) {
-      role = role || String(this._widgetSnapshot(node).role || "").trim();
+      const w = this._widgetSnapshot(node);
+      role = role || String(w.role || "").trim();
+      // The tag is what a directive says (`#hero_face`), so the anchor has to
+      // carry it too — otherwise the agent reads the word and has nothing on the
+      // graph to attach it to.
+      tag = tag || normaliseTag(w.tag);
       const inp = (node.inputs || []).find((i) => i && i.name === "input");
       const link = inp && inp.link != null && graph.links ? graph.links[inp.link] : null;
       const src = link && graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
@@ -2514,7 +2524,7 @@ class AgentChat {
       node = src;
       slot = link.origin_slot | 0;
     }
-    return { node, slot, role };
+    return { node, slot, role, tag };
   }
 
   _anchorsFor(hookNode) {
@@ -2532,11 +2542,11 @@ class AgentChat {
       if (!link) continue;
       const origin = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
       if (!origin) continue;
-      const { node, slot, role } = this._throughRefNotes(origin, link.origin_slot | 0);
+      const { node, slot, role, tag } = this._throughRefNotes(origin, link.origin_slot | 0);
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
       //
-      // EXCEPT when we hopped through an `agentY ref note`. Then this link starts
+      // EXCEPT when we hopped through an `agentY add tag`. Then this link starts
       // at the NOTE, and its type is the note's wildcard (COMFY_MATCHTYPE_V3) —
       // reporting that would say the anchor is an image whose type isn't IMAGE.
       // Downstream, splicing looks for the anchor matching a target's type, finds
@@ -2547,7 +2557,7 @@ class AgentChat {
       const outType = node === origin
         ? String(link.type || ownType || "")
         : String(ownType || link.type || "");
-      out.push({ node, fromSlot: slot, outType, toName: String(inp.name), role });
+      out.push({ node, fromSlot: slot, outType, toName: String(inp.name), role, tag });
     }
     return out;
   }
@@ -2670,8 +2680,10 @@ class AgentChat {
           from_output_slot: l.fromSlot,
           from_output_type: l.outType,
           to_input: l.toName,
-          // What an `agentY ref note` on this wire says the reference is FOR.
+          // What an `agentY add tag` on this wire says the reference is FOR.
           role: String(l.role || ""),
+          // And what it is CALLED — the name a directive uses as `#tag`.
+          tag: String(l.tag || ""),
         })),
       });
     }
