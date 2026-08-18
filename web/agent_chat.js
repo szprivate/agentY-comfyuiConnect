@@ -398,11 +398,44 @@ class AgentChat {
         // a changed boot_id exactly like a reconnect.
         if (this._hostRestarted()) await this._afterConnect(false);
         else if (this._adoptedRun) await this._syncRunState();
+        // A turn with no browser behind it (one asked for from Slack) cannot
+        // capture the graph itself, so the host asks us to. This tick is the
+        // only regular contact the panel has with it.
+        if (this._lastHealth && this._lastHealth.want_canvas) await this._postCanvas();
         return;
       }
       if (await this._hostReachable()) return;      // one retry: don't flap on a blip
       this._startReconnect(false);
     }, 5000);
+  }
+
+  // Post what is on the canvas right now, with no message attached.
+  //
+  // Same payload a message carries, because it is the same question — "what is
+  // the agent looking at?" — asked by a turn that has no browser of its own. A
+  // Slack turn used to arrive with no graph at all, and every canvas tool
+  // answered "no on-canvas graph is loaded this turn", which reads as the agent
+  // refusing to look at a workflow that is open in front of you.
+  async _postCanvas() {
+    if (this._postingCanvas) return;
+    this._postingCanvas = true;
+    try {
+      const body = {
+        canvas_prompt: await this._captureCanvasGraph(),
+        canvas_hooks: this._collectCanvasHooks(),
+        canvas_selection: this._collectCanvasSelection(),
+      };
+      await fetch(backendBase() + "/agentY/canvas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (_) {
+      // The host asked and we could not answer. It falls back to running
+      // without a canvas and saying so, which is the honest outcome.
+    } finally {
+      this._postingCanvas = false;
+    }
   }
 
   _startReconnect(firstBoot) {
