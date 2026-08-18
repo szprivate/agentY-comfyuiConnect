@@ -336,14 +336,16 @@ async function openAgentYSettingsModal() {
   // ── viewers (moved here from the side-panel top bar) ──
   const toolsSec = el("div", { className: "ays-sec" });
   toolsSec.append(el("h3", { textContent: "Viewers" }));
-  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log (includes tool calls), the long-term memory editor (everyhting the agent remembers from previous runs), and the token/cost breakdown." }));
+  toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log (includes tool calls), the long-term memory editor (everything the agent remembers from previous runs), the project memory (what is true of THIS project — characters, style, named references; it switches with the project), and the token/cost breakdown." }));
   const logViewBtn = el("button", { className: "ays-btn", textContent: "📜  Message-history log…" });
   logViewBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
   const memViewBtn = el("button", { className: "ays-btn", textContent: "🧠  Long-term memory…" });
   memViewBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
+  const projMemBtn = el("button", { className: "ays-btn", textContent: "📌  Project memory…" });
+  projMemBtn.addEventListener("click", () => window.agentYOpenProjectMemory && window.agentYOpenProjectMemory());
   const usageViewBtn = el("button", { className: "ays-btn", textContent: "📊  Token usage…" });
   usageViewBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
-  toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn, usageViewBtn]));
+  toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn, projMemBtn, usageViewBtn]));
   body.append(toolsSec);
 
   // ── .env auth section ──

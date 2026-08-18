@@ -110,6 +110,7 @@ const SLASH_FALLBACK = [
   { name: "/clear_vram", description: "Clear ComfyUI GPU VRAM" },
   { name: "/images", description: "List images generated in this thread" },
   { name: "/qa", description: "Show / set / clear the QA briefing outputs are checked against" },
+  { name: "/project_memory", description: "Inspect and forget what is remembered for THIS project" },
   { name: "/clearhistory", description: "Delete all conversation history" },
   { name: "/switch_model", description: "Switch an agent's LLM" },
   { name: "/add_workflow", description: "Add a workflow (JSON path, or 'canvas <name>' for the open graph)" },
@@ -1979,6 +1980,21 @@ class AgentChat {
     // stack) sidesteps the popup blocker, and the command never reaches the agent.
     if (/^\/(help|docs)\s*$/i.test(text)) {
       this._openDocs();
+      this.input.value = "";
+      this._autosize();
+      this._hidePop();
+      return;
+    }
+
+    // /project_memory — open the editor for what is true of THIS project. Also
+    // client-side and for the same reason: window.open only survives the popup
+    // blocker inside the gesture that asked for it, and there is nothing here for
+    // the agent to do. The user message is echoed so the transcript still shows
+    // what was asked for.
+    if (/^\/project[_ ]?memory\s*$/i.test(text)) {
+      this._userMsg(text.trim());
+      if (window.agentYOpenProjectMemory) window.agentYOpenProjectMemory();
+      this._sys("📌 Opened the project-memory editor in a new tab.");
       this.input.value = "";
       this._autosize();
       this._hidePop();

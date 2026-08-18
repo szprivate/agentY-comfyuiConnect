@@ -1200,12 +1200,31 @@ class AgentYRefNote(io.ComfyNode):
                     "role", multiline=True, default="",
                     placeholder="what to take from this reference — e.g. the face, not the styling",
                 ),
+                # Appended, never inserted: widgets_values is positional, so a
+                # graph saved with [tag, role] reads correctly here and simply
+                # gets the default.
+                io.Boolean.Input(
+                    "remember", default=False, optional=True,
+                    label_on="remember for the project",
+                    label_off="this graph only",
+                    tooltip=(
+                        "Should this reference outlive this graph? OFF (default) keeps "
+                        "the tag where it is: a name for a wire on this canvas, gone "
+                        "when the node is. ON also writes it into the project's memory "
+                        "as a named reference — the file's path and what you said it is "
+                        "for — so '#name' still resolves in a NEW graph, and a Claude "
+                        "Desktop session on the same ComfyUI can read it too. Turning "
+                        "it off stops refreshing the entry but does NOT delete it: a "
+                        "graph that happens not to contain this tag must not silently "
+                        "forget it. Remove it in the project-memory editor."
+                    ),
+                ),
             ],
             outputs=[io.MatchType.Output(template=template, display_name="output")],
         )
 
     @classmethod
-    def execute(cls, input=None, role="", tag="") -> io.NodeOutput:  # noqa: ANN001, A002, ARG003
+    def execute(cls, input=None, role="", tag="", remember=False) -> io.NodeOutput:  # noqa: ANN001, A002, ARG003
         return io.NodeOutput(input)
 
 

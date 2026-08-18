@@ -20,7 +20,10 @@ const HOOK_NODE = "AgentYHook";
 // property) agent_hook.js follows, for the same reason.
 //  v1 = [role]        (before the tag field)
 //  v2 = [tag, role]
-const SCHEMA_VERSION = 2;
+//  v3 = [tag, role, remember]   — appended, so a v2 file needs no shift, only
+//                                 the default. The version is still stamped, so
+//                                 nothing downstream has to infer it from length.
+const SCHEMA_VERSION = 3;
 
 // What a tag may contain. Everything else collapses to "_", so a tag typed with
 // spaces still resolves — and `#` still finds it — rather than half-matching.
@@ -381,7 +384,11 @@ function migrateWidgetValues(info) {
   if (!info || !Array.isArray(info.widgets_values)) return info;   // named: self-describing
   if (Number((info.properties || {}).agentY_schema || 0) >= SCHEMA_VERSION) return info;
   const v = info.widgets_values;
-  if (v.length === 1) return { ...info, widgets_values: ["", v[0]] };
+  // v1 [role] -> v2 [tag, role]: the one value would otherwise be read as the
+  // tag and the sentence the user wrote would vanish into a name.
+  if (v.length === 1) return { ...info, widgets_values: ["", v[0], false] };
+  // v2 [tag, role] -> v3: `remember` was appended, so nothing shifts.
+  if (v.length === 2) return { ...info, widgets_values: [v[0], v[1], false] };
   return info;
 }
 
