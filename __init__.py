@@ -53,6 +53,21 @@ _PICKER = _os.path.join(_EXT_DIR, "_filepicker.py")
 _PICK_IMG_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"}
 _PICK_VID_EXTS = {"mp4", "mov", "webm", "mkv", "avi", "m4v", "mpg", "mpeg"}
 
+# The kinds /agent/pick_files accepts, and what each one expands a picked FOLDER
+# to. "media" is what the merged collector asks for; the two single-kind values
+# stay for the deprecated video collector and any old caller. Kept as one table
+# because the accept-list and the expansion used to carry separate ideas of what
+# a valid kind was: "media" was missing from the first, so it fell to the default
+# and the dialog offered images only, while the second handled it perfectly well.
+_PICK_KINDS = {
+    "image": _PICK_IMG_EXTS,
+    "video": _PICK_VID_EXTS,
+    "media": _PICK_IMG_EXTS | _PICK_VID_EXTS,
+}
+# An unrecognised kind falls to the SUPERSET, never to one kind — a fallback that
+# hides files the caller asked for is how the above stayed invisible.
+_PICK_DEFAULT_KIND = "media"
+
 
 def _read_host_cfg():
     """Resolve (project_root, run_script) for the agentY host. ``AGENTY_ROOT`` env
@@ -138,16 +153,18 @@ try:
         The browser can't read a file's real filesystem path, so the collector
         nodes call this instead: it launches ``_filepicker.py`` as a subprocess
         (a fresh Tk dialog per call, off the event loop) and returns true on-disk
-        paths, no copying. ``kind`` filters image vs video; ``mode`` picks files
-        or a whole folder (folder is expanded to its matching media here).
+        paths, no copying. ``kind`` is one of ``_PICK_KINDS`` — ``media`` (the
+        merged collector: both filters in one dialog), or ``image``/``video`` for
+        the older single-kind callers. ``mode`` picks files or a whole folder
+        (a folder is expanded to the media matching ``kind`` here).
         """
         try:
             data = await request.json()
         except Exception:  # noqa: BLE001
             data = {}
-        kind = str((data or {}).get("kind", "image")).lower()
-        if kind not in ("image", "video"):
-            kind = "image"
+        kind = str((data or {}).get("kind", _PICK_DEFAULT_KIND)).lower()
+        if kind not in _PICK_KINDS:
+            kind = _PICK_DEFAULT_KIND
         mode = str((data or {}).get("mode", "files")).lower()
         if mode not in ("files", "folder"):
             mode = "files"
@@ -174,14 +191,7 @@ try:
             return web.json_response({"ok": False, "error": str(parsed["error"])}, status=500)
         paths = parsed if isinstance(parsed, list) else []
         if mode == "folder" and paths:
-            # "media" (the merged collector) takes both; the two single-kind
-            # values stay for the deprecated video collector and any old caller.
-            if kind == "video":
-                exts = _PICK_VID_EXTS
-            elif kind == "image":
-                exts = _PICK_IMG_EXTS
-            else:
-                exts = _PICK_IMG_EXTS | _PICK_VID_EXTS
+            exts = _PICK_KINDS[kind]
             folder = paths[0]
             expanded: list = []
             try:
