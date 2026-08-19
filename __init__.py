@@ -1126,6 +1126,195 @@ def _pm_find(key: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Remembering tags on a run
+# ---------------------------------------------------------------------------
+# An `agentY add tag` node with `remember` on writes its reference into this
+# project's memory. The agentY host already does that on every turn it sees a
+# canvas (src/utils/tag_memory.py), which covers asking for it in chat with
+# nothing running. It cannot cover a plain Queue Prompt: the host is not in that
+# loop at all. So the same write happens here too, and the three ways of asking
+# — say it in chat, ComfyUI's Queue button, the panel's run button — all land in
+# the same file.
+#
+# Hooked on the QUEUE rather than in the node's execute() for two reasons:
+# execute() is cached, so an unchanged graph run twice runs the node once; and a
+# tag node that is not on the path to an output never executes at all. The queue
+# sees every submission, and the whole graph.
+#
+# The entry format is the host's, and the two have to agree — this side WRITES
+# what /agent/pm_item and the host's remembered_reference() READ. Keep it in step
+# with src/utils/tag_memory.py in the agentY repo, which names this file back.
+_TAG_NOTE_CLASS = "AgentYRefNote"
+_TAG_NOTE_TYPE = "reference"
+_TAG_PATH_PREFIX = "path: "
+_TAG_ORIGIN = "Remembered from the `agentY add tag` node tagged `#{tag}` on a canvas."
+# Values a Boolean widget can arrive as when it means "off" — the prompt carries
+# whatever JSON the frontend serialized, not a Python bool.
+_TAG_OFF = ("", "0", "false", "none", "no", "off")
+_TAG_STRIP = _re.compile(r"[^A-Za-z0-9_\-]+")
+# Bounded, nearest-first, so a tag sitting behind a resize or a switch still
+# resolves without reaching across the graph and adopting an unrelated image.
+_TAG_SEARCH_HOPS = 6
+
+
+def _tag_normalise(raw) -> str:
+    """``"#hero face"`` → ``"hero_face"`` — the host's rule, and agent_tags.js's."""
+    return _TAG_STRIP.sub("_", str(raw or "").strip().lstrip("#")).strip("_")
+
+
+def _tag_file_of(node: dict) -> str:
+    """The media file a node names in a scalar widget, or "".
+
+    Scalars only — a link is a wire, not a file — and media suffixes only, so a
+    seed, a sampler name or a prompt is never mistaken for a reference.
+    """
+    for value in (node.get("inputs") or {}).values():
+        if not isinstance(value, str):
+            continue
+        parts = value.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)
+        if len(parts) == 2 and ("." + parts[1].lower()) in _COLLECT_MEDIA_EXTS:
+            return value
+    return ""
+
+
+def _tag_file_upstream(prompt: dict, start_id: str) -> str:
+    """The nearest file up the wire from *start_id*, or ""."""
+    seen, frontier, hops = {str(start_id)}, [str(start_id)], 0
+    while frontier and hops <= _TAG_SEARCH_HOPS:
+        nxt = []
+        for nid in frontier:
+            node = prompt.get(nid)
+            if not isinstance(node, dict):
+                continue
+            hit = _tag_file_of(node)
+            if hit:
+                return hit
+            for value in (node.get("inputs") or {}).values():
+                if isinstance(value, list) and value and str(value[0]) not in seen:
+                    seen.add(str(value[0]))
+                    nxt.append(str(value[0]))
+        frontier, hops = nxt, hops + 1
+    return ""
+
+
+def _tag_stored_path(path: str) -> str:
+    """The path as stored: FULL wherever one can be worked out.
+
+    A bare filename is resolved against the input dir, because that is where
+    ComfyUI means it. Anything unresolvable is kept exactly as given rather than
+    guessed at.
+    """
+    raw = str(path or "").strip().strip('"')
+    if not raw:
+        return ""
+    p = _Path(raw)
+    if p.is_absolute():
+        return str(p).replace("\\", "/")
+    try:
+        import folder_paths
+        cand = _Path(folder_paths.get_input_directory()) / raw
+        if cand.is_file():
+            return str(cand).replace("\\", "/")
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.replace("\\", "/")
+
+
+def _pm_write(name: str, body: str, type: str = _TAG_NOTE_TYPE) -> bool:
+    """Store one entry, replacing any of the same name — the host's write_entry.
+
+    PROJECT.md is deliberately NOT regenerated here. It is a browsable rendering
+    of these files that nothing reads back, and the host rewrites it on its next
+    turn; duplicating how it is rendered would be one more thing free to drift.
+    """
+    key, text = _pm_slug(name), str(body or "").strip()
+    if not key or not text:
+        return False
+    d = _pm_dir(create=True)
+    if d is None:
+        return False
+    existing = _pm_find(key)
+    target = d / (_pm_slug(type) or _TAG_NOTE_TYPE) / f"{key}.md"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text + "\n", encoding="utf-8")
+        # A name re-filed under a different type moves, rather than leaving a
+        # second copy behind to contradict this one later.
+        if existing is not None and existing != target:
+            existing.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _remember_tags(prompt) -> list:
+    """Write every `remember`-switched tag on this graph into project memory."""
+    if not isinstance(prompt, dict) or not prompt:
+        return []
+    written = []
+    for nid, node in prompt.items():
+        if not isinstance(node, dict) or node.get("class_type") != _TAG_NOTE_CLASS:
+            continue
+        inputs = node.get("inputs") or {}
+        if str(inputs.get("remember", "")).strip().lower() in _TAG_OFF:
+            continue
+        tag = _tag_normalise(inputs.get("tag"))
+        if not tag:
+            continue
+        file_path = _tag_file_upstream(prompt, str(nid))
+        if not file_path:
+            continue
+        role = str(inputs.get("role") or "").strip()
+        base = _os.path.basename(file_path.replace("\\", "/"))
+        body = "\n".join([
+            role or f"Reference image `{base}`.",
+            _TAG_PATH_PREFIX + _tag_stored_path(file_path),
+            _TAG_ORIGIN.format(tag=tag),
+        ])
+        if _pm_write(tag, body):
+            written.append(tag)
+    return written
+
+
+def _install_queue_tag_hook() -> None:
+    """Remember tags off every queued prompt, whoever queued it.
+
+    ComfyUI's Queue button, the agentY panel's run button and the agent's own
+    submissions all end at ``PromptQueue.put``, so one wrapper covers every way a
+    run can start. Wrapped rather than replaced, and every failure swallowed: a
+    convenience must never be able to stop a render being queued.
+    """
+    try:
+        from server import PromptServer
+        queue = PromptServer.instance.prompt_queue
+    except Exception:  # noqa: BLE001
+        return
+    if getattr(queue.put, "_agenty_tags", False):
+        return                      # already wrapped; custom nodes can reload
+    original = queue.put
+
+    def put(item, *args, **kwargs):
+        try:
+            # (number, prompt_id, prompt, extra_data, outputs, [sensitive]) —
+            # the width has changed across ComfyUI versions, the prompt's
+            # position has not.
+            prompt = item[2] if isinstance(item, (list, tuple)) and len(item) > 2 else None
+            done = _remember_tags(prompt) if isinstance(prompt, dict) else []
+            if done:
+                print("[agentY] remembered tag(s) -> project memory: "
+                      + ", ".join("#" + t for t in done))
+        except Exception:  # noqa: BLE001
+            pass
+        return original(item, *args, **kwargs)
+
+    put._agenty_tags = True
+    queue.put = put
+
+
+_install_queue_tag_hook()
+
+
 class AgentYProjectMemoryGet(io.ComfyNode):
     """Read a fact from this project's memory into the graph, as a string.
 
