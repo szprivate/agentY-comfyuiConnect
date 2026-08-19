@@ -123,35 +123,59 @@ export function sceneTags() {
 // some graph, written to project memory. They resolve in a canvas that has never
 // seen the tag node, which is the whole reason they exist.
 //
-// Fetched once and cached: the store is on disk and changes rarely, while the menu
-// opens on a keystroke. `refreshRemembered()` drops the cache, and picking a name
-// always re-reads before inserting, so a stale entry can never put a stale path
-// into a list of files.
+// Fetched and cached for a short while: the store is on disk and changes rarely,
+// while the menu opens on a keystroke. The cache only decides what the menu can
+// OFFER — a name is only ever inserted from an entry that came back from the
+// server, so the worst a stale one can do is list a reference that has since been
+// renamed, and the next read past the TTL drops it.
 let REMEMBERED = null;
 let REMEMBERED_AT = 0;
+let INFLIGHT = null;
 const REMEMBERED_TTL = 30000;
 
-async function remembered() {
-  const now = Date.now();
-  if (REMEMBERED && now - REMEMBERED_AT < REMEMBERED_TTL) return REMEMBERED;
-  try {
-    const r = await fetch("/agent/pm_names", { cache: "no-store" });
-    const d = await r.json();
-    REMEMBERED = (d.entries || [])
+const isWarm = () => !!REMEMBERED && Date.now() - REMEMBERED_AT < REMEMBERED_TTL;
+
+function remembered() {
+  if (isWarm()) return Promise.resolve(REMEMBERED);
+  // ONE request, however many keystrokes arrive while it is in the air. Nothing
+  // is cached until the first one lands, so without this every letter typed
+  // after `#` started a request of its own — against a handler that reads the
+  // store off disk, which on a project living on a network share is not free.
+  if (INFLIGHT) return INFLIGHT;
+  INFLIGHT = fetch("/agent/pm_names", { cache: "no-store" })
+    .then((r) => r.json())
+    .then((d) => (d.entries || [])
       .filter((e) => e && e.path)
       .map((e) => ({ tag: e.name, role: e.summary || "", path: e.path,
-                     source: "memory" }));
-  } catch (_) {
-    REMEMBERED = [];
-  }
-  REMEMBERED_AT = now;
-  return REMEMBERED;
+                     source: "memory" })))
+    .catch(() => [])
+    .then((list) => {
+      REMEMBERED = list;
+      REMEMBERED_AT = Date.now();
+      INFLIGHT = null;
+      return list;
+    });
+  return INFLIGHT;
 }
 
-// Warm the cache without blocking the keystroke that needs it. The menu renders
-// from whatever is known NOW; the fetch below refreshes it a frame later.
+// Warm the cache without blocking the keystroke that needs it, and call back
+// ONLY when something has actually arrived that the menu has not shown yet.
+//
+// That last word is the whole function. This used to call back on every prime,
+// warm cache or not — and since `refresh` primes and the callback re-runs
+// `refresh`, a warm cache closed the circle: promise, callback, refresh, prime,
+// promise. A resolved promise settles in a MICROTASK, and microtasks drain
+// completely before the browser renders or handles a click, so the loop never
+// gave the thread back. One `#` measured seven million menu rebuilds, the tab
+// froze until the 30s TTL let a real request through, and the menu it had just
+// opened could not be clicked. A warm cache has nothing to announce.
+//
+// Keystrokes arriving while the read is still in the air DO each get a callback;
+// they share the one request (see above) and land together, and re-running a
+// refresh that reads the caret afresh is both cheap and correct.
 function primeRemembered(onReady) {
-  remembered().then((list) => { if (list && list.length && onReady) onReady(); });
+  if (isWarm()) return;
+  remembered().then((list) => { if (list.length && onReady) onReady(); });
 }
 
 // ── the `#` menu ────────────────────────────────────────────────────────────
@@ -276,10 +300,7 @@ function render() {
       e.preventDefault();
       accept(i);
     });
-    row.addEventListener("mouseenter", () => {
-      menu.sel = i;
-      render();
-    });
+    row.addEventListener("mouseenter", () => select(i));
     menu.el.appendChild(row);
   });
   const at = caretPoint(menu.ta);
@@ -293,6 +314,23 @@ function render() {
   if (box.right > window.innerWidth - 4) {
     menu.el.style.left = Math.max(4, Math.round(window.innerWidth - box.width - 4)) + "px";
   }
+}
+
+// Move the highlight — WITHOUT rebuilding the rows.
+//
+// Highlighting used to re-render, which replaces every row with a new element.
+// Replace the element under a stationary cursor and the browser re-fires
+// `mouseenter` on whatever is now underneath, which asks for another rebuild:
+// the same loop as above, driven by real events instead of promises. It also
+// dragged the menu back to the caret on every hover. Nothing about a changed
+// selection needs new elements — it is one class.
+function select(i) {
+  if (!menu.el || i === menu.sel || i < 0 || i >= menu.items.length) return;
+  menu.sel = i;
+  const rows = menu.el.children;
+  for (let n = 0; n < rows.length; n++) rows[n].classList.toggle("sel", n === menu.sel);
+  const row = rows[menu.sel];
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
 }
 
 function accept(i) {
@@ -327,8 +365,14 @@ function accept(i) {
   ta.focus();
 }
 
+// The box the last refresh ran for, which is NOT the same as "the menu is open":
+// a `#` typed before the store has been read has nothing to offer yet and closes
+// the menu, and that is exactly the moment the arriving entries are for.
+let lastBox = null;
+
 // Re-evaluate the token under the caret and open, refilter, or close.
 function refresh(ta) {
+  lastBox = ta;
   if (!ta || ta.selectionStart !== ta.selectionEnd) return close();
   const m = TOKEN.exec(ta.value.slice(0, ta.selectionStart));
   if (!m) return close();
@@ -341,11 +385,11 @@ function refresh(ta) {
   // Then what the PROJECT remembers, minus anything the canvas already names —
   // the tag in front of you is the more specific statement, same rule the agent
   // side resolves by. Only reached once the cache is warm; the prime below fills
-  // it a frame later and re-opens the menu, so the first `#` of a session is at
-  // worst one keystroke behind.
+  // it once, then re-opens the menu, so the first `#` of a session catches up by
+  // itself rather than waiting for another keystroke.
   const fromMemory = (REMEMBERED || []).filter((t) => !seen.has(t.tag));
   const all = [...onCanvas, ...fromMemory];
-  primeRemembered(() => { if (isOpen() && menu.ta === ta) refresh(ta); });
+  primeRemembered(() => { if (lastBox === ta) refresh(ta); });
   // Nothing to offer. The menu is a consequence of tags existing, so before the
   // first one it stays out of the way entirely.
   if (!all.length) return close();
@@ -434,12 +478,10 @@ function onKeyDown(e) {
   };
   switch (e.key) {
     case "ArrowDown":
-      menu.sel = (menu.sel + 1) % menu.items.length;
-      render();
+      select((menu.sel + 1) % menu.items.length);
       return stop();
     case "ArrowUp":
-      menu.sel = (menu.sel - 1 + menu.items.length) % menu.items.length;
-      render();
+      select((menu.sel - 1 + menu.items.length) % menu.items.length);
       return stop();
     case "Enter":
     case "Tab":
@@ -479,8 +521,12 @@ app.registerExtension({
     // Anything that moves the box out from under the menu closes it, rather than
     // leaving it floating beside a caret that is no longer there: a scroll, a
     // wheel (which the textarea forwards to the canvas as a zoom), losing focus.
-    document.addEventListener("scroll", () => close(), true);
-    document.addEventListener("wheel", () => close(), true);
+    // Scrolling the menu ITSELF is the exception — it has a max height, so a long
+    // list has to be scrollable, and closing on the gesture that reveals the rest
+    // of it is a menu that cannot be reached past the tenth entry.
+    const elsewhere = (e) => !(menu.el && e && menu.el.contains(e.target));
+    document.addEventListener("scroll", (e) => { if (elsewhere(e)) close(); }, true);
+    document.addEventListener("wheel", (e) => { if (elsewhere(e)) close(); }, true);
     window.addEventListener("blur", () => close());
   },
 });

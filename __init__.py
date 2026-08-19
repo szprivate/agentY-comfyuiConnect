@@ -230,14 +230,9 @@ try:
                                   "text": body, "path": path, "kind": kind,
                                   "type": f.parent.name})
 
-    @_routes.get("/agent/pm_names")
-    async def _agent_pm_names(request):  # noqa: ANN001
-        """Every entry in the store, with the file each one names.
-
-        One call, so the collector's ``#`` menu can offer remembered references
-        without a request per name. Only entries that HAVE a file are useful there,
-        but all are returned — the caller decides what it is listing.
-        """
+    def _pm_names_blocking() -> list:
+        """Walk the store: one directory listing, one read and up to two stats
+        per entry."""
         d = _pm_dir()
         out = []
         if d is not None and d.is_dir():
@@ -252,7 +247,25 @@ try:
                 first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
                 out.append({"name": f.stem, "type": f.parent.name,
                             "summary": first, "path": path})
-        return web.json_response({"ok": True, "entries": out})
+        return out
+
+    @_routes.get("/agent/pm_names")
+    async def _agent_pm_names(request):  # noqa: ANN001
+        """Every entry in the store, with the file each one names.
+
+        One call, so the collector's ``#`` menu can offer remembered references
+        without a request per name. Only entries that HAVE a file are useful there,
+        but all are returned — the caller decides what it is listing.
+
+        Off the event loop, because this is a keystroke-triggered walk of a
+        directory that follows the project — and a project on a network share
+        answers a stat in milliseconds, not microseconds. Done inline it is not
+        this request that pays: aiohttp is single-threaded, so every OTHER
+        request ComfyUI is serving waits behind it, which is the whole UI.
+        """
+        entries = await _asyncio.get_running_loop().run_in_executor(
+            None, _pm_names_blocking)
+        return web.json_response({"ok": True, "entries": entries})
 
     @_routes.get("/agent/pm_file")
     async def _agent_pm_file(request):  # noqa: ANN001
