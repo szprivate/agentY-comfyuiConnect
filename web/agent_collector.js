@@ -15,13 +15,17 @@ import { app } from "../../scripts/app.js";
 // Queue click — fired once per click (even with batch count > 1) via a one-shot
 // patch on app.queuePrompt, then auto-disarmed so stepping resumes.
 
+// `AgentYImageCollector` is the MERGED collector — it takes video too, and the
+// class id is unchanged so every saved graph still opens. `AgentYVideoCollector`
+// is the old video-only node, kept registered (and deprecated) for the same
+// reason; new graphs get the merged one.
 const COLLECTORS = {
   AgentYImageCollector: {
-    kind: "image", noun: "images", title: "agentY image collector",
+    kind: "media", noun: "files", title: "agentY collector",
     color: "#264a4a", bgcolor: "#1c3030",
   },
   AgentYVideoCollector: {
-    kind: "video", noun: "videos", title: "agentY video collector",
+    kind: "video", noun: "videos", title: "agentY video collector (old)",
     color: "#3a2a4a", bgcolor: "#2a2030",
   },
 };

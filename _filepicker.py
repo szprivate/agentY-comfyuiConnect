@@ -4,7 +4,10 @@ Run as a SUBPROCESS by the ``/agent/pick_files`` route (never imported), so each
 dialog is a fresh Tk process off ComfyUI's event loop — no Tk-on-a-thread issues,
 no state leaking between calls.
 
-Usage:  python _filepicker.py <kind:image|video> <mode:files|folder>
+Usage:  python _filepicker.py <kind:media|image|video> <mode:files|folder>
+
+``media`` is what the merged collector asks for — both filters in one dialog, with
+"Media files" preselected so a mixed folder can be picked from in one pass.
 
 Prints a JSON array of the selected absolute paths to stdout (empty on cancel),
 or ``{"error": "..."}`` when Tk is unavailable so the caller can report it.
@@ -43,12 +46,19 @@ def _main() -> None:
             if d:
                 paths = [d]
         else:
-            is_video = kind == "video"
-            label = "Videos" if is_video else "Images"
-            pattern = _VID if is_video else _IMG
+            if kind == "video":
+                label, types = "Videos", [("Videos", _VID)]
+            elif kind == "image":
+                label, types = "Images", [("Images", _IMG)]
+            else:
+                # The merged collector: one dialog for both, the combined filter
+                # first so a mixed folder shows everything usable by default.
+                label = "Media files"
+                types = [("Media files", _IMG + " " + _VID),
+                         ("Images", _IMG), ("Videos", _VID)]
             sel = filedialog.askopenfilenames(
                 title=f"agentY — select {label.lower()} (Ctrl/Shift-click for several)",
-                filetypes=[(label, pattern), ("All files", "*.*")],
+                filetypes=types + [("All files", "*.*")],
             )
             paths = list(sel)
     finally:

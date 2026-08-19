@@ -174,7 +174,14 @@ try:
             return web.json_response({"ok": False, "error": str(parsed["error"])}, status=500)
         paths = parsed if isinstance(parsed, list) else []
         if mode == "folder" and paths:
-            exts = _PICK_VID_EXTS if kind == "video" else _PICK_IMG_EXTS
+            # "media" (the merged collector) takes both; the two single-kind
+            # values stay for the deprecated video collector and any old caller.
+            if kind == "video":
+                exts = _PICK_VID_EXTS
+            elif kind == "image":
+                exts = _PICK_IMG_EXTS
+            else:
+                exts = _PICK_IMG_EXTS | _PICK_VID_EXTS
             folder = paths[0]
             expanded: list = []
             try:
@@ -187,6 +194,76 @@ try:
             paths = expanded
         paths = [p for p in paths if isinstance(p, str) and _os.path.isfile(p)]
         return web.json_response({"ok": True, "paths": paths, "kind": kind})
+
+    @_routes.get("/agent/pm_item")
+    async def _agent_pm_item(request):  # noqa: ANN001
+        """What one project-memory entry holds: its text, and the file it names.
+
+        Backs the ``agentY load item`` node's preview and the ``#`` menu in the
+        collector. Both need to know a name's file BEFORE anything runs, which is
+        the whole point of a store that lives on disk.
+        """
+        name = _pm_slug(request.query.get("name", ""))
+        f = _pm_find(name)
+        if f is None:
+            return web.json_response({"ok": True, "name": name, "found": False,
+                                      "text": "", "path": "", "kind": ""})
+        try:
+            body = f.read_text(encoding="utf-8").strip()
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+        path = _pm_entry_path(body)
+        ext = _os.path.splitext(path)[1].lower()
+        kind = ("image" if ext in _COLLECT_IMG_EXTS
+                else "video" if ext in _COLLECT_VID_EXTS else "")
+        return web.json_response({"ok": True, "name": name, "found": True,
+                                  "text": body, "path": path, "kind": kind,
+                                  "type": f.parent.name})
+
+    @_routes.get("/agent/pm_names")
+    async def _agent_pm_names(request):  # noqa: ANN001
+        """Every entry in the store, with the file each one names.
+
+        One call, so the collector's ``#`` menu can offer remembered references
+        without a request per name. Only entries that HAVE a file are useful there,
+        but all are returned — the caller decides what it is listing.
+        """
+        d = _pm_dir()
+        out = []
+        if d is not None and d.is_dir():
+            for f in sorted(d.glob("*/*.md")):
+                if f.stem == "PROJECT":
+                    continue
+                try:
+                    body = f.read_text(encoding="utf-8").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                path = _pm_entry_path(body)
+                first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+                out.append({"name": f.stem, "type": f.parent.name,
+                            "summary": first, "path": path})
+        return web.json_response({"ok": True, "entries": out})
+
+    @_routes.get("/agent/pm_file")
+    async def _agent_pm_file(request):  # noqa: ANN001
+        """Serve the media a named entry points at, for the in-node preview.
+
+        Keyed by NAME, never by path: the only files this can serve are the ones
+        the project store already points at, so there is no path parameter for a
+        caller to aim somewhere else.
+        """
+        name = _pm_slug(request.query.get("name", ""))
+        f = _pm_find(name)
+        if f is None:
+            return web.json_response({"ok": False, "error": "no such entry"}, status=404)
+        try:
+            path = _pm_entry_path(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            path = ""
+        if not path or not _os.path.isfile(path):
+            return web.json_response({"ok": False, "error": "entry names no file"},
+                                     status=404)
+        return web.FileResponse(path)
 
     @_routes.post("/agent/reset_collector_cursor")
     async def _agent_reset_collector_cursor(request):  # noqa: ANN001
@@ -720,6 +797,9 @@ class AgentYText(io.ComfyNode):
 
 _COLLECT_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff")
 _COLLECT_VID_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg")
+# One node collects both kinds now, so one list decides what a picked or
+# pasted path is allowed to be.
+_COLLECT_MEDIA_EXTS = _COLLECT_IMG_EXTS + _COLLECT_VID_EXTS
 
 
 def _collector_paths(files: str, exts: tuple) -> list[str]:
@@ -817,46 +897,60 @@ def _apply_incremental(cls, paths: list, load_incrementally: bool) -> list:
 
 
 class AgentYImageCollector(io.ComfyNode):
-    """Gather image files from disk into one node — an agent-friendly input batch.
+    """Gather media files from disk into one node — an agent-friendly input set.
 
-    Click **Add images…** (or **Add folder…**) to open a native OS file dialog and
-    pick images from anywhere on disk; the absolute paths accumulate in the ``files``
-    box (one per line — editable/pasteable by hand). Because that list is node data,
-    the agentY agent sees every image the moment the collector is wired to an
-    ``agentY hook`` — no Queue Prompt needed. Outputs a stacked ``IMAGE`` batch —
-    every frame is uniformly scaled to cover a max(width) x max(height) canvas and
-    centre-cropped (aspect ratio preserved, never distorted) — plus the
-    newline-joined ``paths`` string.
+    Click **Add files…** (or **Add folder…**) to open a native OS dialog and pick
+    images and/or videos from anywhere on disk; the absolute paths accumulate in
+    the ``files`` box (one per line — editable and pasteable by hand). Because that
+    list is node data, the agentY agent sees every file the moment the collector is
+    wired to an ``agentY hook`` — no Queue Prompt needed. Typing ``#`` in the box
+    offers the tags on this canvas and the references remembered for the project,
+    and drops the file's path in.
 
-    Toggle **load_incrementally** to emit just ONE image per Queue Prompt instead of
-    the whole batch, stepping through the list on successive queues (see the toggle's
-    tooltip).
+    **Both kinds, one node.** Images come out of ``images`` as a stacked ``IMAGE``
+    batch (every frame uniformly scaled to cover a max(width) x max(height) canvas
+    and centre-cropped — aspect ratio preserved, never distorted); videos come out
+    of ``videos`` as a list of ``VIDEO`` objects; ``paths`` carries the whole list
+    as text. Wire whichever you need — a set of images leaves ``videos`` empty, and
+    the other way round.
+
+    That is also why this was ever two nodes: the two output TYPES are genuinely
+    different (a stacked tensor vs a list of video objects) and ComfyUI fixes a
+    node's output types at registration, so no single output could have been both.
+    Carrying both outputs costs one slot and settles it.
+
+    Toggle **load_incrementally** to emit just ONE file per Queue Prompt instead of
+    the whole batch, stepping through the list on successive queues (see the
+    toggle's tooltip).
     """
 
     @classmethod
     def define_schema(cls) -> io.Schema:  # noqa: N802
         return io.Schema(
             node_id="AgentYImageCollector",
-            display_name="agentY image collector",
+            display_name="agentY collector",
             category="agentY",
+            search_aliases=["agentY image collector", "agentY video collector",
+                            "agentY media collector"],
             description=(
-                "Collect image files from disk (native picker) into one node. The path "
-                "list is node data, so the agentY agent can read every image with no "
-                "pre-run when the node is wired to an agentY hook. Emits a stacked IMAGE "
-                "batch + a paths string for normal runs (or one image per queue when "
-                "load_incrementally is on)."
+                "Collect image and/or video files from disk (native picker) into one "
+                "node. The path list is node data, so the agentY agent can read every "
+                "file with no pre-run when the node is wired to an agentY hook. Emits a "
+                "stacked IMAGE batch, a list of VIDEO objects, and a paths string (or "
+                "one file per queue when load_incrementally is on)."
             ),
             inputs=[
                 io.String.Input(
                     "files",
                     multiline=True,
                     default="",
-                    placeholder="one absolute image path per line — use 'Add images...' to pick",
+                    placeholder="one absolute path per line — 'Add files...' to pick, or # for a tag",
                 ),
-                _load_incrementally_input("image"),
+                _load_incrementally_input("file"),
             ],
             outputs=[
                 io.Image.Output(display_name="images"),
+                io.Video.Output(display_name="videos", is_output_list=True),
                 io.String.Output(display_name="paths"),
             ],
             hidden=[io.Hidden.unique_id],
@@ -871,68 +965,87 @@ class AgentYImageCollector(io.ComfyNode):
 
     @classmethod
     def execute(cls, files="", load_incrementally=False) -> io.NodeOutput:  # noqa: ANN001
-        import numpy as np
-        import torch
-        from PIL import Image as _PILImage, ImageOps as _ImageOps
-
-        paths = _collector_paths(files, _COLLECT_IMG_EXTS)
+        paths = _collector_paths(files, _COLLECT_MEDIA_EXTS)
         paths = _apply_incremental(cls, paths, load_incrementally)
-        loaded: list = []
-        for p in paths:
-            try:
-                im = _PILImage.open(p)
-                loaded.append(_ImageOps.exif_transpose(im).convert("RGB"))
-            except Exception as exc:  # noqa: BLE001
-                print(f"[agentY image collector] skipping {p}: {exc}")
-        if loaded:
-            # A ComfyUI IMAGE batch needs a uniform H x W. Use a canvas of
-            # max(width) x max(height) across the set, then fit each frame into it
-            # by scaling UNIFORMLY to cover and centre-cropping the overflow —
-            # aspect ratio is always preserved (never stretched); cropping absorbs
-            # the mismatch. ImageOps.fit does exactly this cover+crop.
-            canvas_w = max(im.width for im in loaded)
-            canvas_h = max(im.height for im in loaded)
-            arrs = [
-                np.asarray(
-                    _ImageOps.fit(im, (canvas_w, canvas_h),
-                                  method=_PILImage.LANCZOS, centering=(0.5, 0.5)),
-                    dtype=np.float32,
-                ) / 255.0
-                for im in loaded
-            ]
-            batch = torch.from_numpy(np.stack(arrs, axis=0))
-        else:
-            # No valid images — a 1x64x64 black frame keeps a normal run from crashing.
-            batch = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-        return io.NodeOutput(batch, "\n".join(paths))
+        images = [p for p in paths if p.lower().endswith(_COLLECT_IMG_EXTS)]
+        videos = [p for p in paths if p.lower().endswith(_COLLECT_VID_EXTS)]
+        return io.NodeOutput(_stack_images(images), _load_videos(videos),
+                             "\n".join(paths))
+
+
+def _stack_images(paths: list):
+    """Load *paths* into one ComfyUI IMAGE batch.
+
+    A batch needs a uniform H x W, so the canvas is max(width) x max(height) across
+    the set and each frame is scaled UNIFORMLY to cover it and centre-cropped —
+    aspect ratio is always preserved (never stretched) and the cropping absorbs the
+    mismatch. ``ImageOps.fit`` does exactly this cover+crop.
+    """
+    import numpy as np
+    import torch
+    from PIL import Image as _PILImage, ImageOps as _ImageOps
+
+    loaded: list = []
+    for p in paths:
+        try:
+            im = _PILImage.open(p)
+            loaded.append(_ImageOps.exif_transpose(im).convert("RGB"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agentY collector] skipping {p}: {exc}")
+    if not loaded:
+        # No images — a 1x64x64 black frame keeps a normal run from crashing, and
+        # is what a video-only collector hands to an IMAGE slot nobody wired.
+        return torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+    canvas_w = max(im.width for im in loaded)
+    canvas_h = max(im.height for im in loaded)
+    arrs = [
+        np.asarray(
+            _ImageOps.fit(im, (canvas_w, canvas_h),
+                          method=_PILImage.LANCZOS, centering=(0.5, 0.5)),
+            dtype=np.float32,
+        ) / 255.0
+        for im in loaded
+    ]
+    return torch.from_numpy(np.stack(arrs, axis=0))
+
+
+def _load_videos(paths: list) -> list:
+    """Load *paths* into a list of ComfyUI VIDEO objects (empty when there are none)."""
+    videos: list = []
+    if not paths:
+        return videos
+    try:
+        from comfy_api.latest import VideoFromFile
+    except Exception as exc:  # noqa: BLE001
+        print(f"[agentY collector] VIDEO type unavailable ({exc}); paths only")
+        return videos
+    for p in paths:
+        try:
+            videos.append(VideoFromFile(p))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agentY collector] could not load {p}: {exc}")
+    return videos
 
 
 class AgentYVideoCollector(io.ComfyNode):
-    """Gather video files from disk into one node — an agent-friendly input set.
+    """The old video-only collector. Superseded by ``agentY collector``.
 
-    Like the image collector, but for video: **Add videos…** / **Add folder…** open
-    a native OS dialog filtered to video files, and the absolute paths accumulate in
-    the ``files`` box. The agentY agent reads the paths with no pre-run when the node
-    is wired to an ``agentY hook``. Outputs a **list** of ``VIDEO`` objects (one per
-    file, for normal runs) plus the newline-joined ``paths`` string.
-
-    Toggle **load_incrementally** to emit just ONE video per Queue Prompt instead of
-    the whole list, stepping through the files on successive queues (see the toggle's
-    tooltip).
+    Kept registered, and ONLY for that reason: this class id is written into every
+    workflow that ever used one, and dropping it would open those graphs with a
+    missing node. It behaves exactly as it always did. New graphs get the merged
+    collector, which takes video as well.
     """
 
     @classmethod
     def define_schema(cls) -> io.Schema:  # noqa: N802
         return io.Schema(
             node_id="AgentYVideoCollector",
-            display_name="agentY video collector",
+            display_name="agentY video collector (old)",
             category="agentY",
+            is_deprecated=True,
             description=(
-                "Collect video files from disk (native picker) into one node. The path "
-                "list is node data, so the agentY agent can read every video with no "
-                "pre-run when the node is wired to an agentY hook. Emits a list of VIDEO "
-                "objects + a paths string for normal runs (or one video per queue when "
-                "load_incrementally is on)."
+                "Superseded by 'agentY collector', which collects video as well. Kept "
+                "so saved workflows still open; use the merged node for new graphs."
             ),
             inputs=[
                 io.String.Input(
@@ -952,25 +1065,13 @@ class AgentYVideoCollector(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, files="", load_incrementally=False):  # noqa: ANN001, N805
-        # See AgentYImageCollector.fingerprint_inputs — NaN forces a re-run each
-        # queue in incremental mode; otherwise cache on the path-list contents.
         return float("nan") if load_incrementally else files
 
     @classmethod
     def execute(cls, files="", load_incrementally=False) -> io.NodeOutput:  # noqa: ANN001
         paths = _collector_paths(files, _COLLECT_VID_EXTS)
         paths = _apply_incremental(cls, paths, load_incrementally)
-        videos: list = []
-        try:
-            from comfy_api.latest import VideoFromFile
-            for p in paths:
-                try:
-                    videos.append(VideoFromFile(p))
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[agentY video collector] could not load {p}: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[agentY video collector] VIDEO type unavailable ({exc}); paths only")
-        return io.NodeOutput(videos, "\n".join(paths))
+        return io.NodeOutput(_load_videos(paths), "\n".join(paths))
 
 
 # ── per-project memory ────────────────────────────────────────────────────────
@@ -1141,6 +1242,147 @@ class AgentYProjectMemorySet(io.ComfyNode):
         return io.NodeOutput(body)
 
 
+# Where a remembered reference keeps its file. `tag_memory.entry_body` on the host
+# writes this line, and both sides have to agree on it or a remembered image is a
+# fact with no picture.
+_PM_PATH_PREFIX = "path: "
+
+
+def _pm_names() -> list:
+    """Every entry name in the project store, for the node's dropdown.
+
+    Read at /object_info time, which is how ComfyUI populates every other
+    disk-backed combo (checkpoints, LoRAs): the list refreshes when the user hits
+    refresh, and a project switch — which moves the user directory — brings a
+    different list with it. Empty stores still offer one row, because a combo with
+    no options cannot be drawn at all.
+    """
+    d = _pm_dir()
+    names = []
+    if d is not None and d.is_dir():
+        try:
+            names = sorted({f.stem for f in d.glob("*/*.md") if f.stem != "PROJECT"})
+        except Exception:  # noqa: BLE001
+            names = []
+    return names or ["(no project memory yet)"]
+
+
+def _pm_entry_path(body: str) -> str:
+    """The file a remembered reference points at, resolved, or ''.
+
+    An input-relative path is what gets stored (it survives the project moving
+    between machines), so it is resolved against ComfyUI's input dir first, then
+    tried as given.
+    """
+    for line in str(body or "").splitlines():
+        if not line.startswith(_PM_PATH_PREFIX):
+            continue
+        raw = line[len(_PM_PATH_PREFIX):].strip().strip('"')
+        if not raw:
+            return ""
+        try:
+            import folder_paths
+            cand = _Path(folder_paths.get_input_directory()) / raw
+            if cand.is_file():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            pass
+        p = _Path(raw)
+        return str(p) if p.is_file() else ""
+    return ""
+
+
+class AgentYLoadItem(io.ComfyNode):
+    """Load one item out of this project's memory — text, image or video.
+
+    The project's memory holds what the production has established: a character's
+    prompt, the grade, a delivery spec, and — since the ``agentY add tag`` node
+    grew a `remember` switch — named reference images and clips. This node brings
+    one of them into the graph, chosen from a dropdown of what is actually stored,
+    with no agent in the loop.
+
+    **The ``item`` output is auto-typed.** An entry that points at an image loads
+    as an ``IMAGE``, one that points at a video as a ``VIDEO``, and anything else
+    hands over its text — so the same node feeds a sampler, a video node or a
+    prompt box depending only on what the entry is. ``text`` is always the entry's
+    words, and ``path`` the resolved file (empty for a text-only fact), so a graph
+    that wants both does not need two nodes.
+
+    A picked entry that names an image or video is **previewed on the node**,
+    without running anything: the file is on disk already, so there is nothing to
+    execute to find out what it looks like.
+
+    A name that has since been forgotten yields empty outputs rather than an
+    error, so a graph shared between projects still runs where the fact is absent.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYLoadItem",
+            display_name="agentY load item",
+            category="agentY",
+            search_aliases=["agentY project memory item", "agentY load reference"],
+            description=(
+                "Load one entry from this project's memory: an image, a video or a "
+                "text fact. The 'item' output takes the type of whatever the entry is, "
+                "so it wires straight into a sampler, a video node or a prompt box."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "name",
+                    options=_pm_names(),
+                    tooltip=(
+                        "Which stored entry to load. The list is what the project's "
+                        "memory holds right now — press ComfyUI's refresh after the "
+                        "agent writes a new one, or after switching project."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.AnyType.Output(display_name="item"),
+                io.String.Output(display_name="text"),
+                io.String.Output(display_name="path"),
+            ],
+            hidden=[io.Hidden.unique_id],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, name=""):  # noqa: ANN001, N805
+        # The entry is a file on disk that the agent (or another graph) can rewrite
+        # between runs, so caching on the NAME alone would serve yesterday's fact.
+        # Mix in what the file says now.
+        f = _pm_find(_pm_slug(name))
+        try:
+            return f"{name}|{f.stat().st_mtime_ns}" if f else str(name)
+        except Exception:  # noqa: BLE001
+            return str(name)
+
+    @classmethod
+    def execute(cls, name="") -> io.NodeOutput:  # noqa: ANN001
+        import torch
+
+        f = _pm_find(_pm_slug(name))
+        body = ""
+        if f is not None:
+            try:
+                body = f.read_text(encoding="utf-8").strip()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[agentY load item] could not read {f}: {exc}")
+        path = _pm_entry_path(body)
+        ext = _Path(path).suffix.lower() if path else ""
+
+        if ext and ext in _COLLECT_IMG_EXTS:
+            return io.NodeOutput(_stack_images([path]), body, path)
+        if ext and ext in _COLLECT_VID_EXTS:
+            vids = _load_videos([path])
+            return io.NodeOutput(vids[0] if vids else body, body, path)
+        # Not a file: the fact itself is the item. A blank 1x64x64 frame is NOT
+        # substituted here — a text entry wired into an IMAGE slot should fail
+        # loudly rather than quietly render black.
+        return io.NodeOutput(body, body, path)
+
+
 class AgentYRefNote(io.ComfyNode):
     """Name a reference, and say what it is FOR, on the wire that carries it.
 
@@ -1296,7 +1538,8 @@ class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [AgentYHook, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
-                AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote]
+                AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
+                AgentYLoadItem]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

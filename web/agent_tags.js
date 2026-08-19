@@ -14,6 +14,9 @@ import { app } from "../../scripts/app.js";
 // agent side key off. Only the display name, the title and the fields changed.
 const TAG_NODE = "AgentYRefNote";
 const HOOK_NODE = "AgentYHook";
+// The merged collector. Its class id still says "Image" — the two collectors
+// became one node and the id is what every saved graph carries.
+const COLLECTOR_NODE = "AgentYImageCollector";
 
 // Widget layout version. widgets_values is positional, so an older file can only
 // be read safely by knowing which layout wrote it — the same rule (and the same
@@ -40,6 +43,31 @@ export function normaliseTag(raw) {
 function widgetValue(node, name) {
   const w = (node.widgets || []).find((x) => x && x.name === name);
   return w ? String(w.value ?? "") : "";
+}
+
+// Widget names a loader keeps its file under. Same list the agent side walks.
+const FILE_WIDGETS = ["image", "video", "file", "filename", "audio"];
+
+// The file a tag ultimately names, by walking its wire back to whatever feeds it.
+// A collector wants the FILE, not the node — it is a list of paths, and a node id
+// means nothing in it.
+function fileBehind(graph, note) {
+  let node = note;
+  for (let hop = 0; hop < 4 && node; hop++) {
+    const inp = (node.inputs || []).find((i) => i && i.name === "input");
+    const link = inp && inp.link != null && graph.links ? graph.links[inp.link] : null;
+    const src = link && graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+    if (!src) return "";
+    if (!isType(src, TAG_NODE)) {
+      for (const name of FILE_WIDGETS) {
+        const v = widgetValue(src, name).trim();
+        if (v) return v;
+      }
+      return "";
+    }
+    node = src;
+  }
+  return "";
 }
 
 function isType(node, type) {
@@ -79,12 +107,51 @@ export function sceneTags() {
       const tag = normaliseTag(widgetValue(n, "tag"));
       if (!tag) continue;
       const role = widgetValue(n, "role").trim();
+      const path = fileBehind(g, n);
       const prev = byName.get(tag);
-      if (!prev) byName.set(tag, { tag, role });
-      else if (!prev.role) prev.role = role;
+      if (!prev) byName.set(tag, { tag, role, path, source: "canvas" });
+      else {
+        if (!prev.role) prev.role = role;
+        if (!prev.path) prev.path = path;
+      }
     }
   }
   return [...byName.values()].sort((a, b) => a.tag.localeCompare(b.tag));
+}
+
+// References remembered for the PROJECT — tags whose `remember` switch was on in
+// some graph, written to project memory. They resolve in a canvas that has never
+// seen the tag node, which is the whole reason they exist.
+//
+// Fetched once and cached: the store is on disk and changes rarely, while the menu
+// opens on a keystroke. `refreshRemembered()` drops the cache, and picking a name
+// always re-reads before inserting, so a stale entry can never put a stale path
+// into a list of files.
+let REMEMBERED = null;
+let REMEMBERED_AT = 0;
+const REMEMBERED_TTL = 30000;
+
+async function remembered() {
+  const now = Date.now();
+  if (REMEMBERED && now - REMEMBERED_AT < REMEMBERED_TTL) return REMEMBERED;
+  try {
+    const r = await fetch("/agent/pm_names", { cache: "no-store" });
+    const d = await r.json();
+    REMEMBERED = (d.entries || [])
+      .filter((e) => e && e.path)
+      .map((e) => ({ tag: e.name, role: e.summary || "", path: e.path,
+                     source: "memory" }));
+  } catch (_) {
+    REMEMBERED = [];
+  }
+  REMEMBERED_AT = now;
+  return REMEMBERED;
+}
+
+// Warm the cache without blocking the keystroke that needs it. The menu renders
+// from whatever is known NOW; the fetch below refreshes it a frame later.
+function primeRemembered(onReady) {
+  remembered().then((list) => { if (list && list.length && onReady) onReady(); });
 }
 
 // ── the `#` menu ────────────────────────────────────────────────────────────
@@ -185,11 +252,23 @@ function render() {
     name.className = "ay-tagmenu-name";
     name.textContent = "#" + t.tag;
     row.appendChild(name);
-    if (t.role) {
+    // In a collector the file is the thing being chosen, so show its name; in a
+    // prompt box the role is what tells the two references apart.
+    const wantsPath = (ownerFor(menu.ta) || {}).inserts === "path";
+    const sub = wantsPath
+      ? (String(t.path || "").split(/[\\/]/).pop() || "")
+      : (t.role || "");
+    if (sub) {
       const role = document.createElement("span");
       role.className = "ay-tagmenu-role";
-      role.textContent = t.role.length > 48 ? t.role.slice(0, 48) + "…" : t.role;
+      role.textContent = (t.source === "memory" ? "★ " : "") +
+        (sub.length > 48 ? sub.slice(0, 48) + "…" : sub);
       row.appendChild(role);
+    } else if (t.source === "memory") {
+      const star = document.createElement("span");
+      star.className = "ay-tagmenu-role";
+      star.textContent = "★ remembered";
+      row.appendChild(star);
     }
     // mousedown, not click: a click lands after the textarea has already lost
     // focus, and the selection we are about to replace goes with it.
@@ -220,10 +299,15 @@ function accept(i) {
   const item = menu.items[i];
   const ta = menu.ta;
   if (!item || !ta) return close();
-  // The trailing space is load-bearing: without it the caret sits straight after
-  // "#hero", which is exactly the token that opens the menu, so accepting an item
-  // would immediately re-open it on the word just accepted.
-  const insert = "#" + item.tag + " ";
+  const wantsPath = (ownerFor(ta) || {}).inserts === "path";
+  // A collector gets the FILE, on its own line, exactly as the picker would have
+  // added it. The trailing space on a name is load-bearing: without it the caret
+  // sits straight after "#hero", which is the token that opens the menu, so
+  // accepting would immediately re-open it on the word just accepted.
+  const insert = wantsPath
+    ? String(item.path || "").trim() + "\n"
+    : "#" + item.tag + " ";
+  if (wantsPath && !insert.trim()) return close();
   const before = ta.value.slice(0, menu.start);
   const after = ta.value.slice(menu.end);
   applying = true;
@@ -249,9 +333,21 @@ function refresh(ta) {
   const m = TOKEN.exec(ta.value.slice(0, ta.selectionStart));
   if (!m) return close();
   const query = m[1] || "";
-  const all = sceneTags();
-  // No tags in the scene means nothing to offer. The menu is a consequence of
-  // tags existing, so before the first one it stays out of the way entirely.
+  const inserts = (ownerFor(ta) || {}).inserts || "name";
+  // A collector holds files, so a tag with no file behind it has nothing to give
+  // it — offering the name there would insert an empty line.
+  const onCanvas = sceneTags().filter((t) => inserts !== "path" || t.path);
+  const seen = new Set(onCanvas.map((t) => t.tag));
+  // Then what the PROJECT remembers, minus anything the canvas already names —
+  // the tag in front of you is the more specific statement, same rule the agent
+  // side resolves by. Only reached once the cache is warm; the prime below fills
+  // it a frame later and re-opens the menu, so the first `#` of a session is at
+  // worst one keystroke behind.
+  const fromMemory = (REMEMBERED || []).filter((t) => !seen.has(t.tag));
+  const all = [...onCanvas, ...fromMemory];
+  primeRemembered(() => { if (isOpen() && menu.ta === ta) refresh(ta); });
+  // Nothing to offer. The menu is a consequence of tags existing, so before the
+  // first one it stays out of the way entirely.
   if (!all.length) return close();
   const q = query.toLowerCase();
   const starts = all.filter((t) => t.tag.toLowerCase().startsWith(q));
@@ -285,16 +381,31 @@ function refresh(ta) {
 // proves the element exists and belongs to a node on the graph.
 const OWNER = new WeakMap();
 
-function hookWidgetFor(el) {
+// Which boxes take the menu, and what each one wants inserted:
+//   • an `agentY hook` prompt takes the NAME — `#hero_face` is a pointer, and the
+//     agent resolves it against the graph and the project's memory.
+//   • an `agentY collector` files list takes the PATH. The collector is a literal
+//     list of files (that is what lets the agent read it with no pre-run, and what
+//     makes a normal Queue behave identically), so the menu is a way to FIND the
+//     file, not a level of indirection to store in it.
+const BOXES = [
+  { type: HOOK_NODE, widget: "directive", inserts: "name" },
+  { type: COLLECTOR_NODE, widget: "files", inserts: "path" },
+];
+
+function ownerFor(el) {
   if (OWNER.has(el)) return OWNER.get(el);
   let found = null;
   for (const g of graphs()) {
     for (const n of g._nodes || g.nodes || []) {
-      if (!isType(n, HOOK_NODE)) continue;
+      const box = BOXES.find((b) => isType(n, b.type));
+      if (!box) continue;
       for (const w of n.widgets || []) {
-        if (!w || w.name !== "directive") continue;
+        if (!w || w.name !== box.widget) continue;
         const e = w.element || w.inputEl;
-        if (e === el || (e && e.contains && e.contains(el))) found = { node: n, widget: w };
+        if (e === el || (e && e.contains && e.contains(el))) {
+          found = { node: n, widget: w, inserts: box.inserts };
+        }
       }
     }
   }
@@ -304,7 +415,7 @@ function hookWidgetFor(el) {
 
 function textareaFor(target) {
   if (!target || (target.tagName !== "TEXTAREA" && target.tagName !== "INPUT")) return null;
-  return hookWidgetFor(target) ? target : null;
+  return ownerFor(target) ? target : null;
 }
 
 function onInput(e) {
