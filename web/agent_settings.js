@@ -124,6 +124,7 @@ const GROUP_LABELS = {
   pipeline: "Per-role overrides",
   system_prompts: "System prompts",
   qa: "Output QA",
+  refine: "Refine loops",
   slack: "Slack bridge",
   memory: "Memory",
   embedder: "Embedder",
@@ -159,6 +160,12 @@ const GROUP_NOTES = {
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
     + "re-generating; the judging model is the \"QA judge\" tier under "
     + "Models & providers.",
+  refine: "A refine loop is the agent running the workflow you have OPEN, judging "
+    + "each output against a condition you stated, changing one value and going "
+    + "again — “change the prompt until she is standing where she is in the "
+    + "reference”. Every run is a real generation, so max_runs is a spend "
+    + "ceiling: the agent may ask for fewer runs, never more. It judges with the "
+    + "“QA judge” tier under Models & providers.",
   tiers: "Every role takes its model from one of these six. Set them and you are "
     + "done — per-role overrides below are for the exceptions.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "

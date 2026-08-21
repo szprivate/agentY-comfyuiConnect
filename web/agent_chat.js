@@ -204,6 +204,7 @@ class AgentChat {
   mount(elm) {
     if (!elm) return;
     this.mountEl = elm;
+    elm.classList.add("ay-host");  // see .ay-host: without a real height here the bars scroll
     elm.innerHTML = "";
     elm.appendChild(this.wrap);
     this._onShown();  // the panel is back on screen: is the host still there?
@@ -481,11 +482,19 @@ class AgentChat {
   _injectStyles() {
     if (document.getElementById("agentY-chat-styles")) return;
     const css = `
+    /* ComfyUI hands the sidebar tab a bare <div> with no height of its own, sitting
+       in a .sidebar-content-container that is overflow-y:auto. Left alone it sizes to
+       its content, so .ay-wrap's height:100% resolved to auto, the panel grew with the
+       conversation (4001px inside a 779px container, measured), and the OUTER container
+       did the scrolling — carrying the top and bottom bars off screen with it. Giving
+       the host a real height is what makes the log the thing that scrolls. */
+    .ay-host{height:100%;min-height:0;overflow:hidden;position:relative;}
     .ay-wrap{
       --ay-bg:#262624; --ay-surface:#302f2c; --ay-surface2:#3b3936;
       --ay-border:rgba(240,235,225,.10); --ay-text:#f2f0ea; --ay-muted:#a8a39a;
       --ay-accent:#5b9bf5; --ay-accent2:#4785e6; --ay-accent-soft:rgba(91,155,245,.15);
       position:relative;display:flex;flex-direction:column;height:100%;
+      max-height:100%;
       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
       font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
     }
@@ -633,6 +642,21 @@ class AgentChat {
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
+    // Does the log follow new content? Yes while the user is parked at the bottom,
+    // no once they have scrolled up to read something — being yanked back down
+    // every time a step line lands makes the history unreadable during a long run.
+    // Read off the scroll event because an append does not move scrollTop: the flag
+    // therefore still carries what the user's own last scroll said.
+    this._stick = true;
+    this.logEl.addEventListener("scroll", () => {
+      const gap = this.logEl.scrollHeight - this.logEl.scrollTop - this.logEl.clientHeight;
+      this._stick = gap < 24;
+    }, { passive: true });
+    // An image that decodes after it was appended changes the log's height, and a
+    // scroll pinned before that lands short. `load` does not bubble, hence capture.
+    this.logEl.addEventListener("load", () => {
+      if (this._stick) this.logEl.scrollTop = this.logEl.scrollHeight;
+    }, true);
     wrap.append(this.logEl);
 
     // input area
@@ -1235,7 +1259,12 @@ class AgentChat {
   }
 
   // ── rendering ────────────────────────────────────────────────────────────────
-  _scroll() {
+  // `force` = a new MESSAGE arrived (yours, the agent's, a system line, a question
+  // waiting on you). Those always scroll into view, wherever you had scrolled to —
+  // that is the thing you asked to see. Everything else — streamed text, step and
+  // tool blocks, console lines, the working caret — only follows while you are
+  // already at the bottom, so reading back through a running turn is not a fight.
+  _scroll(force) {
     // Keep the "working" caret as the last item while a turn runs — every render
     // path funnels through here, so appending content never buries the marker.
     if (this._workingEl && this._workingEl.parentNode === this.logEl &&
@@ -1244,6 +1273,8 @@ class AgentChat {
       // owns the dot text, so moving the node here doesn't disturb the animation).
       this.logEl.appendChild(this._workingEl);
     }
+    if (force) this._stick = true;
+    if (!this._stick) return;
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
 
@@ -1288,21 +1319,22 @@ class AgentChat {
   _sys(text, opts) {
     const cls = "ay-msg ay-system" + (opts && opts.transient ? " ay-transient" : "");
     this.logEl.append(el("div", { className: cls, innerHTML: mdToHtml(text) }));
-    this._scroll();
+    this._scroll(true);
   }
   _userMsg(text) {
     this.logEl.append(el("div", { className: "ay-msg ay-user", innerHTML: mdToHtml(text) }));
-    this._scroll();
+    this._scroll(true);
   }
   _assistantMsg(text) {
     this.logEl.append(el("div", { className: "ay-msg ay-assistant", innerHTML: mdToHtml(text) }));
-    this._scroll();
+    this._scroll(true);
   }
   _ensureAssistant() {
     if (!this.curAssistant) {
       this.curAssistant = el("div", { className: "ay-msg ay-assistant" });
       this.curAssistant._raw = "";
       this.logEl.append(this.curAssistant);
+      this._freshAssistant = true;   // the reply is APPEARING, not just growing
     }
     return this.curAssistant;
   }
@@ -1310,7 +1342,9 @@ class AgentChat {
     const m = this._ensureAssistant();
     m._raw += text;
     m.innerHTML = mdToHtml(m._raw);
-    this._scroll();
+    const fresh = this._freshAssistant;
+    this._freshAssistant = false;
+    this._scroll(fresh);
   }
   _stepStart(name) {
     const details = el("details", { className: "ay-step", open: false });
@@ -1717,7 +1751,7 @@ class AgentChat {
         this.activeAsk = ev.request_id;
         this._setBusy(true); // awaiting a reply → button reverts to Send
         this.logEl.append(el("div", { className: "ay-msg ay-ask", innerHTML: mdToHtml("⏸️ " + ev.prompt) }));
-        this._scroll();
+        this._scroll(true);
         this.input.focus();
         break;
       case "error":
