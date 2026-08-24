@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
+import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
@@ -304,6 +305,8 @@ class AgentChat {
     this._drainStatus(); // show any CLI notices (memory init, …) emitted before/while we connected
     this._startNotifyPoll();    // drain background auto-drops queued before we connected, and
                                 // poll for more only while the host has a generation in flight
+    this._startProbeLoop();     // answer what only this page can answer (a screenshot
+                                // of the graph, which workflows are open in the tabs)
     this._startHeartbeat();       // notice a host that crashes or is stopped while we sit idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
@@ -869,6 +872,21 @@ class AgentChat {
 
   _stopNotifyPoll() {
     if (this._notifyTimer) { clearInterval(this._notifyTimer); this._notifyTimer = null; }
+  }
+
+  // ── canvas probes ───────────────────────────────────────────────────────────
+  // One parked long-poll, for the life of the page. Not gated on document.hidden
+  // like the notification poll is: a screenshot is worth taking precisely when
+  // the user is looking somewhere else, because that is when they are reading it
+  // in Slack.
+  //
+  // Nothing stops it, and nothing should. AgentChat is a page-lifetime singleton
+  // (see the bottom of this file) so re-mounting cannot stack up loops, and a
+  // host that goes away is handled by the loop's own backoff — which is also how
+  // it notices the host is back. `start()` is idempotent.
+  _startProbeLoop() {
+    if (!this._probeLoop) this._probeLoop = new ProbeLoop(() => backendBase());
+    this._probeLoop.start();
   }
 
   async _drainNotifications() {
@@ -2106,6 +2124,11 @@ class AgentChat {
     // open in the canvas" (chat or /add_workflow canvas <name>) needs it too.
     // graphToPrompt() is what ComfyUI runs on every Queue, so the cost is negligible.
     const canvasPrompt = await this._captureCanvasGraph();
+    // Which workflows are open in ComfyUI's tabs. The prompt above is the ACTIVE
+    // one and cannot say whether it was one of five — so a request about "the
+    // other workflow" would otherwise be answered about this one, confidently.
+    let openTabs = [];
+    try { openTabs = openWorkflows(); } catch (_) {}
     await this._stream({
       thread_id: this.threadId,
       message: text,
@@ -2114,6 +2137,7 @@ class AgentChat {
       canvas_hooks: canvasHooks,
       canvas_selection: canvasSelection,
       canvas_prompt: canvasPrompt,
+      open_workflows: openTabs,
       dry_run: dryRun,
     });
   }
