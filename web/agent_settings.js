@@ -31,12 +31,44 @@ function isSecret(key) {
 // list. Purely UI — keys stay flat in settings.json; anything not listed here falls
 // into an "Other" group, and object-valued keys (llm, memory, …) become their own
 // groups automatically.
-const SETTINGS_GROUPS = [
-  ["Connections", ["comfyui_url", "agent_server_url", "ollama_server_url"]],
-  ["ComfyUI paths", ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir", "comfyui_custom_templates_dir"]],
-  ["agentY output & logs", ["output_dir", "output_workflows_dir", "conversation_db", "message_history_log", "tokens_usage_log"]],
-  ["Behaviour", ["autoload_workflows_into_canvas", "hook_tap_tensors",
-                 "canvas_full_graph", "auto_update"]],
+// The panel, top to bottom. One entry per section, in the order shown.
+//
+// Sections are named for what someone is looking FOR, not for the shape of the
+// settings file: the form is generated from TOML, so without this the headings
+// are whatever a key happens to be called ("annotate", "refine", "qa") and the
+// leftovers pile up under "Other". A heading nobody can decode is the same as no
+// heading — they open all of them.
+//
+//   keys     flat top-level settings to show here
+//   objects  nested groups, given as a settings path; each becomes a sub-group
+//   inline   nested path whose leaves are shown directly, with no sub-heading
+//   open     start expanded instead of collapsed
+//   advanced hidden unless "Show advanced settings" is on
+//
+// Anything not claimed by a section still appears, under "Other" — a new setting
+// must never become unreachable just because this list was not updated.
+const SECTIONS = [
+  // Models first and OPEN. It is the setting people come here to change, and it
+  // used to be two collapsed levels down ("Models & providers" -> "Model tiers").
+  { title: "Models", open: true, inline: ["llm", "tiers"],
+    objects: [["llm", "pipeline"]] },
+  { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
+  { title: "Canvas", keys: ["autoload_workflows_into_canvas", "canvas_full_graph",
+                            "hook_tap_tensors", "hook_scoped_graph",
+                            "comfyui_console_lines"] },
+  { title: "Output checks", objects: [["qa"], ["refine"]] },
+  { title: "Slack", inline: ["slack"] },
+  { title: "Updates", keys: ["auto_update"] },
+  { title: "Memory", inline: ["memory"], advanced: true },
+  { title: "Providers", advanced: true,
+    keys: [], objects: [["llm", "ollama"], ["llm", "anthropic"], ["llm", "dashscope"]],
+    inlineExtra: ["llm"] },   // llm's own scalars (history_window, model hints)
+  { title: "Files & logs", advanced: true,
+    keys: ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir",
+           "comfyui_custom_templates_dir", "output_dir", "output_workflows_dir",
+           "conversation_db", "message_history_log", "tokens_usage_log"] },
+  { title: "Prompts", inline: ["system_prompts"], advanced: true },
+  { title: "Annotation", inline: ["annotate"], advanced: true },
 ];
 
 // Per-key notes, for the few settings whose name does not carry the trade-off.
@@ -119,29 +151,18 @@ function buildModelSelect(groups, current, inheritable) {
 // from the settings file, so without this the UI is stuck with whatever the TOML
 // key is called — "pipeline" for what is really "which model does which job".
 const GROUP_LABELS = {
-  llm: "Models & providers",
-  tiers: "Model tiers / groups",
   pipeline: "Per-role overrides",
-  system_prompts: "System prompts",
-  qa: "Output QA",
+  qa: "Checking finished outputs",
   refine: "Refine loops",
-  slack: "Slack bridge",
-  memory: "Memory",
   embedder: "Embedder",
   ollama: "Ollama",
   anthropic: "Anthropic",
   dashscope: "DashScope (Qwen)",
+  llm: "Memory writer",   // memory.llm — the only `llm` still shown as a group
 };
 
-// Groups most people never touch. Hidden unless "Show advanced settings" is on —
-// they are provider tuning and prompt-file pointers, not day-to-day choices.
-// Scalar buckets are keyed by their display title (they have no settings key of
-// their own), object-valued groups by the settings key — the names don't collide.
-const ADVANCED_GROUPS = new Set([
-  "ComfyUI paths", "agentY output & logs", "Behaviour",
-  "system_prompts", "memory", "qa",
-  "ollama", "anthropic", "dashscope", "embedder",
-]);
+// Which sections are advanced now lives on the section itself (see SECTIONS),
+// so a heading and its visibility cannot drift apart.
 
 // Per-role model rows: an empty value means INHERIT from the role's tier, so the
 // dropdown needs a real option for it rather than looking unset.
@@ -159,13 +180,13 @@ const GROUP_NOTES = {
     + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
     + "re-generating; the judging model is the \"QA judge\" tier under "
-    + "Models & providers.",
+    + "Models.",
   refine: "A refine loop is the agent running the workflow you have OPEN, judging "
     + "each output against a condition you stated, changing one value and going "
     + "again — “change the prompt until she is standing where she is in the "
     + "reference”. Every run is a real generation, so max_runs is a spend "
     + "ceiling: the agent may ask for fewer runs, never more. It judges with the "
-    + "“QA judge” tier under Models & providers.",
+    + "“QA judge” tier under Models.",
   tiers: "Every role takes its model from one of these six. Set them and you are "
     + "done — per-role overrides below are for the exceptions.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
@@ -192,10 +213,12 @@ const GROUP_NOTES = {
 };
 
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).
-function makeCollapsibleGroup(key, suffix) {
+function makeCollapsibleGroup(key, suffix, open) {
   const title = (GROUP_LABELS[key] || key) + (suffix || "");
-  const body = el("div", { className: "ays-groupbody", style: { display: "none" } });
-  const head = el("div", { className: "ays-grouphead", textContent: "▸ " + title });
+  const body = el("div", { className: "ays-groupbody",
+                           style: { display: open ? "" : "none" } });
+  const head = el("div", { className: "ays-grouphead",
+                           textContent: (open ? "▾ " : "▸ ") + title });
   head.addEventListener("click", () => {
     const hidden = body.style.display === "none";
     body.style.display = hidden ? "" : "none";
@@ -204,7 +227,6 @@ function makeCollapsibleGroup(key, suffix) {
   const note = GROUP_NOTES[key];
   if (note) body.append(el("div", { className: "ays-note", textContent: note }));
   const group = el("div", { className: "ays-group" }, [head, body]);
-  if (ADVANCED_GROUPS.has(key)) group.dataset.advanced = "1";
   return { group, body };
 }
 
@@ -272,34 +294,108 @@ function buildSettingsForm(container, obj, modelGroups, pathPrefix, refs) {
   }
 }
 
-// Top-level render: bucket the flat scalar leaves into the meaningful SETTINGS_GROUPS
-// (plus an "Other" catch-all), and give each object-valued key its own group. Every
-// group is collapsed by default.
+// Top-level render: walk SECTIONS in order, then sweep up anything they did not
+// claim so a new setting is never silently unreachable.
+function pathValue(settings, path) {
+  let node = settings;
+  for (const step of path) {
+    if (!node || typeof node !== "object") return null;
+    node = node[step];
+  }
+  return node && typeof node === "object" && !Array.isArray(node) ? node : null;
+}
+
 function buildTopLevelSettings(container, settings, modelGroups, refs) {
-  const scalars = {};
-  const objects = {};
-  for (const [k, v] of Object.entries(settings)) {
-    if (v && typeof v === "object" && !Array.isArray(v)) objects[k] = v;
-    else scalars[k] = v;
-  }
-  const used = new Set();
-  for (const [title, keys] of SETTINGS_GROUPS) {
-    const present = keys.filter((k) => k in scalars);
-    if (!present.length) continue;
-    const { group, body } = makeCollapsibleGroup(title);
+  const claimedScalars = new Set();
+  const claimedObjects = new Set();      // joined settings paths, e.g. "llm.tiers"
+
+  for (const section of SECTIONS) {
+    const { group, body } = makeCollapsibleGroup(section.title, "", !!section.open);
+    let wrote = false;
+
+    // Flat top-level keys.
+    for (const k of (section.keys || [])) {
+      if (!(k in settings) || settings[k] === null) continue;
+      if (settings[k] && typeof settings[k] === "object" && !Array.isArray(settings[k])) continue;
+      renderLeafRow(body, k, settings[k], [k], modelGroups, refs);
+      claimedScalars.add(k);
+      wrote = true;
+    }
+
+    // A nested group shown WITHOUT its own heading — the section heading is
+    // already the name for it, and a lone sub-heading inside a section is a
+    // click that reveals one more click.
+    for (const inlinePath of [section.inline, ...(section.inlineExtra ? [section.inlineExtra] : [])]) {
+      if (!inlinePath) continue;
+      const obj = pathValue(settings, inlinePath);
+      if (!obj) continue;
+      const note = GROUP_NOTES[inlinePath[inlinePath.length - 1]];
+      if (note) body.append(el("div", { className: "ays-note", textContent: note }));
+      for (const [k, v] of Object.entries(obj)) {
+        if (v && typeof v === "object" && !Array.isArray(v)) continue;  // handled below
+        renderLeafRow(body, k, v, inlinePath.concat(k), modelGroups, refs);
+        wrote = true;
+      }
+      // An inlined group's own sub-groups still need somewhere to go. Without
+      // this, `memory.embedder` and `memory.llm` were rendered nowhere at all —
+      // and the leftover sweep could not save them either, because it only
+      // looks at the top level and `memory` counted as claimed.
+      for (const [k, v] of Object.entries(obj)) {
+        if (!(v && typeof v === "object" && !Array.isArray(v))) continue;
+        const childPath = inlinePath.concat(k);
+        if (claimedObjects.has(childPath.join("."))) continue;
+        if ((section.objects || []).some((o) => o.join(".") === childPath.join("."))) continue;
+        const sub = makeCollapsibleGroup(k, "", false);
+        body.append(sub.group);
+        buildSettingsForm(sub.body, v, modelGroups, childPath, refs);
+        claimedObjects.add(childPath.join("."));
+        wrote = true;
+      }
+      claimedObjects.add(inlinePath.join("."));
+    }
+
+    // Nested groups that keep their own collapsible heading.
+    for (const objPath of (section.objects || [])) {
+      const obj = pathValue(settings, objPath);
+      if (!obj) continue;
+      const key = objPath[objPath.length - 1];
+      let suffix = "";
+      if (key === "pipeline") {
+        const n = Object.values(obj).filter((v) => String(v || "").trim()).length;
+        suffix = n ? `  (${n} set)` : "  (all inherit)";
+      }
+      const sub = makeCollapsibleGroup(key, suffix, false);
+      body.append(sub.group);
+      buildSettingsForm(sub.body, obj, modelGroups, objPath, refs);
+      claimedObjects.add(objPath.join("."));
+      wrote = true;
+    }
+
+    if (!wrote) continue;                       // nothing to show; no empty heading
+    if (section.advanced) group.dataset.advanced = "1";
     container.append(group);
-    for (const k of present) { renderLeafRow(body, k, scalars[k], [k], modelGroups, refs); used.add(k); }
   }
-  const leftover = Object.keys(scalars).filter((k) => !used.has(k));
-  if (leftover.length) {
-    const { group, body } = makeCollapsibleGroup("Other");
+
+  // Whatever no section claimed. Advanced, because a setting nobody has sorted
+  // yet is by definition not one of the first things to reach for — but present,
+  // so it can still be found and changed.
+  const leftoverScalars = Object.entries(settings).filter(
+    ([k, v]) => !claimedScalars.has(k)
+      && !(v && typeof v === "object" && !Array.isArray(v)));
+  const leftoverObjects = Object.entries(settings).filter(
+    ([k, v]) => v && typeof v === "object" && !Array.isArray(v)
+      && !claimedObjects.has(k)
+      && ![...claimedObjects].some((c) => c.startsWith(k + ".")));
+  if (leftoverScalars.length || leftoverObjects.length) {
+    const { group, body } = makeCollapsibleGroup("Other", "", false);
+    group.dataset.advanced = "1";
+    for (const [k, v] of leftoverScalars) renderLeafRow(body, k, v, [k], modelGroups, refs);
+    for (const [k, v] of leftoverObjects) {
+      const sub = makeCollapsibleGroup(k, "", false);
+      body.append(sub.group);
+      buildSettingsForm(sub.body, v, modelGroups, [k], refs);
+    }
     container.append(group);
-    for (const k of leftover) renderLeafRow(body, k, scalars[k], [k], modelGroups, refs);
-  }
-  for (const [k, v] of Object.entries(objects)) {
-    const { group, body } = makeCollapsibleGroup(k);
-    container.append(group);
-    buildSettingsForm(body, v, modelGroups, [k], refs);
   }
 }
 
