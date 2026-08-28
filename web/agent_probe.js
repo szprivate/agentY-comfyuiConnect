@@ -88,6 +88,91 @@ function boundsOf(nodes) {
   return { x: x0 - PAD, y: y0 - PAD, w: (x1 - x0) + PAD * 2, h: (y1 - y0) + PAD * 2 };
 }
 
+// A node's multiline text lives in a <textarea> ComfyUI floats ABOVE the canvas,
+// so `toDataURL` — which reads the canvas and nothing else — cannot see a word of
+// it. Every prompt and every hook directive came out blank, which is most of what
+// someone wants when they ask for a picture of their workflow.
+//
+// These are the textarea's own numbers, measured off a live one rather than
+// guessed: it is inset 10 graph units on each side of the node, padded 2 more,
+// and set in 10px monospace. CSS pixels ARE graph units here (the element's
+// offsetWidth is exactly `node.size[0] - 20`; the zoom lives on a transform
+// applied to its parent), so these carry straight into graph space.
+const TEXT_INSET = 10;
+const TEXT_PAD = 2;
+const TEXT_SIZE = 10;
+const TEXT_LINE = 1.2;          // textarea line-height: normal
+const TEXT_COLOUR = "#dddddd";
+const TEXT_BACKGROUND = "#222222";
+
+/** Wrap *text* to *maxWidth*, honouring the newlines already in it. */
+function wrapText(ctx, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of String(text).split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(" ")) {
+      const candidate = line ? line + " " + word : word;
+      if (line && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * Draw every DOM-backed text widget onto the canvas, where LiteGraph left a gap.
+ *
+ * Only textareas and text inputs: a DOM widget could be anything, and painting
+ * some other widget's `value` over whatever it actually draws would be worse than
+ * the blank box this exists to fix.
+ */
+function paintTextWidgets(ctx, canvas, nodes, scale) {
+  const ox = canvas.ds.offset[0], oy = canvas.ds.offset[1];
+  for (const node of nodes) {
+    if (node.flags && node.flags.collapsed) continue;
+    for (const w of (node.widgets || [])) {
+      if (w.hidden) continue;
+      const dom = w.element || w.inputEl;
+      if (!dom || (dom.tagName !== "TEXTAREA" && dom.tagName !== "INPUT")) continue;
+      const text = w.value == null ? "" : String(w.value);
+      if (!text) continue;
+
+      const boxW = node.size[0] - TEXT_INSET * 2;
+      const boxH = (w.computedHeight || 0) - TEXT_INSET * 2;
+      if (!(boxW > 0 && boxH > 0)) continue;      // no room / not laid out yet
+
+      const x = (node.pos[0] + TEXT_INSET + ox) * scale;
+      const y = (node.pos[1] + (w.y || 0) + TEXT_INSET + oy) * scale;
+      const width = boxW * scale, height = boxH * scale;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, width, height);
+      ctx.clip();                                  // long text stops at the box
+      ctx.fillStyle = TEXT_BACKGROUND;
+      ctx.fillRect(x, y, width, height);
+      ctx.fillStyle = TEXT_COLOUR;
+      ctx.font = `${TEXT_SIZE * scale}px monospace`;
+      ctx.textBaseline = "top";
+      const pad = TEXT_PAD * scale;
+      const lineHeight = TEXT_SIZE * TEXT_LINE * scale;
+      let ty = y + pad;
+      for (const line of wrapText(ctx, text, width - pad * 2)) {
+        if (ty > y + height) break;                // the textarea would scroll
+        ctx.fillText(line, x + pad, ty);
+        ty += lineHeight;
+      }
+      ctx.restore();
+    }
+  }
+}
+
+
 /**
  * The graph as a PNG data URL: whole, fitted, with the user's view put back.
  *
@@ -108,6 +193,8 @@ function boundsOf(nodes) {
  * 3. Restore is synchronous, in the same task. Nothing yields between changing
  *    the view and putting it back, so the browser never gets a frame to paint
  *    and the user does not see their canvas jump.
+ * 4. Multiline text is not on the canvas at all — see `paintTextWidgets`, which
+ *    puts it there.
  */
 export function captureGraph(opts = {}) {
   const canvas = app && app.canvas;
@@ -166,8 +253,13 @@ export function captureGraph(opts = {}) {
     canvas.setDirty(true, true);
     canvas.draw(true, true);                    // synchronous redraw
 
-    const url = el.toDataURL("image/png");
+    // Only when the rest of the text is being drawn too. Below that zoom
+    // LiteGraph draws no labels, and prompts alone in an otherwise wordless
+    // picture would be a strange half-measure — and unreadable at that size.
     const readable = scale >= TEXT_RENDERS_ABOVE;
+    if (readable) paintTextWidgets(el.getContext("2d"), canvas, nodes, scale);
+
+    const url = el.toDataURL("image/png");
     const out = {
       data_url: url,
       width: outW,
