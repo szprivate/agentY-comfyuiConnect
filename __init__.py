@@ -1759,6 +1759,12 @@ class AgentYImageBatchExpand(io.ComfyNode):
 
 _QA_RATIOS = ["any", "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9", "2.39:1"]
 _QA_HEIGHTS = ["any", "720p", "1080p", "1440p", "2160p (4K)"]
+# Kept in step with LIKENESS_SCORERS in agentY's src/utils/qa_checks.py, which
+# reads these strings back. A face is measured by an ArcFace embedding, anything
+# else by DreamSim — a perceptual metric trained on human judgements of exactly
+# this kind of picture.
+_QA_LIKENESS = ["any", "must match the reference face",
+                "must match the reference subject"]
 
 
 class AgentYQaBriefing(io.ComfyNode):
@@ -1775,7 +1781,8 @@ class AgentYQaBriefing(io.ComfyNode):
 
     Wire reference images into ``reference`` when the criteria compare against
     something ("match this grade", "same character"); they are shown to the QA
-    model alongside each output.
+    model alongside each output, and ``likeness`` turns that comparison into a
+    measured score instead of an impression.
     """
 
     @classmethod
@@ -1853,6 +1860,17 @@ class AgentYQaBriefing(io.ComfyNode):
                     tooltip="Video only. Fails a clip that freezes — sampled frames that "
                             "are essentially identical.",
                 ),
+                io.Combo.Input(
+                    "likeness", options=_QA_LIKENESS, default="any",
+                    tooltip=(
+                        "Compares the output against the images wired into "
+                        "`reference`, as a number rather than an opinion. 'face' "
+                        "asks whether it is the same person; 'subject' asks whether "
+                        "it is the same place, product or look. Needs at least one "
+                        "reference wired in, and the first run downloads the "
+                        "matching model."
+                    ),
+                ),
                 io.Int.Input(
                     "retries", default=0, min=0, max=10,
                     tooltip=(
@@ -1870,7 +1888,7 @@ class AgentYQaBriefing(io.ComfyNode):
     @classmethod
     def execute(cls, notes="", aspect_ratio="any", resolution="any", sharpness="any",
                 grain="any", no_clipping=False, no_black_frames=False,
-                no_stalled_motion=False, retries=0, references=None,
+                no_stalled_motion=False, likeness="any", retries=0, references=None,
                 **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Inert on a normal run, like every other agentY annotation node: it says
         # what the agent should check, and a plain Queue is not the agent.

@@ -2797,6 +2797,7 @@ class AgentChat {
         no_clipping: !!w.no_clipping,
         no_black_frames: !!w.no_black_frames,
         no_stalled_motion: !!w.no_stalled_motion,
+        likeness: String(w.likeness || "any"),
       };
       const notes = String(w.notes || "").trim();
       const retries = Number(w.retries || 0) | 0;
