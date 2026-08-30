@@ -2623,6 +2623,11 @@ class AgentChat {
       const origin = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
       if (!origin) continue;
       const { node, slot, role, tag } = this._throughRefNotes(origin, link.origin_slot | 0);
+      // An `agentY qa briefing` wired in here is saying "I judge this stage", not
+      // "here is an input". Reporting it as an anchor would put a node carrying no
+      // file in front of the agent as context, and — worse — make it a candidate
+      // when splicing looks for the anchor matching a target's type.
+      if (this._isQaBriefing(node)) continue;
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
       //
@@ -2779,14 +2784,37 @@ class AgentChat {
   // What is new is `technical` — the dropdowns and switches, which agentY settles
   // by measuring the finished file instead of asking the model. The prose half
   // rides in `directive`, exactly as a hand-written qa hook's does.
+  _isQaBriefing(n) {
+    return !!n && (n.type === "AgentYQaBriefing" || n.comfyClass === "AgentYQaBriefing");
+  }
+
+  // The hooks this briefing's `out` is wired into — the stages it judges. Empty
+  // means it was left unwired, which is the common case and means "everything".
+  _briefingScope(node) {
+    const graph = app.graph;
+    if (!graph) return [];
+    const ids = [];
+    for (const o of node.outputs || []) {
+      for (const lid of (o && Array.isArray(o.links) ? o.links : [])) {
+        const link = graph.links ? graph.links[lid] : null;
+        const target = link && graph.getNodeById ? graph.getNodeById(link.target_id) : null;
+        if (!target) continue;
+        const isHook = target.type === "AgentYHook" || target.comfyClass === "AgentYHook";
+        // Only a hook can be a scope: it is the thing that produces outputs. A
+        // briefing wired anywhere else is reported as unscoped rather than
+        // silently scoped to something that judges nothing.
+        if (isHook && !ids.includes(String(target.id))) ids.push(String(target.id));
+      }
+    }
+    return ids;
+  }
+
   _qaBriefingNodes() {
     const graph = app.graph;
     if (!graph || !graph._nodes) return [];
     const out = [];
     for (const n of graph._nodes) {
-      const isBriefing = n && (n.type === "AgentYQaBriefing"
-                               || n.comfyClass === "AgentYQaBriefing");
-      if (!isBriefing) continue;
+      if (!this._isQaBriefing(n)) continue;
       if (n.mode === 4 || n.mode === 2) continue;      // bypassed or muted
       const w = this._widgetSnapshot(n);
       const technical = {
@@ -2813,6 +2841,8 @@ class AgentChat {
         purpose: "qa",
         technical,
         retries,
+        // Which stages this briefing judges. Empty = all of them.
+        applies_to: this._briefingScope(n),
         anchors: this._anchorsFor(n, "reference").map((l) => ({
           node_id: String(l.node.id),
           type: String(l.node.type || l.node.comfyClass || ""),

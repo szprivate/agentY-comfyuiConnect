@@ -665,8 +665,13 @@ class AgentYHook(io.ComfyNode):
         # Pure identity passthrough — only ever runs if spliced inline, in which
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).
+        #
+        # Skipping None matters: an `agentY qa briefing` wired in to scope itself
+        # to this stage occupies an anchor slot and carries nothing. Forwarding
+        # that would hand the next node a None on a plain Queue Prompt — the hook
+        # breaking the very graph it is supposed to be invisible in.
         anchors = anchors or {}
-        first = next(iter(anchors.values()), None)
+        first = next((v for v in anchors.values() if v is not None), None)
         return io.NodeOutput(first)
 
 
@@ -1783,6 +1788,13 @@ class AgentYQaBriefing(io.ComfyNode):
     something ("match this grade", "same character"); they are shown to the QA
     model alongside each output, and ``likeness`` turns that comparison into a
     measured score instead of an impression.
+
+    **Scope.** Left unwired, a briefing applies to everything the run produces —
+    which is right for a graph with one stage and wrong for a chain, where the
+    reference frames and the video they feed want different standards. Wire
+    ``out`` into a hook's anchor and this briefing judges only what THAT hook
+    produces. Several briefings can name the same hook, and an unwired one still
+    applies to all of it; where they disagree, the one naming the hook wins.
     """
 
     @classmethod
@@ -1881,7 +1893,11 @@ class AgentYQaBriefing(io.ComfyNode):
                 ),
                 io.Autogrow.Input("references", template=refs),
             ],
-            outputs=[],
+            # Wire `out` into a hook's anchor to say "this briefing judges THAT
+            # stage" — see the class docstring. Nothing travels down it: it is a
+            # scope marker, and the panel reports it as one rather than as an
+            # input the agent should read.
+            outputs=[io.AnyType.Output(display_name="out")],
             is_output_node=True,
         )
 
@@ -1891,8 +1907,10 @@ class AgentYQaBriefing(io.ComfyNode):
                 no_stalled_motion=False, likeness="any", retries=0, references=None,
                 **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # Inert on a normal run, like every other agentY annotation node: it says
-        # what the agent should check, and a plain Queue is not the agent.
-        return io.NodeOutput()
+        # what the agent should check, and a plain Queue is not the agent. `out`
+        # carries None deliberately — it marks scope, it is not data — and the
+        # hook it feeds skips a None anchor when it forwards.
+        return io.NodeOutput(None)
 
 
 class _AgentYExtension(ComfyExtension):
