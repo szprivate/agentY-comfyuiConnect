@@ -1879,7 +1879,7 @@ class AgentYQaBriefing(io.ComfyNode):
                         "retry is a real generation at real cost."
                     ),
                 ),
-                refs,
+                io.Autogrow.Input("references", template=refs),
             ],
             outputs=[],
             is_output_node=True,
