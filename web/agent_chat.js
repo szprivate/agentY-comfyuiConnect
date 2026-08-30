@@ -75,10 +75,35 @@ function markAgentDrop(node) {
     node.properties.agentY_drop = true;
   } catch (_) {}
 }
+// What the machine running ComfyUI would use to start the host. Filled in by
+// hostInfo() below; the defaults are only what we say before the first answer
+// arrives, and on a Mac they are wrong for a moment rather than forever.
+let HOST_INFO = { run_script: "run_agent.ps1", console: "PowerShell", can_autostart: true };
+
+// Asked once and cached. The panel is a browser tab and may not be on the same
+// machine as ComfyUI, so navigator.platform answers a different question than the
+// one we need — which script exists over THERE.
+let _hostInfoPromise = null;
+function hostInfo() {
+  if (!_hostInfoPromise) {
+    _hostInfoPromise = fetch(comfyBase() + "/agent/host_info", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (j && j.ok) HOST_INFO = Object.assign({}, HOST_INFO, j); return HOST_INFO; })
+      .catch(() => HOST_INFO);   // an older extension: keep the defaults
+  }
+  return _hostInfoPromise;
+}
+
 // Shown on the offline overlay when the agentY host isn't reachable.
-const OFFLINE_MSG =
-  "The agentY chat host isn't running. Start it to use the panel — a PowerShell " +
-  "window will open and run `run_agent.ps1`.";
+function offlineMsg() {
+  const script = HOST_INFO.run_script || "run_agent.ps1";
+  if (!HOST_INFO.can_autostart) {
+    return "The agentY chat host isn't running. Start it to use the panel — run " +
+           "`./" + script + "` in the agentY folder.";
+  }
+  return "The agentY chat host isn't running. Start it to use the panel — a " +
+         (HOST_INFO.console || "console") + " window will open and run `" + script + "`.";
+}
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
 function el(tag, props = {}, children = []) {
@@ -370,10 +395,15 @@ class AgentChat {
       if (!r.ok) return;
       const h = await r.json();
       if (!h || !h.project_root) return;
+      // The host reports its own launcher (it knows its platform); older hosts
+      // don't, and the extension then keeps whatever it already had rather than
+      // being told the wrong operating system's script name.
+      const body = { project_root: h.project_root };
+      if (h.launcher) body.run_script = h.launcher;
       await fetch(comfyBase() + "/agent/register_host", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_root: h.project_root, run_script: "run_agent.ps1" }),
+        body: JSON.stringify(body),
       });
     } catch (_) {}
   }
@@ -771,24 +801,34 @@ class AgentChat {
       this._positionOffline();
       // Reset the card to its default actionable state each time we go offline.
       if (this._startBtn) { this._startBtn.disabled = false; this._startBtn.textContent = "▶  Start server"; }
-      if (this._offlineMsg) this._offlineMsg.innerHTML = mdToHtml(OFFLINE_MSG);
+      if (this._offlineMsg) {
+        this._offlineMsg.innerHTML = mdToHtml(offlineMsg());
+        // Refresh once the answer lands, in case this drew before it did.
+        hostInfo().then(() => {
+          if (this._offlineMsg && !this._startBtn?.disabled) {
+            this._offlineMsg.innerHTML = mdToHtml(offlineMsg());
+          }
+        });
+      }
     }
   }
 
-  // Ask the ComfyUI extension (same origin) to launch run_agent.ps1 in a new
-  // console. The reconnect watcher (already polling while we're offline) hides the
-  // overlay and reloads the panel once the host answers on :5000.
+  // Ask the ComfyUI extension (same origin) to launch the host in a new console.
+  // The reconnect watcher (already polling while we're offline) hides the overlay
+  // and reloads the panel once the host answers on :5000.
   async _startHost() {
+    await hostInfo();
     this._startBtn.disabled = true;
     this._startBtn.textContent = "Starting…";
-    this._offlineMsg.innerHTML = mdToHtml("Launching the agentY host — a PowerShell window will open…");
+    this._offlineMsg.innerHTML = mdToHtml(
+      "Launching the agentY host — a " + (HOST_INFO.console || "console") + " window will open…");
     try {
       const r = await fetch(comfyBase() + "/agent/start_host", { method: "POST" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) {
         this._offlineMsg.innerHTML = mdToHtml(
           "Couldn't start it automatically: " + (j.error || ("HTTP " + r.status)) +
-          "\n\nRun `run_agent.ps1` in the agentY folder manually."
+          "\n\nRun `" + (HOST_INFO.run_script || "run_agent.ps1") + "` in the agentY folder manually."
         );
         this._startBtn.disabled = false;
         this._startBtn.textContent = "▶  Start server";
@@ -1942,7 +1982,7 @@ class AgentChat {
     } catch (e) {
       // A user-initiated Stop aborts the fetch → don't show it as an error.
       if (!this._stopping && e.name !== "AbortError") {
-        this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`run_agent.ps1\`, ${backendBase()})`);
+        this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`${HOST_INFO.run_script || "run_agent.ps1"}\`, ${backendBase()})`);
         this._startReconnect(false); // auto-recover the panel when the host is back
       }
     } finally {

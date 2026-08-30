@@ -69,11 +69,29 @@ _PICK_KINDS = {
 _PICK_DEFAULT_KIND = "media"
 
 
+# The launcher for THIS machine. The host records its own name in
+# .agenty_host.json, so this is only the fallback for an unwritten or stale file —
+# but a stale one is the normal case for anybody who moved a checkout between a Mac
+# and a PC, and "run_agent.ps1 not found" is a poor way to learn that.
+_DEFAULT_RUN_SCRIPT = "run_agent.ps1" if _sys.platform == "win32" else "run_agent.sh"
+
+
+def _applescript_str(text):
+    """*text* as the inside of an AppleScript double-quoted literal.
+
+    Backslash first, then the quote — the other order would re-escape the backslash
+    it had just inserted. A home directory with an apostrophe or a space is ordinary
+    on a Mac, and this is the seam where such a path would otherwise end the string
+    early and run whatever followed.
+    """
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _read_host_cfg():
     """Resolve (project_root, run_script) for the agentY host. ``AGENTY_ROOT`` env
     wins; otherwise the recorded ``.agenty_host.json``. Returns ("", script) when
     unknown."""
-    script = "run_agent.ps1"
+    script = _DEFAULT_RUN_SCRIPT
     root = (_os.environ.get("AGENTY_ROOT") or "").strip()
     if not root and _os.path.isfile(_HOST_CFG):
         try:
@@ -83,6 +101,12 @@ def _read_host_cfg():
             script = str(data.get("run_script", script)).strip() or script
         except Exception:  # noqa: BLE001
             pass
+    # A recorded name from the other operating system: prefer the one that is
+    # actually here. Checked rather than assumed, so a deliberate custom launcher
+    # still wins.
+    if root and not _os.path.isfile(_os.path.join(root, script)):
+        if _os.path.isfile(_os.path.join(root, _DEFAULT_RUN_SCRIPT)):
+            script = _DEFAULT_RUN_SCRIPT
     return root, script
 
 
@@ -111,7 +135,8 @@ try:
         except Exception:  # noqa: BLE001
             return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
         root = str((data or {}).get("project_root", "")).strip()
-        script = str((data or {}).get("run_script", "run_agent.ps1")).strip() or "run_agent.ps1"
+        script = (str((data or {}).get("run_script", "")).strip()
+                  or _DEFAULT_RUN_SCRIPT)
         if not root or not _os.path.isdir(root):
             return web.json_response({"ok": False, "error": "project_root is not a directory"}, status=400)
         try:
@@ -121,26 +146,66 @@ try:
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
         return web.json_response({"ok": True})
 
+    @_routes.get("/agent/host_info")
+    async def _agent_host_info(request):  # noqa: ANN001
+        """What the panel needs to talk about starting the host: which script, and
+        whether the button can do it.
+
+        Asked rather than assumed because the panel is a browser tab: it may be on a
+        different machine from ComfyUI, so `navigator.platform` answers the wrong
+        question. This route runs beside the host, which makes it the only honest
+        source for "what would I run here".
+        """
+        root, script = _read_host_cfg()
+        return web.json_response({
+            "ok": True,
+            "platform": _sys.platform,
+            "run_script": script,
+            "root": root,
+            "can_autostart": _sys.platform in ("win32", "darwin"),
+            # Named here rather than in the panel so the two never drift: the
+            # window the button opens is a real thing this file decides.
+            "console": ("PowerShell" if _sys.platform == "win32"
+                        else "Terminal" if _sys.platform == "darwin" else ""),
+        })
+
     @_routes.post("/agent/start_host")
     async def _agent_start_host(request):  # noqa: ANN001
-        """Launch run_agent.ps1 in a new console so the sidebar can start the host."""
+        """Launch the agentY host in its own visible console/terminal window.
+
+        Visible on purpose, on both platforms: the host prints why it refused to
+        start (a port in use, a broken .env, a venv that lost a dependency), and a
+        background process would swallow exactly the message worth reading.
+        """
         root, script = _read_host_cfg()
         if not root:
             return web.json_response(
-                {"ok": False, "error": "agentY location unknown — run run_agent.ps1 once, "
+                {"ok": False, "error": f"agentY location unknown — run {_DEFAULT_RUN_SCRIPT} once, "
                                        "or set the AGENTY_ROOT environment variable."}, status=409)
         script_path = _os.path.join(root, script)
         if not _os.path.isfile(script_path):
             return web.json_response({"ok": False, "error": f"{script} not found under {root}"}, status=404)
-        if _sys.platform != "win32":
-            return web.json_response(
-                {"ok": False, "error": "auto-start is Windows-only; run the script manually."}, status=400)
         try:
-            _CREATE_NEW_CONSOLE = 0x00000010
-            _subprocess.Popen(
-                ["powershell", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", script_path],
-                cwd=root, creationflags=_CREATE_NEW_CONSOLE, close_fds=True,
-            )
+            if _sys.platform == "win32":
+                _CREATE_NEW_CONSOLE = 0x00000010
+                _subprocess.Popen(
+                    ["powershell", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                    cwd=root, creationflags=_CREATE_NEW_CONSOLE, close_fds=True,
+                )
+            elif _sys.platform == "darwin":
+                # Terminal.app via AppleScript, rather than `open -a Terminal`: this
+                # runs it through `bash` explicitly, so the button still works on a
+                # checkout that arrived without its executable bit — which is what
+                # git hands you when the file was committed from Windows.
+                import shlex as _shlex
+                cmd = f"cd {_shlex.quote(root)} && bash {_shlex.quote(script)}"
+                script_src = (f'tell application "Terminal" to do script "{_applescript_str(cmd)}"\n'
+                              'tell application "Terminal" to activate')
+                _subprocess.Popen(["osascript", "-e", script_src], cwd=root, close_fds=True)
+            else:
+                return web.json_response(
+                    {"ok": False, "error": "auto-start needs Windows or macOS; "
+                                           f"run ./{script} manually."}, status=400)
         except Exception as _exc:  # noqa: BLE001
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
         return web.json_response({"ok": True, "root": root, "script": script})

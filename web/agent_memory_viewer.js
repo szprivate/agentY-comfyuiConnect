@@ -39,7 +39,8 @@ async function openMemoryViewer() {
       "<h2 style=\"color:#d97757\">agentY host isn't reachable</h2>" +
       "<p>The long-term memory viewer is served by the agentY chat host at <code>" + base +
       "</code>, which doesn't appear to be running right now.</p>" +
-      "<p>Start it with <code>run_agent.ps1</code> (or <code>python -m src.agenty_ui_server</code>), " +
+      "<p>Start it with <code>run_agent.ps1</code> on Windows or <code>./run_agent.sh</code> " +
+      "on macOS (or <code>python -m src.agenty_ui_server</code>), " +
       "then reopen this viewer from the 🧠 button.</p></body>");
     w.document.close();
   }

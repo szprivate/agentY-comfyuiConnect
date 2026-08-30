@@ -46,7 +46,8 @@ async function openProjectMemoryViewer() {
       "<h2 style=\"color:#d97757\">agentY host isn't reachable</h2>" +
       "<p>The project-memory editor is served by the agentY chat host at <code>" + base +
       "</code>, which doesn't appear to be running right now.</p>" +
-      "<p>Start it with <code>run_agent.ps1</code>, then reopen this from the agentY " +
+      "<p>Start it with <code>run_agent.ps1</code> (macOS: <code>./run_agent.sh</code>), " +
+      "then reopen this from the agentY " +
       "settings (Viewers) or the <code>/project_memory</code> command.</p></body>");
     w.document.close();
   }
