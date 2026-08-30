@@ -2601,17 +2601,23 @@ class AgentChat {
     return { node, slot, role, tag };
   }
 
-  _anchorsFor(hookNode) {
+  // `prefix` is the auto-growing input's base name: "anchor" on a hook, and
+  // "reference" on a qa briefing node, which grows the same way and is read the
+  // same way.
+  _anchorsFor(hookNode, prefix = "anchor") {
     const graph = app.graph;
     if (!graph) return [];
     const out = [];
+    // Double-escaped on purpose: this is a template literal, so `\d` here would
+    // reach the RegExp as a bare `d` and the pattern would match "referenced".
+    const slotName = new RegExp(`(?:^|\\.)${prefix}\\d*$`);
     for (const inp of hookNode.inputs || []) {
       if (!inp || inp.link == null) continue;
       // V3 Autogrow names the slots "anchors.anchor0", "anchors.anchor1", …; older
       // builds used a bare "anchor"/"anchor0". Match the trailing anchorN either
       // way (the "anchors." group prefix must not defeat detection) — otherwise the
       // whole anchor link, and every hook→hook chain link, is silently dropped.
-      if (!/(?:^|\.)anchor\d*$/.test(String(inp.name || ""))) continue;
+      if (!slotName.test(String(inp.name || ""))) continue;
       const link = graph.links ? graph.links[inp.link] : null;
       if (!link) continue;
       const origin = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
@@ -2761,7 +2767,62 @@ class AgentChat {
         })),
       });
     }
+    for (const b of this._qaBriefingNodes()) hooks.push(b);
     return hooks;
+  }
+
+  // ── qa briefing nodes ────────────────────────────────────────────────────────
+  // Sent as `qa` hooks, because that is what they are: the agent side already
+  // merges every qa hook on the canvas into one briefing, and a second path to
+  // the same place would be a second thing to keep in step.
+  //
+  // What is new is `technical` — the dropdowns and switches, which agentY settles
+  // by measuring the finished file instead of asking the model. The prose half
+  // rides in `directive`, exactly as a hand-written qa hook's does.
+  _qaBriefingNodes() {
+    const graph = app.graph;
+    if (!graph || !graph._nodes) return [];
+    const out = [];
+    for (const n of graph._nodes) {
+      const isBriefing = n && (n.type === "AgentYQaBriefing"
+                               || n.comfyClass === "AgentYQaBriefing");
+      if (!isBriefing) continue;
+      if (n.mode === 4 || n.mode === 2) continue;      // bypassed or muted
+      const w = this._widgetSnapshot(n);
+      const technical = {
+        aspect_ratio: String(w.aspect_ratio || "any"),
+        resolution: String(w.resolution || "any"),
+        sharpness: String(w.sharpness || "any"),
+        grain: String(w.grain || "any"),
+        no_clipping: !!w.no_clipping,
+        no_black_frames: !!w.no_black_frames,
+        no_stalled_motion: !!w.no_stalled_motion,
+      };
+      const notes = String(w.notes || "").trim();
+      const retries = Number(w.retries || 0) | 0;
+      const asked = Object.entries(technical).some(
+        ([, v]) => v !== "any" && v !== false);
+      // A node with nothing set enforces nothing — sending it would turn QA on
+      // for a graph whose author had not asked for it.
+      if (!notes && !asked) continue;
+      out.push({
+        hook_node_id: String(n.id),
+        title: String(n.title || ""),
+        directive: notes,
+        purpose: "qa",
+        technical,
+        retries,
+        anchors: this._anchorsFor(n, "reference").map((l) => ({
+          node_id: String(l.node.id),
+          type: String(l.node.type || l.node.comfyClass || ""),
+          widgets: this._widgetSnapshot(l.node),
+          to_input: String(l.toInput || ""),
+          role: String(l.role || ""),
+          tag: String(l.tag || ""),
+        })),
+      });
+    }
+    return out;
   }
 
   // Capture the current graph as an API-format prompt (node-id keyed). Async in

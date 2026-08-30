@@ -1746,9 +1746,140 @@ class AgentYImageBatchExpand(io.ComfyNode):
         return io.NodeOutput(*outs, len(items))
 
 
+# ── QA briefing ───────────────────────────────────────────────────────────────
+# A `qa` hook says what "good" means in prose, which is right for the half that
+# needs judgement — likeness, mood, whether the composition works. It is the wrong
+# tool for the half that does not. "16:9" and "at least 1080p" and "not a soft
+# render" are settled by measuring the file, and writing them as sentences for a
+# vision model to re-decide is slower, less certain, and not repeatable.
+#
+# So the technical half gets controls. What this node emits is read by the agent
+# exactly like a qa hook's directive, plus a machine-readable spec that agentY
+# checks in code before the model is asked anything (src/utils/qa_checks.py).
+
+_QA_RATIOS = ["any", "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9", "2.39:1"]
+_QA_HEIGHTS = ["any", "720p", "1080p", "1440p", "2160p (4K)"]
+
+
+class AgentYQaBriefing(io.ComfyNode):
+    """What "good" means for this graph's outputs — the technical half as controls.
+
+    Drop it anywhere on the canvas and every output of the run is checked against
+    it. The dropdowns and switches are decided by MEASURING the finished file, so
+    they are exact and cost nothing: an aspect ratio is compared, not eyeballed.
+    Whatever needs judgement goes in ``notes``, in your own words, and is read by
+    the QA model the same way a ``qa`` hook's prompt is.
+
+    Leave a control on "any" (or off) and it is not checked at all. Nothing here
+    has a default opinion — an empty node enforces nothing.
+
+    Wire reference images into ``reference`` when the criteria compare against
+    something ("match this grade", "same character"); they are shown to the QA
+    model alongside each output.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        refs = io.Autogrow.TemplatePrefix(
+            input=io.AnyType.Input("reference"),
+            prefix="reference",
+            min=0,
+            max=8,
+        )
+        return io.Schema(
+            node_id="AgentYQaBriefing",
+            display_name="agentY qa briefing",
+            category="agentY",
+            description=(
+                "What counts as a good output for this graph. The technical checks "
+                "(ratio, resolution, sharpness, grain, exposure) are decided by "
+                "measuring the finished file, so they are exact; 'notes' carries "
+                "everything that needs judgement. Anything left on 'any' is not "
+                "checked. Inert on a normal run."
+            ),
+            inputs=[
+                io.String.Input(
+                    "notes", multiline=True, default="",
+                    placeholder=(
+                        "What needs judgement, in your own words — e.g. the character must "
+                        "match the reference; warm evening light; no text anywhere"
+                    ),
+                    tooltip=(
+                        "Read by the QA model exactly like a `qa` hook's prompt. Put the "
+                        "things a measurement cannot settle here: likeness, mood, framing, "
+                        "whether it looks right."
+                    ),
+                ),
+                io.Combo.Input(
+                    "aspect_ratio", options=_QA_RATIOS, default="any",
+                    tooltip="Compared against the file's real dimensions, within a "
+                            "rounding tolerance — 1312x736 counts as 16:9.",
+                ),
+                io.Combo.Input(
+                    "resolution", options=_QA_HEIGHTS, default="any",
+                    tooltip="Minimum SHORT side, which is how '1080p' is usually meant.",
+                ),
+                io.Combo.Input(
+                    "sharpness", options=["any", "must be sharp"], default="any",
+                    tooltip=(
+                        "Fails a soft or blurry render. A shallow depth of field still "
+                        "passes: if part of the frame is genuinely sharp, the soft areas "
+                        "are read as depth of field rather than a bad render."
+                    ),
+                ),
+                io.Combo.Input(
+                    "grain", options=["any", "must be clean"], default="any",
+                    tooltip="Fails visible grain or noise. Leave on 'any' when grain is "
+                            "the look you asked for.",
+                ),
+                io.Boolean.Input(
+                    "no_clipping", default=False,
+                    label_on="no blown/crushed", label_off="exposure not checked",
+                    tooltip=(
+                        "Fails an output with more than 2% of pixels pinned at pure white "
+                        "or pure black — detail there is gone and cannot be graded back. "
+                        "A little clipping is normal (a light source, a spec highlight), "
+                        "which is why it is a threshold rather than zero."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "no_black_frames", default=False,
+                    label_on="no black frames", label_off="black frames not checked",
+                    tooltip="Video only. Fails a clip with a fully black sampled frame.",
+                ),
+                io.Boolean.Input(
+                    "no_stalled_motion", default=False,
+                    label_on="must keep moving", label_off="motion not checked",
+                    tooltip="Video only. Fails a clip that freezes — sampled frames that "
+                            "are essentially identical.",
+                ),
+                io.Int.Input(
+                    "retries", default=0, min=0, max=10,
+                    tooltip=(
+                        "How many times a failing output may be re-generated. 0 reports "
+                        "the verdict and changes nothing, which is the safe default: each "
+                        "retry is a real generation at real cost."
+                    ),
+                ),
+                refs,
+            ],
+            outputs=[],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, notes="", aspect_ratio="any", resolution="any", sharpness="any",
+                grain="any", no_clipping=False, no_black_frames=False,
+                no_stalled_motion=False, retries=0, references=None,
+                **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        # Inert on a normal run, like every other agentY annotation node: it says
+        # what the agent should check, and a plain Queue is not the agent.
+        return io.NodeOutput()
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook, AgentYPython, AgentYText,
+        return [AgentYHook, AgentYQaBriefing, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
                 AgentYLoadItem]
