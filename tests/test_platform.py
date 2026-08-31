@@ -116,7 +116,7 @@ class LauncherResolution(unittest.TestCase):
             cfg.write_text(json.dumps({"project_root": str(root),
                                        "run_script": "run_agent.ps1"}), encoding="utf-8")
             ns = _load_head(host_cfg=cfg)
-            got_root, got_script = ns["_read_host_cfg"]()
+            got_root, got_script, _port = ns["_read_host_cfg"]()
             self.assertEqual(got_root, str(root))
             self.assertEqual(got_script, "run_agent.ps1")
 
@@ -135,7 +135,7 @@ class LauncherResolution(unittest.TestCase):
                                        "run_script": "run_agent.ps1"}), encoding="utf-8")
             ns = _load_head(host_cfg=cfg)
             ns["_DEFAULT_RUN_SCRIPT"] = "run_agent.sh"
-            _root, script = ns["_read_host_cfg"]()
+            _root, script, _port = ns["_read_host_cfg"]()
             self.assertEqual(script, "run_agent.sh")
 
     def test_a_custom_launcher_that_exists_is_not_overridden(self):
@@ -149,7 +149,7 @@ class LauncherResolution(unittest.TestCase):
                                        "run_script": "my_launcher.sh"}), encoding="utf-8")
             ns = _load_head(host_cfg=cfg)
             ns["_DEFAULT_RUN_SCRIPT"] = "run_agent.sh"
-            _root, script = ns["_read_host_cfg"]()
+            _root, script, _port = ns["_read_host_cfg"]()
             self.assertEqual(script, "my_launcher.sh")
 
     def test_env_var_wins_over_the_recorded_file(self):
@@ -158,14 +158,97 @@ class LauncherResolution(unittest.TestCase):
             cfg.write_text(json.dumps({"project_root": "/recorded"}), encoding="utf-8")
             ns = _load_head(host_cfg=cfg)
             os.environ["AGENTY_ROOT"] = td
-            root, _script = ns["_read_host_cfg"]()
+            root, _script, _port = ns["_read_host_cfg"]()
             self.assertEqual(root, td)
 
     def test_missing_config_yields_no_root(self):
         ns = _load_head(host_cfg=Path(tempfile.gettempdir()) / "definitely-not-here.json")
-        root, script = ns["_read_host_cfg"]()
+        root, script, _port = ns["_read_host_cfg"]()
         self.assertEqual(root, "")
         self.assertEqual(script, ns["_DEFAULT_RUN_SCRIPT"])
+
+
+class BackendPort(unittest.TestCase):
+    """Which port the panel is told to call.
+
+    The panel is a browser tab: it cannot see a settings file, a --port flag or an
+    environment variable, and for a long time it simply assumed 5000. That is wrong
+    on any Mac — ControlCenter's AirPlay Receiver holds *:5000 and ANSWERS, so the
+    panel reported a healthy host as down — and wrong after any --port anywhere.
+    The running host now records the port it actually bound, and this route hands
+    it over.
+    """
+
+    def _cfg(self, td, **extra):
+        root = Path(td) / "agentY"
+        root.mkdir(exist_ok=True)
+        (root / "run_agent.sh").write_text("x", encoding="utf-8")
+        cfg = Path(td) / ".agenty_host.json"
+        payload = {"project_root": str(root), "run_script": "run_agent.sh"}
+        payload.update(extra)
+        cfg.write_text(json.dumps(payload), encoding="utf-8")
+        return cfg
+
+    def test_the_default_differs_only_on_macos(self):
+        # Both answers pinned, so a change to either is deliberate. AirPlay is a
+        # macOS fact; Windows keeps 5000 because nothing there claims it.
+        self.assertEqual(_load_head(platform="darwin")["_DEFAULT_AGENT_PORT"], 5001)
+        self.assertEqual(_load_head(platform="win32")["_DEFAULT_AGENT_PORT"], 5000)
+        self.assertEqual(_load_head(platform="linux")["_DEFAULT_AGENT_PORT"], 5000)
+
+    def test_a_recorded_port_is_used(self):
+        with tempfile.TemporaryDirectory() as td:
+            ns = _load_head(platform="darwin", host_cfg=self._cfg(td, agent_server_port=6123))
+            self.assertEqual(ns["_read_host_cfg"]()[2], 6123)
+
+    def test_a_recorded_port_beats_the_platform_default(self):
+        """The whole point: --port is in no file the extension could read, so the
+        host's own report has to win over what the platform would have guessed."""
+        with tempfile.TemporaryDirectory() as td:
+            ns = _load_head(platform="darwin", host_cfg=self._cfg(td, agent_server_port=5000))
+            # 5000 on a Mac is normally the wrong answer — but if that is what the
+            # host bound, that is where it is. Reported, not corrected.
+            self.assertEqual(ns["_read_host_cfg"]()[2], 5000)
+
+    def test_no_recorded_port_falls_back_to_the_platform_default(self):
+        """What an older host, or one that has never started, leaves behind."""
+        with tempfile.TemporaryDirectory() as td:
+            ns = _load_head(platform="darwin", host_cfg=self._cfg(td))
+            self.assertEqual(ns["_read_host_cfg"]()[2], 5001)
+
+    def test_a_nonsense_port_falls_back_rather_than_being_believed(self):
+        for bad in (0, -1, 65536, 99999, "abc", None, "", [1]):
+            with self.subTest(port=bad), tempfile.TemporaryDirectory() as td:
+                ns = _load_head(platform="darwin", host_cfg=self._cfg(td, agent_server_port=bad))
+                self.assertEqual(ns["_read_host_cfg"]()[2], 5001)
+
+    def test_a_port_written_as_a_string_is_still_a_port(self):
+        # JSON round-trips through a few hands; a numeric string is not a fault.
+        with tempfile.TemporaryDirectory() as td:
+            ns = _load_head(platform="darwin", host_cfg=self._cfg(td, agent_server_port="5005"))
+            self.assertEqual(ns["_read_host_cfg"]()[2], 5005)
+
+    def test_missing_config_yields_the_platform_default(self):
+        ns = _load_head(platform="darwin",
+                        host_cfg=Path(tempfile.gettempdir()) / "definitely-not-here.json")
+        self.assertEqual(ns["_read_host_cfg"]()[2], 5001)
+
+    def test_agenty_root_does_not_clobber_the_recorded_port(self):
+        """AGENTY_ROOT names a checkout. It says nothing about which port that
+        checkout is serving on, and used to stop the file being read at all."""
+        with tempfile.TemporaryDirectory() as td:
+            ns = _load_head(platform="darwin", host_cfg=self._cfg(td, agent_server_port=6123))
+            previous = os.environ.get("AGENTY_ROOT")
+            os.environ["AGENTY_ROOT"] = td
+            try:
+                root, _script, port = ns["_read_host_cfg"]()
+                self.assertEqual(root, td)      # the env var still wins for the root
+                self.assertEqual(port, 6123)    # and still loses for the port
+            finally:
+                if previous is None:
+                    os.environ.pop("AGENTY_ROOT", None)
+                else:
+                    os.environ["AGENTY_ROOT"] = previous
 
 
 def _load_picker(*, have_tk):

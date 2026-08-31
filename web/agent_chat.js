@@ -3,15 +3,15 @@ import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
+import { backendBase, backendReady } from "./agent_backend.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
-// (src/utils/agentY_server.py on :5000) over HTTP/SSE. It replaces the Chainlit
+// (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
 // GUI: the agent's *text* streams into this panel, while every generated image /
 // video is dropped onto the ComfyUI graph as an image / video loader node
 // (see onOutput → injectNode). Conversations, slash commands, and thread history
 // mirror what the old Chainlit UI offered.
 
-const DEFAULT_PORT = 5000;
 // Where /help opens: the GitHub-rendered usage guide (images render inline).
 const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agentY.md";
 // Remember which conversation was open so switching away from the sidebar tab
@@ -19,13 +19,8 @@ const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agent
 // new chat.
 const ACTIVE_THREAD_KEY = "agentY_active_thread";
 
-function backendBase() {
-  return (
-    localStorage.getItem("agentY_backend") ||
-    `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
-  );
-}
-// The ComfyUI server that serves this sidebar (NOT the agentY host on :5000).
+// The ComfyUI server that serves this sidebar (NOT the agentY host, which is on
+// its own port — see agent_backend.js).
 // The "Start server" button hits the agentY-comfyuiConnect extension's route on
 // THIS origin, because the agentY host it would launch is the one that's down.
 function comfyBase() {
@@ -295,6 +290,12 @@ class AgentChat {
   }
 
   async _hostReachable() {
+    // Wait for port discovery before the verdict. This is the one place that
+    // decides "is the host up", and on a first-ever load it would otherwise ask
+    // the fallback port and answer "down" for a host that is up — which on a Mac
+    // is not even a refused connection but AirPlay's 403, so the panel would
+    // settle into showing a healthy agent as offline. Resolves once, then free.
+    await backendReady;
     try {
       const r = await fetch(backendBase() + "/agentY/health", { cache: "no-store" });
       if (!r.ok) return false;
@@ -385,7 +386,7 @@ class AgentChat {
 
   // Tell the ComfyUI extension (same origin) where the agentY host lives, using
   // the running host's own project_root. The browser is the one component that
-  // can reach BOTH the host (:5000) and ComfyUI, so this is the reliable way to
+  // can reach BOTH the host and ComfyUI, so this is the reliable way to
   // keep the extension's .agenty_host.json current — no env var / manual config.
   // Best-effort: silently no-ops if the extension route isn't present yet (e.g.
   // ComfyUI needs a restart to load it).
@@ -815,7 +816,7 @@ class AgentChat {
 
   // Ask the ComfyUI extension (same origin) to launch the host in a new console.
   // The reconnect watcher (already polling while we're offline) hides the overlay
-  // and reloads the panel once the host answers on :5000.
+  // and reloads the panel once the host answers.
   async _startHost() {
     await hostInfo();
     this._startBtn.disabled = true;
@@ -836,7 +837,7 @@ class AgentChat {
       }
       this._offlineMsg.innerHTML = mdToHtml("Host starting… waiting for it to come online.");
       // The reconnect watcher is already running (we're offline); it'll flip us
-      // back online when :5000 answers. Kick it in case it somehow isn't.
+      // back online when the host answers. Kick it in case it somehow isn't.
       this._startReconnect(!this.threadId);
     } catch (e) {
       this._offlineMsg.innerHTML = mdToHtml(

@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { backendBase } from "./agent_backend.js";
 
 // agentY Long-Term Memory Viewer launcher. The viewer itself is a
 // self-contained page served by the agentY chat host
@@ -10,14 +11,6 @@ import { app } from "../../scripts/app.js";
 // Two entry points, both calling openMemoryViewer():
 //   • a 🧠 button in the chat panel's top bar (web/agent_chat.js), and
 //   • an entry in ComfyUI's Settings panel (registered below).
-
-const DEFAULT_PORT = 5000;
-function backendBase() {
-  return (
-    localStorage.getItem("agentY_backend") ||
-    `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
-  );
-}
 
 async function openMemoryViewer() {
   const base = backendBase();

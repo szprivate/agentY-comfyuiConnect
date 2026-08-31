@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { backendBase } from "./agent_backend.js";
 
 // agentY Token Usage — an overview panel for inspecting token consumption parsed
 // from the agent's token log (.logs/tokens_usage.log). Shows Input / Output
@@ -10,14 +11,6 @@ import { app } from "../../scripts/app.js";
 // Two entry points, both calling openTokenUsageModal():
 //   • a 📊 button in the chat panel's top bar (web/agent_chat.js), and
 //   • an entry in ComfyUI's Settings panel (registered below).
-
-const DEFAULT_PORT = 5000;
-function backendBase() {
-  return (
-    localStorage.getItem("agentY_backend") ||
-    `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
-  );
-}
 
 function el(tag, props = {}, children = []) {
   const n = document.createElement(tag);

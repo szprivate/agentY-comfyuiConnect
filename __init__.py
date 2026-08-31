@@ -75,6 +75,14 @@ _PICK_DEFAULT_KIND = "media"
 # and a PC, and "run_agent.ps1 not found" is a poor way to learn that.
 _DEFAULT_RUN_SCRIPT = "run_agent.ps1" if _sys.platform == "win32" else "run_agent.sh"
 
+# The chat host's port when no running host has told us otherwise. macOS differs
+# because macOS does not leave 5000 free: ControlCenter's AirPlay Receiver listens
+# on *:5000 there and ANSWERS - a 403 from AirTunes rather than a refused
+# connection - so a panel that assumes 5000 on a Mac reports a healthy host as
+# down. Mirrors settings.default_agent_port() in the agentY repo; the running host
+# overrides both by registering the port it actually bound.
+_DEFAULT_AGENT_PORT = 5001 if _sys.platform == "darwin" else 5000
+
 
 def _applescript_str(text):
     """*text* as the inside of an AppleScript double-quoted literal.
@@ -88,17 +96,34 @@ def _applescript_str(text):
 
 
 def _read_host_cfg():
-    """Resolve (project_root, run_script) for the agentY host. ``AGENTY_ROOT`` env
-    wins; otherwise the recorded ``.agenty_host.json``. Returns ("", script) when
-    unknown."""
+    """Resolve (project_root, run_script, port) for the agentY host. ``AGENTY_ROOT``
+    env wins for the root; otherwise the recorded ``.agenty_host.json``. Returns
+    ("", script, default_port) when unknown.
+
+    The port is whatever the host registered on its last start - the port it
+    actually bound, however it was chosen. That is the only trustworthy source: a
+    ``--port`` on the launcher appears in no settings file, so reading the config
+    instead would confidently report the wrong number.
+    """
     script = _DEFAULT_RUN_SCRIPT
+    port = _DEFAULT_AGENT_PORT
     root = (_os.environ.get("AGENTY_ROOT") or "").strip()
-    if not root and _os.path.isfile(_HOST_CFG):
+    if _os.path.isfile(_HOST_CFG):
         try:
             with open(_HOST_CFG, "r", encoding="utf-8") as _fh:
                 data = _json.load(_fh)
-            root = str(data.get("project_root", "")).strip()
+            # AGENTY_ROOT overrides the recorded root, but never the recorded
+            # port: they answer different questions, and an env var naming a
+            # checkout says nothing about which port that checkout is serving on.
+            if not root:
+                root = str(data.get("project_root", "")).strip()
             script = str(data.get("run_script", script)).strip() or script
+            try:
+                recorded = int(data.get("agent_server_port") or 0)
+            except (TypeError, ValueError):
+                recorded = 0
+            if 0 < recorded < 65536:
+                port = recorded
         except Exception:  # noqa: BLE001
             pass
     # A recorded name from the other operating system: prefer the one that is
@@ -107,7 +132,7 @@ def _read_host_cfg():
     if root and not _os.path.isfile(_os.path.join(root, script)):
         if _os.path.isfile(_os.path.join(root, _DEFAULT_RUN_SCRIPT)):
             script = _DEFAULT_RUN_SCRIPT
-    return root, script
+    return root, script, port
 
 
 try:
@@ -139,9 +164,23 @@ try:
                   or _DEFAULT_RUN_SCRIPT)
         if not root or not _os.path.isdir(root):
             return web.json_response({"ok": False, "error": "project_root is not a directory"}, status=400)
+        record = {"project_root": root, "run_script": script}
+        # The port the host actually bound, so the panel can stop guessing. An
+        # older host sends no port at all: keep whatever was recorded before
+        # rather than overwriting a known-good number with a default, or an
+        # upgrade in one repo would break the pairing until the other caught up.
+        try:
+            sent = int((data or {}).get("agent_server_port") or 0)
+        except (TypeError, ValueError):
+            sent = 0
+        if 0 < sent < 65536:
+            record["agent_server_port"] = sent
+        else:
+            _, _, previous = _read_host_cfg()
+            record["agent_server_port"] = previous
         try:
             with open(_HOST_CFG, "w", encoding="utf-8") as _fh:
-                _json.dump({"project_root": root, "run_script": script}, _fh, indent=2)
+                _json.dump(record, _fh, indent=2)
         except Exception as _exc:  # noqa: BLE001
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
         return web.json_response({"ok": True})
@@ -156,12 +195,17 @@ try:
         question. This route runs beside the host, which makes it the only honest
         source for "what would I run here".
         """
-        root, script = _read_host_cfg()
+        root, script, port = _read_host_cfg()
         return web.json_response({
             "ok": True,
             "platform": _sys.platform,
             "run_script": script,
             "root": root,
+            # Which port to call. Answered here for the same reason as the rest:
+            # the panel is a browser tab and cannot know, while this route runs
+            # beside the host and was told by it. Without this the panel assumed
+            # 5000 forever, which is wrong on any Mac and after any --port.
+            "agent_server_port": port,
             "can_autostart": _sys.platform in ("win32", "darwin"),
             # Named here rather than in the panel so the two never drift: the
             # window the button opens is a real thing this file decides.
@@ -177,7 +221,7 @@ try:
         start (a port in use, a broken .env, a venv that lost a dependency), and a
         background process would swallow exactly the message worth reading.
         """
-        root, script = _read_host_cfg()
+        root, script, _port = _read_host_cfg()
         if not root:
             return web.json_response(
                 {"ok": False, "error": f"agentY location unknown — run {_DEFAULT_RUN_SCRIPT} once, "

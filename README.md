@@ -9,14 +9,15 @@ agent. It has two parts:
    and attach images. The agent's *text* streams into the panel; every generated
    **image/video is dropped onto the graph as a `LoadImage` / video-loader node**
    instead of being shown inline — ready to wire into your next workflow. It talks
-   to the agentY chat host over HTTP + SSE (default `http://127.0.0.1:5000`).
+   to the agentY chat host over HTTP + SSE (`http://127.0.0.1:5000`, or `:5001`
+   on macOS, where AirPlay Receiver holds 5000; the host reports which).
 
 2. **Auto-open canvas** (`web/agent_canvas.js`) — opens the workflow the agent
    just ran directly on the canvas, so you see exactly what it built.
 
 > This node is only the **UI**. The agent itself runs as a separate process from
 > the [agentY](https://github.com/szprivate/agentY) repo (`run_agent.ps1`, the
-> headless chat host on `:5000`). Install this node **and** run that host.
+> headless chat host). Install this node **and** run that host.
 
 ---
 
@@ -37,7 +38,10 @@ Then start the agentY chat host (from the agentY repo): `./run_agent.ps1`.
 
 ## Configuration
 
-- **Backend URL** — defaults to `http://<comfyui-host>:5000`. If the agentY host
+- **Backend URL** — the running host registers its port on every start and the
+  panel asks for it (`/agent/host_info`), so `--port` and a port set in the
+  agentY settings both reach the panel with nothing to configure here. Falls
+  back to `http://<comfyui-host>:5000` (`:5001` on macOS). If the agentY host
   runs elsewhere, set it in the browser console:
   `localStorage.agentY_backend = "http://host:port"`.
 - **Auto-open canvas** — on by default. Disable by setting

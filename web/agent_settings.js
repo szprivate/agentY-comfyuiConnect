@@ -1,18 +1,11 @@
 import { app } from "../../scripts/app.js";
+import { backendBase } from "./agent_backend.js";
 
 // agentY Application Settings — adds an entry to the ComfyUI Settings panel that
 // opens a modal for editing the agent's auth keys (.env) and everything in
 // config/settings.json. Reads/writes go through the agentY chat host
 // (src/utils/agentY_server.py: GET/POST /agentY/settings). The settings.json
 // save is comment-preserving (only changed leaves are rewritten).
-
-const DEFAULT_PORT = 5000;
-function backendBase() {
-  return (
-    localStorage.getItem("agentY_backend") ||
-    `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
-  );
-}
 
 function el(tag, props = {}, children = []) {
   const n = document.createElement(tag);

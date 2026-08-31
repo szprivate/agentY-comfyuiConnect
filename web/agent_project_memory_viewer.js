@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { backendBase } from "./agent_backend.js";
 
 // agentY Project Memory editor launcher. The page itself is served by the agentY
 // chat host (src/utils/agentY_server.py: GET /agentY/project_memory_viewer) so it
@@ -17,14 +18,6 @@ import { app } from "../../scripts/app.js";
 // same file by hand would be a second source of truth. Deleting is deliberately
 // NOT the agent's job: turning a tag's switch off never forgets anything, so this
 // is where a fact stops being true of the project.
-
-const DEFAULT_PORT = 5000;
-function backendBase() {
-  return (
-    localStorage.getItem("agentY_backend") ||
-    `http://${location.hostname || "127.0.0.1"}:${DEFAULT_PORT}`
-  );
-}
 
 async function openProjectMemoryViewer() {
   const base = backendBase();
