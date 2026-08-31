@@ -766,7 +766,7 @@ class AgentChat {
 
   // ── offline overlay + host-up state ──────────────────────────────────────────
   _buildOfflinePanel() {
-    this._offlineMsg = el("div", { className: "ay-offline-msg", innerHTML: mdToHtml(OFFLINE_MSG) });
+    this._offlineMsg = el("div", { className: "ay-offline-msg", innerHTML: mdToHtml(offlineMsg()) });
     this._startBtn = el("button", { className: "ay-start", textContent: "▶  Start server" });
     this._startBtn.addEventListener("click", () => this._startHost());
     const card = el("div", { className: "ay-offline-card" }, [
