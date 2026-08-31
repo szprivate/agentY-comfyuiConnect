@@ -213,6 +213,38 @@ try:
                         else "Terminal" if _sys.platform == "darwin" else ""),
         })
 
+    @_routes.get("/agent/comfy_dirs")
+    async def _agent_comfy_dirs(request):  # noqa: ANN001
+        """Where THIS ComfyUI keeps its user, input and output directories.
+
+        Asked of folder_paths, which is ComfyUI's own authority: it accounts for
+        --user-directory and friends when they are given, and for the compiled-in
+        defaults when they are not. Either way the answer is absolute and true.
+
+        This exists because the alternative was a guess, and the guess was wrong.
+        agentY read /system_stats, took the directories out of the server's argv,
+        and where a flag was absent inferred the root from argv[0] — which is
+        './main.py' whenever ComfyUI is started the ordinary way. Resolving a
+        relative path uses the CALLER's working directory, and the caller is
+        agentY, somewhere else entirely. So project memory was written to
+        <agentY>/user/agentY/project while the nodes here read
+        <ComfyUI>/user/agentY/project, and the load-item node reported "nothing
+        stored yet" about a store that existed and had things in it.
+
+        A process cannot answer this about another process. This one is that
+        process.
+        """
+        try:
+            import folder_paths
+            return web.json_response({
+                "ok": True,
+                "user_dir": str(folder_paths.get_user_directory()),
+                "input_dir": str(folder_paths.get_input_directory()),
+                "output_dir": str(folder_paths.get_output_directory()),
+            })
+        except Exception as _exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(_exc)}, status=500)
+
     @_routes.post("/agent/start_host")
     async def _agent_start_host(request):  # noqa: ANN001
         """Launch the agentY host in its own visible console/terminal window.
@@ -527,8 +559,8 @@ try:
         })
 
     print("[agentY-comfyuiConnect] registered /agent routes "
-          "(load_workflow, register_host, start_host, pick_files, reset_collector_cursor, "
-          "canvas_selection, set_node_params)")
+          "(load_workflow, register_host, host_info, comfy_dirs, start_host, pick_files, "
+          "reset_collector_cursor, canvas_selection, set_node_params)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")
