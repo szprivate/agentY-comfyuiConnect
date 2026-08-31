@@ -2668,7 +2668,7 @@ class AgentChat {
       // "here is an input". Reporting it as an anchor would put a node carrying no
       // file in front of the agent as context, and — worse — make it a candidate
       // when splicing looks for the anchor matching a target's type.
-      if (this._isQaBriefing(node)) continue;
+      if (this._isQaNode(node)) continue;
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
       //
@@ -2817,37 +2817,100 @@ class AgentChat {
     return hooks;
   }
 
-  // ── qa briefing nodes ────────────────────────────────────────────────────────
+  // ── qa nodes ─────────────────────────────────────────────────────────────────
   // Sent as `qa` hooks, because that is what they are: the agent side already
   // merges every qa hook on the canvas into one briefing, and a second path to
   // the same place would be a second thing to keep in step.
   //
-  // What is new is `technical` — the dropdowns and switches, which agentY settles
-  // by measuring the finished file instead of asking the model. The prose half
-  // rides in `directive`, exactly as a hand-written qa hook's does.
-  _isQaBriefing(n) {
-    return !!n && (n.type === "AgentYQaBriefing" || n.comfyClass === "AgentYQaBriefing");
+  // `judge` names what a node applies to; `reference` names what to compare
+  // against. Both reach the agent as one qa hook — prose in `directive`, the
+  // dropdowns in `technical`, the stages in `applies_to`.
+  _isQaNode(n) {
+    return !!n && (n.type === "AgentYQa" || n.comfyClass === "AgentYQa");
   }
 
-  // The hooks this briefing's `out` is wired into — the stages it judges. Empty
-  // means it was left unwired, which is the common case and means "everything".
-  _briefingScope(node) {
+  _isHookNode(n) {
+    return !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
+  }
+
+  // The stage a judged node belongs to: the nearest `agentY hook` reachable from
+  // it through the graph, in either direction.
+  //
+  // Wiring a hook's `out` into `judge` is the exact case and needs no search. The
+  // rest is what makes the other wirings work: an IMAGE straight off a sampler, a
+  // collector, a LoadImage. None of those IS a stage, but each sits in one, and
+  // the hook nearest to it is the stage that produces it.
+  //
+  // Breadth-first so "nearest" means nearest, bounded because this runs on every
+  // canvas capture and a graph can be large. Finding nothing is not a failure —
+  // it is a graph with no hooks, where there is one stage and judging everything
+  // is exactly right. Guessing wrong here would silently leave outputs unchecked,
+  // so the fallback is always to widen rather than narrow.
+  _stageFor(node, maxDepth = 12) {
     const graph = app.graph;
-    if (!graph) return [];
-    const ids = [];
+    if (!graph || !node) return null;
+    if (this._isHookNode(node)) return String(node.id);
+    const seen = new Set([String(node.id)]);
+    let frontier = [node];
+    for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
+      const next = [];
+      for (const n of frontier) {
+        for (const neighbour of this._neighbours(n)) {
+          const id = String(neighbour.id);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          if (this._isHookNode(neighbour)) return id;
+          // Do not route a search THROUGH another QA node: two QA nodes on one
+          // branch would otherwise each adopt the other's stage.
+          if (this._isQaNode(neighbour)) continue;
+          next.push(neighbour);
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }
+
+  _neighbours(node) {
+    const graph = app.graph;
+    const out = [];
+    if (!graph) return out;
+    for (const inp of node.inputs || []) {
+      if (!inp || inp.link == null) continue;
+      const link = graph.links ? graph.links[inp.link] : null;
+      const origin = link && graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
+      if (origin) out.push(origin);
+    }
     for (const o of node.outputs || []) {
       for (const lid of (o && Array.isArray(o.links) ? o.links : [])) {
         const link = graph.links ? graph.links[lid] : null;
         const target = link && graph.getNodeById ? graph.getNodeById(link.target_id) : null;
-        if (!target) continue;
-        const isHook = target.type === "AgentYHook" || target.comfyClass === "AgentYHook";
-        // Only a hook can be a scope: it is the thing that produces outputs. A
-        // briefing wired anywhere else is reported as unscoped rather than
-        // silently scoped to something that judges nothing.
-        if (isHook && !ids.includes(String(target.id))) ids.push(String(target.id));
+        if (target) out.push(target);
       }
     }
-    return ids;
+    return out;
+  }
+
+  // What an `agentY qa` node's `judge` slots name: the stages to apply to, and
+  // the judged nodes themselves (a collector or a loader names real files, which
+  // the agent resolves the same way it resolves a reference).
+  _judgeTargets(node) {
+    const applies = [];
+    const judged = [];
+    for (const l of this._anchorsFor(node, "judge")) {
+      const stage = this._stageFor(l.node);
+      if (stage && !applies.includes(stage)) applies.push(stage);
+      if (this._isHookNode(l.node)) continue;   // a stage, not a file
+      judged.push({
+        node_id: String(l.node.id),
+        type: String(l.node.type || l.node.comfyClass || ""),
+        widgets: this._widgetSnapshot(l.node),
+        to_input: String(l.toName || ""),
+        role: String(l.role || ""),
+        tag: String(l.tag || ""),
+      });
+    }
+    return { applies, judged };
   }
 
   _qaBriefingNodes() {
@@ -2855,7 +2918,7 @@ class AgentChat {
     if (!graph || !graph._nodes) return [];
     const out = [];
     for (const n of graph._nodes) {
-      if (!this._isQaBriefing(n)) continue;
+      if (!this._isQaNode(n)) continue;
       if (n.mode === 4 || n.mode === 2) continue;      // bypassed or muted
       const w = this._widgetSnapshot(n);
       const technical = {
@@ -2870,10 +2933,12 @@ class AgentChat {
       };
       const notes = String(w.notes || "").trim();
       const retries = Number(w.retries || 0) | 0;
+      const { applies, judged } = this._judgeTargets(n);
       const asked = Object.entries(technical).some(
         ([, v]) => v !== "any" && v !== false);
       // A node with nothing set enforces nothing — sending it would turn QA on
-      // for a graph whose author had not asked for it.
+      // for a graph whose author had not asked for it. Wiring something into
+      // `judge` is not "asking" either: it says WHICH outputs, not what for.
       if (!notes && !asked) continue;
       out.push({
         hook_node_id: String(n.id),
@@ -2882,13 +2947,17 @@ class AgentChat {
         purpose: "qa",
         technical,
         retries,
-        // Which stages this briefing judges. Empty = all of them.
-        applies_to: this._briefingScope(n),
+        // Which stages this judges. Empty = all of them.
+        applies_to: applies,
+        // Nodes wired into `judge` that name files rather than a stage — a
+        // collector, a loader, a path. Same shape as an anchor, so the agent
+        // resolves them to paths through the same code.
+        judged,
         anchors: this._anchorsFor(n, "reference").map((l) => ({
           node_id: String(l.node.id),
           type: String(l.node.type || l.node.comfyClass || ""),
           widgets: this._widgetSnapshot(l.node),
-          to_input: String(l.toInput || ""),
+          to_input: String(l.toName || ""),
           role: String(l.role || ""),
           tag: String(l.tag || ""),
         })),

@@ -634,15 +634,12 @@ class AgentYHook(io.ComfyNode):
       and keep going until you say stop. Requires a save node that writes to
       ComfyUI's history (e.g. a SaveImage, or the bEpic viewer with
       ``save_to_output`` ON) so the agent can fetch each result to feed forward.
-    * ``qa`` — this hook is not work, it is your **quality briefing** for the graph.
-      The ``directive`` is the checklist ("skin tones warm, not orange"; "hands have
-      five fingers") and the wired ``anchors`` are **reference / mood images** the
-      output should sit beside without looking out of place. After a run, a separate
-      QA agent judges every produced image/video against it, criterion by criterion,
-      and a failing output is re-generated against exactly what it missed (bounded
-      by ``qa.max_retries`` in agentY settings). Wiring the references here is what
-      makes them references rather than inputs to the workflow — the anchor is the
-      statement. Cite a shared briefing from ``config/qa/`` with ``@name``.
+    Quality assessment used to be a purpose here. It is now its own node —
+    ``agentY qa`` — because it was never one field: the prose lived on this
+    dropdown and the measured checks (ratio, resolution, sharpness, likeness) on a
+    separate briefing node, and you had to know the two were halves of one
+    statement. A saved graph whose hook is still set to ``qa`` keeps working.
+
     * ``review`` — a deliberate **STOP** in the chain, so you can choose what goes
       on to the next stage. Place it between the stage that produces candidates
       (reference frames, start images) and the expensive stage that consumes them
@@ -656,9 +653,9 @@ class AgentYHook(io.ComfyNode):
       halted) and the rest of the chain runs with exactly what is in it. ``stop``
       ends the run instead; nothing produced is deleted either way.
 
-      Same shape as ``qa`` — produces nothing, never executed, sits in the same
-      place in a chain. The difference is who judges: ``qa`` asks a model and
-      carries on by itself, ``review`` stops and asks you.
+      Same shape as an ``agentY qa`` node — produces nothing, never executed,
+      sits in the same place in a chain. The difference is who judges: qa asks a
+      model and carries on by itself, ``review`` stops and asks you.
 
       This is the one purpose with **no prompt**: a stop has nothing to instruct,
       so the ``directive`` box is hidden and an empty review hook is complete. If
@@ -706,8 +703,7 @@ class AgentYHook(io.ComfyNode):
     load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
     read comes back with ``remember`` on.
 
-    It is hidden on ``qa``, ``review`` and ``iterate``, which produce nothing to
-    keep.
+    It is hidden on ``review`` and ``iterate``, which produce nothing to keep.
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -757,8 +753,14 @@ class AgentYHook(io.ComfyNode):
                 io.Combo.Input(
                     "purpose",
                     options=["inline_parameter", "make_workflow", "text", "general_request",
-                             "iterate", "qa", "review"],
+                             "iterate", "review"],
                     default="inline_parameter",
+                    tooltip=(
+                        "'qa' is no longer here — quality assessment has its own node, "
+                        "'agentY qa', which carries this dropdown's prose AND the measured "
+                        "checks that used to live on a second node. A saved graph whose "
+                        "hook is still set to qa keeps working."
+                    ),
                 ),
                 io.Boolean.Input(
                     "remember",
@@ -1913,51 +1915,76 @@ _QA_LIKENESS = ["any", "must match the reference face",
                 "must match the reference subject"]
 
 
-class AgentYQaBriefing(io.ComfyNode):
-    """What "good" means for this graph's outputs — the technical half as controls.
+class AgentYQa(io.ComfyNode):
+    """What "good" means for this graph's outputs, and which outputs it means.
 
-    Drop it anywhere on the canvas and every output of the run is checked against
-    it. The dropdowns and switches are decided by MEASURING the finished file, so
-    they are exact and cost nothing: an aspect ratio is compared, not eyeballed.
-    Whatever needs judgement goes in ``notes``, in your own words, and is read by
-    the QA model the same way a ``qa`` hook's prompt is.
+    One node for the whole of QA. It used to be two — a ``qa`` hook carrying the
+    prose and a separate briefing node carrying the measured controls — which
+    meant knowing that a dropdown on one node and a whole second node were halves
+    of the same statement. They were always one thing; this is that thing.
 
-    Leave a control on "any" (or off) and it is not checked at all. Nothing here
-    has a default opinion — an empty node enforces nothing.
+    **Two inputs, and the difference between them is the whole node.**
 
-    Wire reference images into ``reference`` when the criteria compare against
-    something ("match this grade", "same character"); they are shown to the QA
-    model alongside each output, and ``likeness`` turns that comparison into a
-    measured score instead of an impression.
+    ``judge`` — WHAT TO ASSESS. Wire in the thing you want checked:
 
-    **Scope.** Left unwired, a briefing applies to everything the run produces —
-    which is right for a graph with one stage and wrong for a chain, where the
-    reference frames and the video they feed want different standards. Wire
-    ``out`` into a hook's anchor and this briefing judges only what THAT hook
-    produces. Several briefings can name the same hook, and an unwired one still
-    applies to all of it; where they disagree, the one naming the hook wins.
+    * an ``agentY hook``'s ``out``, to judge that stage of a chain;
+    * an IMAGE (from a sampler, a save node, anywhere), to judge what that branch
+      renders;
+    * an ``agentY image/video collector``, to judge the files it holds;
+    * a file path, to judge something already on disk.
+
+    Left unwired it judges everything the run produces, which is right for a
+    one-stage graph and the reason an unwired QA node is still a complete one.
+
+    ``reference`` — WHAT TO COMPARE AGAINST. Mood, grade, character sheets. These
+    are shown to the QA model beside each output, and ``likeness`` turns that
+    comparison into a measured score rather than an impression.
+
+    Wiring the same image into the wrong one of those is the mistake this layout
+    exists to prevent: as ``judge`` it is a thing being marked, as ``reference``
+    it is the marking scheme.
+
+    **Scoping runs the readable way round.** The separate briefing node this
+    replaces was wired the other way — its ``out`` went INTO a hook's anchor, so
+    the arrow pointed from the standard to the work, which only reads correctly if
+    you already know. Here the stage flows into QA, like everything else on a
+    canvas flows toward what consumes it.
+
+    The dropdowns and switches are decided by MEASURING the finished file, so they
+    are exact and cost nothing — an aspect ratio is compared, not eyeballed.
+    Anything left on "any" (or off) is not checked at all; nothing here has a
+    default opinion, and an empty node enforces nothing.
+
+    Several QA nodes can name the same stage, and an unscoped one still applies to
+    all of it; where they disagree, the one naming the stage wins.
+
+    Inert on a normal Queue, like every agentY annotation node.
     """
 
     @classmethod
     def define_schema(cls) -> io.Schema:  # noqa: N802
+        judged = io.Autogrow.TemplatePrefix(
+            input=io.AnyType.Input("judge"), prefix="judge", min=0, max=8,
+        )
         refs = io.Autogrow.TemplatePrefix(
-            input=io.AnyType.Input("reference"),
-            prefix="reference",
-            min=0,
-            max=8,
+            input=io.AnyType.Input("reference"), prefix="reference", min=0, max=8,
         )
         return io.Schema(
-            node_id="AgentYQaBriefing",
-            display_name="agentY qa briefing",
+            node_id="AgentYQa",
+            display_name="agentY qa (quality assessment)",
             category="agentY",
+            search_aliases=["quality", "assessment", "check", "briefing", "qa"],
             description=(
-                "What counts as a good output for this graph. The technical checks "
-                "(ratio, resolution, sharpness, grain, exposure) are decided by "
-                "measuring the finished file, so they are exact; 'notes' carries "
-                "everything that needs judgement. Anything left on 'any' is not "
-                "checked. Inert on a normal run."
+                "What counts as a good output, and which outputs it applies to. Wire what "
+                "you want checked into 'judge' (a hook's out, an IMAGE, a collector, a "
+                "path) and what it should be compared against into 'reference'. Unwired, "
+                "it judges everything the run produces. The technical checks (ratio, "
+                "resolution, sharpness, grain, exposure) are decided by measuring the "
+                "finished file; 'notes' carries everything that needs judgement. Anything "
+                "left on 'any' is not checked. Inert on a normal run."
             ),
             inputs=[
+                io.Autogrow.Input("judged", template=judged),
                 io.String.Input(
                     "notes", multiline=True, default="",
                     placeholder=(
@@ -1965,9 +1992,9 @@ class AgentYQaBriefing(io.ComfyNode):
                         "match the reference; warm evening light; no text anywhere"
                     ),
                     tooltip=(
-                        "Read by the QA model exactly like a `qa` hook's prompt. Put the "
-                        "things a measurement cannot settle here: likeness, mood, framing, "
-                        "whether it looks right."
+                        "Read by the QA model in your own words. Put the things a "
+                        "measurement cannot settle here: likeness, mood, framing, whether "
+                        "it looks right."
                     ),
                 ),
                 io.Combo.Input(
@@ -2016,12 +2043,11 @@ class AgentYQaBriefing(io.ComfyNode):
                 io.Combo.Input(
                     "likeness", options=_QA_LIKENESS, default="any",
                     tooltip=(
-                        "Compares the output against the images wired into "
-                        "`reference`, as a number rather than an opinion. 'face' "
-                        "asks whether it is the same person; 'subject' asks whether "
-                        "it is the same place, product or look. Needs at least one "
-                        "reference wired in, and the first run downloads the "
-                        "matching model."
+                        "Compares the output against the images wired into `reference`, "
+                        "as a number rather than an opinion. 'face' asks whether it is "
+                        "the same person; 'subject' asks whether it is the same place, "
+                        "product or look. Needs at least one reference wired in, and the "
+                        "first run downloads the matching model."
                     ),
                 ),
                 io.Int.Input(
@@ -2034,10 +2060,8 @@ class AgentYQaBriefing(io.ComfyNode):
                 ),
                 io.Autogrow.Input("references", template=refs),
             ],
-            # Wire `out` into a hook's anchor to say "this briefing judges THAT
-            # stage" — see the class docstring. Nothing travels down it: it is a
-            # scope marker, and the panel reports it as one rather than as an
-            # input the agent should read.
+            # Forwards the first wired `judge`, so a QA node spliced into a chain
+            # does not break the graph it is supposed to be invisible in.
             outputs=[io.AnyType.Output(display_name="out")],
             is_output_node=True,
         )
@@ -2045,18 +2069,20 @@ class AgentYQaBriefing(io.ComfyNode):
     @classmethod
     def execute(cls, notes="", aspect_ratio="any", resolution="any", sharpness="any",
                 grain="any", no_clipping=False, no_black_frames=False,
-                no_stalled_motion=False, likeness="any", retries=0, references=None,
-                **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
-        # Inert on a normal run, like every other agentY annotation node: it says
-        # what the agent should check, and a plain Queue is not the agent. `out`
-        # carries None deliberately — it marks scope, it is not data — and the
-        # hook it feeds skips a None anchor when it forwards.
-        return io.NodeOutput(None)
+                no_stalled_motion=False, likeness="any", retries=0,
+                judged=None, references=None, **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        # Inert on a normal run: it says what the agent should check, and a plain
+        # Queue is not the agent. Forwarding the first wired `judge` keeps a
+        # spliced-in node honest — passing None down a live link would break the
+        # very graph this is meant to annotate without disturbing.
+        judged = judged or {}
+        first = next((v for v in judged.values() if v is not None), None)
+        return io.NodeOutput(first)
 
 
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook, AgentYQaBriefing, AgentYPython, AgentYText,
+        return [AgentYHook, AgentYQa, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
                 AgentYLoadItem]
