@@ -22,33 +22,33 @@ import { app } from "../../scripts/app.js";
 //    which everyone calls baking. bake_hooks_to_canvas consults it.
 //  • everything else produces a result → keeping it means memorizing it to
 //    agent/memory/ beside the outputs, which hook_cache does.
-// qa, review and iterate produce nothing to keep: a qa hook is expressly told
-// never to place_canvas_text, a review hook is a stop, and an iterate hook runs
+// human_review and iterate produce nothing to keep: a qa hook is expressly told
+// never to place_canvas_text, a human_review hook is a stop, and an iterate hook runs
 // through iterate_step — so the switch has never done anything at all there and
 // is hidden.
 const PRODUCES_A_RESULT = ["inline_parameter", "text", "general_request"];
 
 // name → "has this widget nothing to do under this purpose?"
 //
-// `directive`: a review hook is a STOP, not a request. Nothing reads its text —
+// `directive`: a human_review hook is a STOP, not a request. Nothing reads its text —
 // halt_for_review takes an id, and the question put to the user comes from the
 // node's TITLE, which is the part actually visible on a canvas. An empty prompt
 // box there is worse than no box: it invites an instruction that would never be
 // carried out.
 const HIDDEN_FOR = {
   remember: (purpose) => !["make_workflow", ...PRODUCES_A_RESULT].includes(purpose),
-  directive: (purpose) => purpose === "review",
+  directive: (purpose) => purpose === "human_review",
 };
 
 // Hiding the prompt box only works because an empty review hook still counts.
 // Every other purpose is its directive, so a blank one is a no-op nobody wants
-// sent; a review hook's whole meaning is its purpose and its wiring. Exported
+// sent; a human_review hook's whole meaning is its purpose and its wiring. Exported
 // because agent_chat.js decides what to send and this is the rule it applies —
 // the two must not drift, or the one hook that CANNOT say anything becomes the
 // one hook that silently never arrives, and the expensive stage it was placed to
 // gate runs unguarded.
 export function hookReaches(purpose, directive) {
-  return String(directive || "").trim() !== "" || String(purpose || "") === "review";
+  return String(directive || "").trim() !== "" || String(purpose || "") === "human_review";
 }
 
 // The switch is one bit but two words, because "bake" and "memorize" are what
@@ -193,7 +193,7 @@ const UNNAMED = new Set(["", "agenty hook", "agentyhook", "agenty_hook"]);
 const TITLE_MAX = 60;
 function promoteReviewQuestion(node) {
   const box = getWidget(node, "directive");
-  if (!box || String((getWidget(node, "purpose") || {}).value || "") !== "review") return;
+  if (!box || String((getWidget(node, "purpose") || {}).value || "") !== "human_review") return;
   const text = String(box.value || "").trim();
   if (!text || text.length > TITLE_MAX) return;
   if (!UNNAMED.has(String(node.title || "").trim().toLowerCase())) return;

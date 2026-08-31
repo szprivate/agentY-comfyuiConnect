@@ -640,7 +640,7 @@ class AgentYHook(io.ComfyNode):
     separate briefing node, and you had to know the two were halves of one
     statement. A saved graph whose hook is still set to ``qa`` keeps working.
 
-    * ``review`` — a deliberate **STOP** in the chain, so you can choose what goes
+    * ``human_review`` — a deliberate **STOP** in the chain, so you can choose what goes
       on to the next stage. Place it between the stage that produces candidates
       (reference frames, start images) and the expensive stage that consumes them
       (a video). The stage before it runs; what it produced is gathered into an
@@ -655,7 +655,7 @@ class AgentYHook(io.ComfyNode):
 
       Same shape as an ``agentY qa`` node — produces nothing, never executed,
       sits in the same place in a chain. The difference is who judges: qa asks a
-      model and carries on by itself, ``review`` stops and asks you.
+      model and carries on by itself, ``human_review`` stops and asks you.
 
       This is the one purpose with **no prompt**: a stop has nothing to instruct,
       so the ``directive`` box is hidden and an empty review hook is complete. If
@@ -703,7 +703,7 @@ class AgentYHook(io.ComfyNode):
     load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
     read comes back with ``remember`` on.
 
-    It is hidden on ``review`` and ``iterate``, which produce nothing to keep.
+    It is hidden on ``human_review`` and ``iterate``, which produce nothing to keep.
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -753,7 +753,7 @@ class AgentYHook(io.ComfyNode):
                 io.Combo.Input(
                     "purpose",
                     options=["inline_parameter", "make_workflow", "text", "general_request",
-                             "iterate", "review"],
+                             "iterate", "human_review"],
                     default="inline_parameter",
                     tooltip=(
                         "'qa' is no longer here — quality assessment has its own node, "
