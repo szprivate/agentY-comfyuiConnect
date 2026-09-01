@@ -3,7 +3,7 @@ import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
-import { backendBase, backendReady } from "./agent_backend.js";
+import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -46,8 +46,12 @@ const DROP_COL_H = 1200;
 // Nodes this panel put on the canvas (generated media, written text). They are
 // flagged so the NEXT drop is measured against the user's workflow rather than
 // against the pile we are already building beside it — otherwise every drop
-// starts further out than the last and a long run walks off the graph. The title
-// test catches nodes dropped before the flag existed.
+// starts further out than the last and a long run walks off the graph.
+//
+// The property is the real test; the title test is only for graphs saved before
+// it existed, and for the span when drops were retitled "agentY · <role>". Both
+// are history — nothing sets those titles now — but a graph on disk outlives the
+// code that wrote it, so the test stays.
 function isAgentDrop(n) {
   if (n && n.properties && n.properties.agentY_drop) return true;
   const t = String((n && n.title) || "");
@@ -90,7 +94,17 @@ function hostInfo() {
 }
 
 // Shown on the offline overlay when the agentY host isn't reachable.
+//
+// "Isn't running" is not the only way to be unusable, and the other way looks
+// identical from here: when the host REFUSES us the health probe still answers
+// (it is reachable without a token on purpose), so the panel would offer to start
+// a second host — which is both the wrong fix and impossible, since the port is
+// held by the host that is already running and answering.
 function offlineMsg() {
+  const refused = hostRefusal();
+  if (refused) {
+    return "**The agentY host is running, but it refused this panel.**\n\n" + refused;
+  }
   const script = HOST_INFO.run_script || "run_agent.ps1";
   if (!HOST_INFO.can_autostart) {
     return "The agentY chat host isn't running. Start it to use the panel — run " +
@@ -98,6 +112,13 @@ function offlineMsg() {
   }
   return "The agentY chat host isn't running. Start it to use the panel — a " +
          (HOST_INFO.console || "console") + " window will open and run `" + script + "`.";
+}
+
+// The overlay's heading and its button both have to change with the message
+// above, or the panel says "refused" under a title that says "offline" beside a
+// button that would start a duplicate server.
+function offlineTitle() {
+  return hostRefusal() ? "agentY host refused this panel" : "agentY host offline";
 }
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
@@ -767,15 +788,23 @@ class AgentChat {
   // ── offline overlay + host-up state ──────────────────────────────────────────
   _buildOfflinePanel() {
     this._offlineMsg = el("div", { className: "ay-offline-msg", innerHTML: mdToHtml(offlineMsg()) });
+    this._offlineIcon = el("div", { className: "ay-offline-icon", textContent: "🔌" });
+    this._offlineTitle = el("div", { className: "ay-offline-title", textContent: offlineTitle() });
     this._startBtn = el("button", { className: "ay-start", textContent: "▶  Start server" });
     this._startBtn.addEventListener("click", () => this._startHost());
+    // A refusal is fixed by reloading this tab (the token is read from ComfyUI at
+    // page load), never by starting another host.
+    this._reloadBtn = el("button", { className: "ay-start", textContent: "⟳  Reload ComfyUI" });
+    this._reloadBtn.addEventListener("click", () => location.reload());
     const card = el("div", { className: "ay-offline-card" }, [
-      el("div", { className: "ay-offline-icon", textContent: "🔌" }),
-      el("div", { className: "ay-offline-title", textContent: "agentY host offline" }),
+      this._offlineIcon,
+      this._offlineTitle,
       this._offlineMsg,
       this._startBtn,
+      this._reloadBtn,
     ]);
     this.offlineEl = el("div", { className: "ay-offline-panel" }, [card]);
+    this._refreshOfflineFace();
     return this.offlineEl;
   }
 
@@ -802,16 +831,28 @@ class AgentChat {
       this._positionOffline();
       // Reset the card to its default actionable state each time we go offline.
       if (this._startBtn) { this._startBtn.disabled = false; this._startBtn.textContent = "▶  Start server"; }
-      if (this._offlineMsg) {
-        this._offlineMsg.innerHTML = mdToHtml(offlineMsg());
-        // Refresh once the answer lands, in case this drew before it did.
-        hostInfo().then(() => {
-          if (this._offlineMsg && !this._startBtn?.disabled) {
-            this._offlineMsg.innerHTML = mdToHtml(offlineMsg());
-          }
-        });
-      }
+      this._refreshOfflineFace();
+      // Refresh once the answer lands, in case this drew before it did.
+      hostInfo().then(() => {
+        if (this._offlineMsg && !this._startBtn?.disabled) this._refreshOfflineFace();
+      });
     }
+  }
+
+  // Put the card into the state that matches WHY the panel is unusable.
+  //
+  // Two quite different faults reach this overlay and only one of them is "the
+  // host isn't running". When the host is up and refusing us, offering to start
+  // another one sends people to a console to launch a process that will fail on a
+  // port already in use — and the thing that actually fixes it, reloading the tab,
+  // is not on screen at all.
+  _refreshOfflineFace() {
+    const refused = hostRefusal();
+    if (this._offlineMsg) this._offlineMsg.innerHTML = mdToHtml(offlineMsg());
+    if (this._offlineTitle) this._offlineTitle.textContent = offlineTitle();
+    if (this._offlineIcon) this._offlineIcon.textContent = refused ? "🔒" : "🔌";
+    if (this._startBtn) this._startBtn.style.display = refused ? "none" : "";
+    if (this._reloadBtn) this._reloadBtn.style.display = refused ? "" : "none";
   }
 
   // Ask the ComfyUI extension (same origin) to launch the host in a new console.
@@ -1603,6 +1644,22 @@ class AgentChat {
 
   // ── graph node injection (the whole point) ───────────────────────────────────
   injectNode(ev) {
+    // Dropping results onto the canvas can be switched off (Settings ▸ Canvas ▸
+    // "Put results on the canvas"). The HOST decides — one answer covers a turn's
+    // own stream, a background Magnific completion and a Slack-driven run alike,
+    // where a browser-side toggle would have to be repeated in each and would
+    // disagree with itself the moment one was missed.
+    //
+    // Only an explicit false counts. A host older than this setting sends no
+    // `drop` field at all, and the old behaviour is the on one.
+    if (ev && ev.drop === false) {
+      // Still say where it is. The panel does not render media inline, so with no
+      // node and no line the result would exist only as a file nobody was told
+      // about.
+      this._sys(`🖼 ${ev.kind === "video" ? "Video" : "Image"} saved → \`${ev.path}\`` +
+                "  \n_(not placed on the canvas — Settings ▸ Canvas)_");
+      return;
+    }
     const LG = window.LiteGraph;
     // First one this ComfyUI actually has. The server sends the list (see
     // _NODE_CANDIDATES in agentY_server.py) and puts the Video Helper Suite
@@ -1647,9 +1704,19 @@ class AgentChat {
       w.value = val;
       try { if (w.callback) w.callback(val); } catch (_) {}
     }
-    // What the file is FOR beats what it is called: the next run reads the title.
+    // The node keeps the title LiteGraph gave it.
+    //
+    // It used to be renamed to "agentY · <role>", and a role is a sentence from
+    // the hook's own directive — so a drop retitled the node to a paragraph and
+    // litegraph widened it to fit, shoving the rest of the graph sideways. A
+    // title is not a place to put a sentence.
+    //
+    // Nothing is lost by leaving it alone. What the file is FOR reaches the next
+    // run through the `.agenty.json` written beside every output agentY makes
+    // (canvas_hooks._recorded_role reads it), which also survives a reload, a
+    // different thread, and the node being retitled by hand — none of which a
+    // title does.
     const role = String(ev.role || "").trim();
-    node.title = "agentY · " + (role || ev.name || type);
     if (role && ev.role_declared) this._attachRefNote(node, role);
     this._targetGraph().setDirtyCanvas(true, true);
     this._sys(`🧩 Added **${type}** node → \`${ev.name}\`` + (role ? ` — _${role}_` : ""));
@@ -1675,7 +1742,11 @@ class AgentChat {
         w.value = role;
         try { if (w.callback) w.callback(role); } catch (_) {}
       }
-      note.title = "agentY tag · " + role.slice(0, 40);
+      // Fixed, like every other agentY node ("agentY hook", "agentY text"). The
+      // role is already IN the node, in the widget right below this line — and
+      // pasting it into the title as well only made the node wide enough to
+      // cover whatever it was hanging off.
+      note.title = "agentY tag";
       note.pos = [src.pos[0] + (src.size ? src.size[0] : 210) + DROP_GAP, src.pos[1]];
       src.connect(0, note, 0);
     } catch (e) {

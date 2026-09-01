@@ -18,6 +18,12 @@
  * screenshot must not be waiting on the same channel that would deliver it.
  */
 import { app } from "../../scripts/app.js";
+// Imported for its side effect, not its exports: agent_backend.js installs the
+// fetch wrapper that puts the session token on every /agentY/ request, and the
+// two calls below are /agentY/ requests. This module gets its base URL from its
+// constructor, so without this line the dependency would exist and be invisible
+// — and reordering an import in agent_chat.js would silently 403 the probe.
+import "./agent_backend.js";
 
 // How long the host holds the poll open. Slightly under its own cap so the
 // request ends server-side, on an empty answer, rather than as a client abort.

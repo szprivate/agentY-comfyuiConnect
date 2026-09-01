@@ -135,6 +135,31 @@ def _read_host_cfg():
     return root, script, port
 
 
+# The agentY host mints a session token each time it starts and leaves it beside
+# its checkout; every call the panel makes to the host carries it. Read from the
+# file rather than taken over HTTP because registration is best-effort and races
+# ComfyUI's own startup — a panel that could not learn the token would be a panel
+# that cannot talk to its host at all.
+#
+# Handing it out here is safe for the reason the token exists: ComfyUI refuses
+# cross-origin requests, so only a page actually served from this origin can read
+# this route. That is the same page the token is for.
+_TOKEN_FILENAME = ".agenty_token"
+
+
+def _read_host_token(root: str) -> str:
+    if not root:
+        return ""
+    try:
+        with open(_os.path.join(root, _TOKEN_FILENAME), "r", encoding="utf-8") as _fh:
+            return _fh.read().strip()
+    except OSError:
+        # No file means the host has not started since this feature landed, or is
+        # not running. Either way the panel finds out from /agentY/health, which
+        # says so far better than a missing token would.
+        return ""
+
+
 try:
     from server import PromptServer
     _routes = PromptServer.instance.routes
@@ -206,6 +231,10 @@ try:
             # beside the host and was told by it. Without this the panel assumed
             # 5000 forever, which is wrong on any Mac and after any --port.
             "agent_server_port": port,
+            # The host's session token, for the panel to send back on every call.
+            # Empty when the host has never run here; the panel treats that as
+            # "not known yet" rather than as an error.
+            "session_token": _read_host_token(root),
             "can_autostart": _sys.platform in ("win32", "darwin"),
             # Named here rather than in the panel so the two never drift: the
             # window the button opens is a real thing this file decides.

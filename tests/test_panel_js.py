@@ -165,5 +165,82 @@ class TheCheckActuallyChecks(unittest.TestCase):
         self.assertEqual(undefined_constants(src), [])
 
 
+class DroppedNodesKeepTheirTitles(unittest.TestCase):
+    """The panel must not retitle a node it puts on the canvas.
+
+    It used to set `node.title = "agentY · " + role`, and a role is a whole
+    sentence out of a hook's directive. Litegraph sizes a node to fit its title,
+    so every dropped render arrived as a wide bar that shoved the rest of the
+    graph sideways — for information that already travels beside the file, in the
+    .agenty.json that canvas_hooks._recorded_role reads.
+
+    Checked structurally because there is no JavaScript runtime here, and because
+    the regression is a one-line edit that looks entirely reasonable in review.
+    """
+
+    def _inject_node(self):
+        src = (WEB / "agent_chat.js").read_text(encoding="utf-8")
+        start = src.find("\n  injectNode(ev) {")
+        self.assertGreater(start, 0, "injectNode() is gone or was renamed")
+        # To the start of the next method at the same indent.
+        end = src.find("\n  _attachRefNote(", start)
+        self.assertGreater(end, start, "could not find the end of injectNode()")
+        return strip_literals(src[start:end])
+
+    def test_it_assigns_no_title(self):
+        body = self._inject_node()
+        self.assertNotIn(".title =", body,
+                         "injectNode() is setting a node title again")
+
+    def test_the_role_still_reaches_the_ref_note(self):
+        """Removing the title must not have removed the role's other carrier."""
+        body = self._inject_node()
+        self.assertIn("_attachRefNote", body)
+
+    def test_the_tag_note_has_a_fixed_title(self):
+        """The one node the agent adds that IS titled says the same thing every
+        time — like every other agentY node — instead of repeating the role that
+        is already in the widget below it."""
+        src = (WEB / "agent_chat.js").read_text(encoding="utf-8")
+        self.assertIn('note.title = "agentY tag";', src)
+        self.assertNotIn('"agentY tag · "', src)
+
+
+class AFreshTabCanStillAuthenticate(unittest.TestCase):
+    """A tab is ALWAYS older than the host's session token.
+
+    The host mints a new one every start, and the page reads it once, at load —
+    which is before the host was started, or before its last restart, or both. So
+    a panel with no token, or with a previous host's token, is the ordinary state
+    of a freshly opened ComfyUI tab, not an error case.
+
+    The first version returned early when the token was empty and sent the request
+    bare. That skipped the retry with it: the panel 403'd every request for the
+    life of the tab, showed nothing on screen, and could only be fixed by a reload
+    it never asked for. These pin the shape that cannot do that.
+    """
+
+    def source(self):
+        return strip_literals((WEB / "agent_backend.js").read_text(encoding="utf-8"))
+
+    def test_an_empty_token_does_not_skip_the_request_handling(self):
+        self.assertNotIn("if (!sessionToken) return real", self.source(),
+                         "a missing token must not bypass the 403 retry below it")
+
+    def test_a_missing_token_is_fetched_rather_than_given_up_on(self):
+        self.assertIn("refreshToken(", self.source())
+
+    def test_a_refusal_still_reaches_the_screen(self):
+        """The console is where this went for a week. It has to reach the UI."""
+        self.assertIn("announceRefusal", self.source())
+        self.assertIn("showNotice", self.source())
+
+    def test_the_refresh_is_rate_limited(self):
+        """Both callers are on the hot path. An extension too old to return a
+        token would otherwise put a host_info round trip in front of every
+        request the panel makes."""
+        self.assertIn("REFRESH_MS", self.source())
+
+
 if __name__ == "__main__":
     unittest.main()

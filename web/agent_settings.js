@@ -46,12 +46,15 @@ const SECTIONS = [
   { title: "Models", open: true, inline: ["llm", "tiers"],
     objects: [["llm", "pipeline"]] },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
-  { title: "Canvas", keys: ["autoload_workflows_into_canvas", "canvas_full_graph",
-                            "hook_tap_tensors", "hook_scoped_graph",
+  { title: "Canvas", keys: ["drop_outputs_into_canvas", "autoload_workflows_into_canvas",
+                            "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
   { title: "Slack", inline: ["slack"] },
   { title: "Updates", keys: ["auto_update"] },
+  // Not advanced. These decide who can reach the host, and someone who has just
+  // read the startup warning should find them without checking a box first.
+  { title: "Security", inline: ["security"] },
   { title: "Memory", inline: ["memory"], advanced: true },
   { title: "Providers", advanced: true,
     keys: [], objects: [["llm", "ollama"], ["llm", "anthropic"], ["llm", "dashscope"]],
@@ -76,6 +79,60 @@ const KEY_NOTES = {
     + "turn whether or not the turn is about the graph (~250 for a 20-node "
     + "workflow, ~1.5k for 200). Worth it if you edit graphs by chatting; not if "
     + "you mostly generate.",
+  drop_outputs_into_canvas:
+    "Put every finished image or video on the canvas as a loader node pointing "
+    + "at it, so a result is something you can wire straight into the next step "
+    + "instead of a filename in the chat. Off keeps your graph clean when you are "
+    + "generating in bulk — the files are written exactly the same either way, "
+    + "and the chat names each one with its full path.",
+  autoload_workflows_into_canvas:
+    "Open the workflow the agent actually ran on the canvas, every run, so you "
+    + "can see what it built rather than take its word for it. Off by default "
+    + "because it replaces what you have open each time; the agent will still "
+    + "show you a graph whenever you ask for one.",
+  hook_tap_tensors:
+    "Lets the agent LOOK at a hook anchored mid-graph. Wire an anchor to a "
+    + "VAEDecode or an upscaler and its value is a tensor with no file anywhere, "
+    + "so there is nothing to open — with this on, that wire is rendered to a "
+    + "temp file before the turn starts. Only the anchor's ancestors run and an "
+    + "already-executed graph comes from ComfyUI's cache, but on a cold graph you "
+    + "do pay for one upstream render.",
+  hook_scoped_graph:
+    "Run only the part of your canvas the hooks actually reach — everything "
+    + "downstream of a hook plus whatever those nodes need as input. Unrelated "
+    + "branches are left out instead of being run on every hook. A muted or "
+    + "bypassed hook drops its branch too. Off runs the whole canvas each time.",
+  comfyui_console_lines:
+    "Relay ComfyUI's own terminal output — model loads, warnings, whatever a node "
+    + "prints — into the run stream while the queue is running. It is what tells "
+    + "you a two-minute pause is a 25 GB checkpoint staging rather than a wedge. "
+    + "Only finished lines: tqdm's redrawing progress bar is left out, since the "
+    + "run already draws one.",
+  api_key_max_age_days:
+    "Warn at startup when a key in .env has been in place this long. A key does "
+    + "not expire on its own, so a copy taken today still works next year — "
+    + "rotating on a clock is the only defence that does not depend on noticing "
+    + "a leak. Pasting a new value restarts the clock by itself; there is nothing "
+    + "to acknowledge. 0 turns the warning off.",
+  check_origin:
+    "Refuse requests from pages other than the agentY panel. Leave this on. With "
+    + "it off, any website you have open in any tab can drive the agent and read "
+    + "your API keys — a local server is reachable from the whole web, it is just "
+    + "not reachable BY the whole web without this.",
+  require_token:
+    "Require the session token the host mints at each start. The panel gets it "
+    + "from ComfyUI automatically. This is the check that stops a script or "
+    + "another machine, which has no browser to be honest about where it came "
+    + "from. Turn it off only to get back into a panel that will not connect.",
+  allowed_origins:
+    "Extra origins that may call the host, e.g. [\"http://studio.local:8188\"]. "
+    + "Only needed when the panel is served from an address the host cannot work "
+    + "out for itself.",
+  allowed_hosts:
+    "Extra names this host may be addressed by. Anything that is not an IP "
+    + "address or \"localhost\" is refused, because a name pointed at 127.0.0.1 is "
+    + "how DNS rebinding reaches a local server. Add your machine's real name "
+    + "here if you use it.",
 };
 
 function injectStyles() {
@@ -449,9 +506,30 @@ async function openAgentYSettingsModal() {
   const secretEls = [];
   const envSec = el("div", { className: "ays-sec" });
   envSec.append(el("h3", { textContent: "Authentication (.env)" }));
-  envSec.append(el("div", { className: "ays-note", textContent: "API keys and host settings. Stored in .env on the agent host." }));
+  envSec.append(el("div", { className: "ays-note", textContent:
+    "API keys and host settings, stored in .env on the agent host. Keys already " +
+    "set are shown masked — the host does not send them back. Type over one to " +
+    "replace it; leave it alone and it stays as it is." }));
+
+  // Rotation warning, at the top of the section it is about. The host prints the
+  // same thing at startup, which is easy to scroll past in a terminal — this is
+  // where someone is when they can actually act on it.
+  const ages = new Map((data.key_ages || []).map((e) => [e.key, e]));
+  const limit = Number(data.key_age_limit || 0);
+  const overdue = (data.key_ages || []).filter((e) => e.stale);
+  if (overdue.length) {
+    envSec.append(el("div", { className: "ays-note", style: {
+      color: "#ffb454", border: "1px solid #ffb45455", borderRadius: "4px",
+      padding: "6px 8px", margin: "6px 0" },
+      textContent:
+        `${overdue.length} key(s) have been in place longer than ${limit} days. ` +
+        "An API key never expires by itself, so rotating on a clock is the only " +
+        "protection that does not depend on noticing a leak. Paste a new value " +
+        "below and the clock restarts on its own." }));
+  }
+
   const showToggle = el("input", { type: "checkbox" });
-  const toggleLabel = el("label", { className: "ays-toggle" }, [showToggle, el("span", { textContent: "Show secret values" })]);
+  const toggleLabel = el("label", { className: "ays-toggle" }, [showToggle, el("span", { textContent: "Show typed values" })]);
   showToggle.addEventListener("change", () => {
     for (const inp of secretEls) inp.type = showToggle.checked ? "text" : "password";
   });
@@ -462,7 +540,24 @@ async function openAgentYSettingsModal() {
     const inp = el("input", { className: "ays-input", type: secret ? "password" : "text", value: cur });
     if (secret) secretEls.push(inp);
     envInputs[key] = { input: inp, original: cur };
-    envSec.append(el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: key }), inp]));
+    const label = el("label", { className: "ays-label", textContent: key });
+    const age = ages.get(key);
+    if (age) {
+      const days = Math.floor(age.age_days);
+      // "at least" where the date was inferred from .env's mtime rather than
+      // watched: the true age can only be older, never younger, and claiming a
+      // precision we do not have is how a warning stops being believed.
+      const about = age.estimated ? "≥" : "";
+      label.append(el("span", {
+        textContent: `  ${about}${days}d`,
+        title: age.estimated
+          ? `First seen ${age.first_seen} — estimated from .env's timestamp, so the key may be older.`
+          : `First seen ${age.first_seen}.`,
+        style: { opacity: "0.6", fontSize: "11px",
+                 color: age.stale ? "#ffb454" : "inherit" },
+      }));
+    }
+    envSec.append(el("div", { className: "ays-row" }, [label, inp]));
   }
   // Add NEW .env keys (e.g. an MCP server's API key). The host appends them and
   // applies them to the live process, so a header-auth MCP server can reference
