@@ -46,7 +46,8 @@ const SECTIONS = [
   { title: "Models", open: true, inline: ["llm", "tiers"],
     objects: [["llm", "pipeline"]] },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
-  { title: "Canvas", keys: ["drop_outputs_into_canvas", "autoload_workflows_into_canvas",
+  { title: "Canvas", keys: ["drop_outputs_into_canvas", "place_text_nodes_on_canvas",
+                            "autoload_workflows_into_canvas",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
@@ -85,6 +86,14 @@ const KEY_NOTES = {
     + "instead of a filename in the chat. Off keeps your graph clean when you are "
     + "generating in bulk — the files are written exactly the same either way, "
     + "and the chat names each one with its full path.",
+  place_text_nodes_on_canvas:
+    "When a text hook is answered, put the answer on the canvas as an \"agentY "
+    + "text\" node you can read and wire. It is a visible copy and nothing more: "
+    + "the hook stays wired exactly as you drew it and the answer is injected "
+    + "into the graph at run time whether this is on or off, so a run behaves "
+    + "identically either way. Turn it off on a canvas with many text hooks, "
+    + "where a node per answer buries the chain that produced them — the answer "
+    + "is still in the chat.",
   autoload_workflows_into_canvas:
     "Open the workflow the agent actually ran on the canvas, every run, so you "
     + "can see what it built rather than take its word for it. Off by default "

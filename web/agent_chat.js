@@ -1851,8 +1851,10 @@ class AgentChat {
       case "canvas_patch":
         this.curAssistant = null;
         // Only the ops that actually put something on a graph say where it went;
-        // a review being released places nothing and must not claim otherwise.
-        if (ev.op !== "review_released") this._noteOffscreenDrop();
+        // a review being released places nothing and must not claim otherwise,
+        // and neither does a text answer whose node placement is switched off.
+        if (ev.op !== "review_released"
+            && !(ev.op === "place_text" && ev.place === false)) this._noteOffscreenDrop();
         if (ev.op === "place_text") this._placeCanvasText(ev);
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
@@ -2620,6 +2622,21 @@ class AgentChat {
   // the hook's own output went — so downstream nodes / the next hook stage
   // consume the string on a normal run. The hook node itself is left in place.
   _placeCanvasText(ev) {
+    // Switched off in settings (Canvas -> "Place text answers on the canvas").
+    // Only an explicit false counts: a host older than this setting sends no
+    // `place` field at all, and its behaviour was to place — testing the field
+    // for falsiness would have made every upgrade stop placing text nodes
+    // without saying so.
+    //
+    // Nothing is lost by not placing one. The answer is already in the chat, and
+    // the hook is wired and injected either way — but the injection is the part
+    // you cannot see, so that is the part worth a line.
+    if (ev.place === false) {
+      this._sys("📝 Wrote the answer into the graph — the hook stays wired and the "
+        + "value is injected at run time. No **agentY text** node was placed "
+        + "(_Canvas → place text nodes on canvas_ is off).");
+      return;
+    }
     const LG = window.LiteGraph;
     const graph = this._targetGraph();
     const text = String(ev.text || "");
