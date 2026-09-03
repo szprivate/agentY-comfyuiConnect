@@ -31,6 +31,19 @@ function comfyBase() {
 // reload doesn't re-dump the whole server-side ring buffer.
 const STATUS_SEQ_KEY = "agentY_status_seq";
 const NOTIFY_SEQ_KEY = "agentY_notify_seq";
+// How long a stream we own may deliver nothing before the panel stops taking it
+// as proof that a turn is still running.
+//
+// Not a timeout on the turn — turns legitimately take many minutes. The host
+// sends a keep-alive comment every 15s for the whole of one, however quiet, so
+// silence on this scale does not mean "still working": it means the stream
+// stopped being one. Six keep-alive periods, so a stalled tick or a throttled
+// background tab cannot trip it. Everything about the "orchestrator finished,
+// panel unresponsive" failure lives in the gap this closes — the turn ends, the
+// `done` does not arrive, and the reader parks forever on a connection that will
+// never deliver another byte or an EOF, so the `finally` that would have freed
+// the panel never runs.
+const STREAM_SILENCE_MS = 90000;
 // Breathing room between a node the agent drops on the canvas and its neighbours
 // — used both as the gap to the block it lands beside and as the margin that
 // counts as "already occupied" when looking for a free slot.
@@ -443,19 +456,35 @@ class AgentChat {
     if (this._heartbeatTimer) return;
     this._heartbeatTimer = setInterval(async () => {
       if (!this._hostUp) return;
-      // A stream we OWN is its own proof of life. An adopted run is not: nothing
-      // is listening for its end, and skipping the tick for it is what used to
-      // make that state permanent — the notify poll stops itself once nothing is
-      // pending, so the panel fell completely silent and sat on "a turn is still
-      // running here" until the host was restarted. Re-check those against the
-      // host instead; _syncRunState clears the state once the run is gone.
-      if (this.streaming && !this._adoptedRun) return;
+      // A stream we OWN is its own proof of life — but only while it is still
+      // delivering. An adopted run is never proof: nothing is listening for its
+      // end, and skipping the tick for it is what used to make that state
+      // permanent — the notify poll stops itself once nothing is pending, so the
+      // panel fell completely silent and sat on "a turn is still running here"
+      // until the host was restarted.
+      //
+      // The silence clause is the same argument applied to our own stream, and
+      // it is the general answer to a failure that has been fixed three times in
+      // three places: whatever loses the `done` — an event that cannot be
+      // encoded, a generator torn down, a connection that stalls without an EOF
+      // — the panel ends up parked on a reader that will never return, believing
+      // it is busy, refusing to send, with nothing running that could notice.
+      // Trusting the stream unconditionally is what made every one of those
+      // permanent. Now the trust expires, and _syncRunState asks the host.
+      if (this.streaming && !this._adoptedRun && !this._streamGoneQuiet()) return;
       if (await this._hostReachable()) {
         // Up — but is it the same process? A restart short enough to fall between
         // two ticks leaves us holding a stale command/model/thread list, so treat
         // a changed boot_id exactly like a reconnect.
         if (this._hostRestarted()) await this._afterConnect(false);
-        else if (this._adoptedRun) await this._syncRunState();
+        // …and for a pending question, for the same reason an adopted run is
+        // re-checked: nothing else is listening for the end of the turn that
+        // asked it, so if its "done" went missing this tick is the only thing
+        // that will ever notice the panel is answering nobody. And for a stream
+        // of our own that has gone quiet, which is the case above.
+        else if (this._adoptedRun || this.activeAsk || this._streamGoneQuiet()) {
+          await this._syncRunState();
+        }
         // A turn with no browser behind it (one asked for from Slack) cannot
         // capture the graph itself, so the host asks us to. This tick is the
         // only regular contact the panel has with it.
@@ -1902,6 +1931,18 @@ class AgentChat {
         this._consoleEl = null;
         this.streaming = false;
         this._adoptedRun = false;
+        // A question cannot outlive the turn that asked it. The host pops its
+        // reply registry in the same breath as this event, so from here on
+        // POST /agentY/reply for that id answers 404 — and send() routes every
+        // message to /agentY/reply for as long as activeAsk is set. Left
+        // standing, the panel echoed each new message into the log, dropped it,
+        // and never spoke again: "the CLI says the orchestrator finished and the
+        // panel is unresponsive", over a server-side trace that looks perfect
+        // because it is. Nothing recovered it, either — the button reads Send
+        // (not Stop) while an ask is pending, so _stop(), which does clear it,
+        // was unreachable, and _maybeDispatchQueued bails on activeAsk so the
+        // queue never drained. The question ends with its turn.
+        this.activeAsk = null;
         this._setBusy(false);
         if (rendering) {
           this._savePanel();  // persist the rendered panel so blocks survive reloads
@@ -1934,6 +1975,14 @@ class AgentChat {
     this._saveTimer = setTimeout(() => { this._saveTimer = null; this._savePanel(); }, 1500);
   }
 
+  // Has a stream we own delivered nothing for longer than the host's keep-alive
+  // cadence allows? See STREAM_SILENCE_MS. False whenever no stream of ours is
+  // running, so callers can ask without checking that first.
+  _streamGoneQuiet() {
+    if (!this.streaming || this._adoptedRun) return false;
+    return Date.now() - (this._lastStreamAt || 0) > STREAM_SILENCE_MS;
+  }
+
   // Ask the host which conversations have a turn in flight. Used when opening a
   // conversation (and on connect) so a panel that lost its stream — page reload,
   // or a turn left running in another conversation — can say so and offer Stop,
@@ -1946,6 +1995,47 @@ class AgentChat {
       if (!r.ok) return;                       // older host: leave state alone
       runs = (await r.json()).runs || [];
     } catch (_) { return; }
+    // A pending question the host has no run for is a dead end: every message
+    // typed from here would go to /agentY/reply, be refused, and never reach the
+    // agent. "done" clears it at the source; this is what notices when that
+    // event never arrives, and it is the only thing that can — nothing else runs
+    // while the panel sits idle believing it owes an answer.
+    if (this.activeAsk && !runs.some((x) => x.request_id === this.activeAsk)) {
+      this.activeAsk = null;
+      this._setBusy(this.streaming);
+    }
+    // Our own stream, silent past the keep-alive cadence, for a run the host no
+    // longer has: the turn is over and its `done` did not arrive. Handled here
+    // rather than left to the reader's `finally`, because the reader is exactly
+    // what is stuck — parked on a read that will never return a byte and never
+    // return EOF. Aborting it is what makes that `finally` run at all; without
+    // the abort the fetch stays open and the recovery would be undone the moment
+    // it finally resolved. Keyed on the request id, not the thread, so a turn
+    // left running in another conversation is untouched.
+    if (this._streamGoneQuiet() && this.curRequestId &&
+        !runs.some((x) => x.request_id === this.curRequestId)) {
+      const stranded = this.streamThreadId;
+      try { if (this.abortController) this.abortController.abort(); } catch (_) {}
+      this.abortController = null;
+      this.streaming = false;
+      this.streamThreadId = null;
+      this.activeAsk = null;
+      this._setBusy(false);
+      this._clearStatus();
+      // The answer itself is not lost — the host persisted it — so rebuild the
+      // conversation from the message log rather than leaving the half-written
+      // panel this stream stopped mid-way through. The notice goes on AFTER that
+      // rebuild, which replaces the log wholesale and would otherwise wipe it.
+      if (stranded && stranded === this.threadId) {
+        await this._forgetStalePanel(stranded);
+        await this._renderThread(stranded, true);
+      }
+      this._sys("_The turn finished, but its live connection went quiet — "
+        + "this conversation has been reloaded from the host. You can send again._");
+      this._loadThreads();
+      this._maybeDispatchQueued();
+      return;
+    }
     // An adopted run belongs to the conversation it was adopted for, which is not
     // necessarily the one on screen now — reconcile it against that one, so
     // switching conversations can't strand it as un-clearable.
@@ -2017,6 +2107,7 @@ class AgentChat {
     // be stopped. Only the stream still holding the token may clear it.
     const token = ++this._streamToken;
     this.streaming = true;
+    this._lastStreamAt = Date.now();   // see STREAM_SILENCE_MS
     this._adoptedRun = false;  // this one we own: the reader's EOF will end it
     this._stopping = false;
     this._thinkStep = null;
@@ -2040,6 +2131,9 @@ class AgentChat {
       let buf = "";
       while (true) {
         const { done, value } = await reader.read();
+        // Any byte at all, keep-alive comments included — this is a liveness
+        // clock, not an activity one.
+        this._lastStreamAt = Date.now();
         if (done) break;
         buf += dec.decode(value, { stream: true });
         let idx;
@@ -2189,14 +2283,28 @@ class AgentChat {
       this._userMsg(text || "(continue)");
       this.input.value = "";
       this._autosize();
+      // 404 means nobody is waiting on that id any more — the turn that asked has
+      // ended. The message must not evaporate here: this route is a side channel
+      // into a live turn, and with no turn behind it the text simply never
+      // reaches the agent, silently, and does so again for every message after.
+      // "done" now clears activeAsk so this should not arise; a `done` lost on
+      // the wire is exactly when it would, and exactly when swallowing the
+      // message is least affordable. So send it as an ordinary one instead.
+      let stale = false;
       try {
-        await fetch(backendBase() + "/agentY/reply", {
+        const r = await fetch(backendBase() + "/agentY/reply", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ request_id: rid, text }),
         });
+        stale = r.status === 404;
       } catch (e) { this._sys("❌ Reply failed: " + e); }
-      return;
+      if (!stale) return;
+      if (!text && !this.attachments.length) return;  // nothing to re-send
+      this._skipEcho = true;          // it is already in the log, one line up
+      this._dryRunOnce = dryRun;      // consumed at the top of this call; re-arm it
+      this.input.value = text;
+      return this.send();
     }
 
     // A turn is already running (and we're not answering an ask): queue this
