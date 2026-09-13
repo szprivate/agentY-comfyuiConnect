@@ -157,6 +157,29 @@ function mdToHtml(s) {
   return h;
 }
 
+// How long after a turn's `done` to read the canvas for its checkpoint: output
+// loader nodes are still being placed when the event lands.
+const CHECKPOINT_SETTLE_MS = 1500;
+
+// A cheap fingerprint of a serialised graph: FNV-1a over its JSON, plus the
+// length. `extra` is left out — it holds the viewport, which changes whenever
+// anyone pans. Only ever compared with another hash made here.
+function graphHash(graph) {
+  let s = "";
+  try {
+    const { extra, ...rest } = graph || {};
+    s = JSON.stringify(rest);
+  } catch (_) {
+    return "";
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16) + ":" + s.length;
+}
+
 const SLASH_FALLBACK = [
   { name: "/help", description: "Open the agentY usage guide in a new browser tab" },
   { name: "/restart", description: "Restart the agent pipeline" },
@@ -164,6 +187,7 @@ const SLASH_FALLBACK = [
   { name: "/unload", description: "Unload Ollama models from VRAM" },
   { name: "/clear_vram", description: "Clear ComfyUI GPU VRAM" },
   { name: "/images", description: "List images generated in this thread" },
+  { name: "/undo", description: "Undo the agent's last step in this conversation" },
   { name: "/qa", description: "Show / set / clear the QA briefing outputs are checked against" },
   { name: "/project_memory", description: "Inspect and forget what is remembered for THIS project" },
   { name: "/clearhistory", description: "Delete all conversation history" },
@@ -712,6 +736,11 @@ class AgentChat {
     const delBtn = el("button", { className: "ay-btn", title: "Delete this conversation" });
     setButtonIcon(delBtn, "deleteChat", "🗑");
     delBtn.addEventListener("click", () => this.deleteThread());
+    // Undo: takes the conversation — and the canvas, when it can tell that is
+    // safe — back to before the agent's last step.
+    this.undoBtn = el("button", { className: "ay-btn", title: "Undo the agent's last step" });
+    setButtonIcon(this.undoBtn, "undoStep", "↩");
+    this.undoBtn.addEventListener("click", () => this.undoLastStep());
     const usageBtn = el("button", { className: "ay-btn", title: "Token usage overview" });
     setButtonIcon(usageBtn, "tokenUsage", "📊");
     usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
@@ -722,7 +751,7 @@ class AgentChat {
     this.autographBtn = el("button", { className: "ay-btn", title: "Auto-graph workflows onto canvas" });
     setButtonIcon(this.autographBtn, "autograph", "🖼");
     this.autographBtn.addEventListener("click", () => this._toggleAutograph());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, usageBtn, this.autographBtn]));
+    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, this.undoBtn, usageBtn, this.autographBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
@@ -1029,6 +1058,12 @@ class AgentChat {
   _handleNotify(evt) {
     if (!evt || typeof evt.seq !== "number" || evt.seq <= this._lastNotifySeq) return;
     this._noteNotifySeq(evt.seq);
+    // An undo asked for from Slack: the host rewound the conversation, and the
+    // canvas half is this panel's to do.
+    if (evt.kind === "undo" && evt.undo) {
+      this._applyUndo(evt.undo);
+      return;
+    }
     try {
       if (evt.output && evt.output.path) {
         this.injectNode(evt.output);           // drop the finished asset onto the canvas
@@ -1159,6 +1194,41 @@ class AgentChat {
     this._queue.splice(i, 1);
     this._renderQueue();
     this._userMsg(item.text + (urgent ? "  \n_(sent mid-run — urgent)_" : "  \n_(sent mid-run)_"));
+  }
+
+  // Send a message into the RUNNING turn. Images go in as file paths: a message
+  // reaches the agent inside a tool result, which carries text, not pictures. If
+  // the turn ended in the meantime (409) or the host can't be reached, it goes out
+  // as the next message instead — which is what would have happened anyway.
+  async _sendIntoTurn(text, attachments, urgent = false) {
+    const paths = (attachments || []).map((a) => a && a.path).filter(Boolean);
+    const body = text + (paths.length
+      ? "\n\nAttached image(s):\n" + paths.map((p) => "- " + p).join("\n") : "");
+    this.input.value = "";
+    this._autosize();
+    this._hidePop();
+    this.attachments = [];
+    this._renderAttachments();
+    let res = null;
+    try {
+      res = await fetch(backendBase() + "/agentY/interject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: this.curRequestId, text: body, urgent: !!urgent }),
+      });
+    } catch (_) {
+      res = null;
+    }
+    if (res && res.ok) {
+      const notes = [];
+      if (paths.length) notes.push(`${paths.length} image(s) attached`);
+      notes.push(urgent ? "sent into the running turn — urgent" : "sent into the running turn");
+      this._userMsg(text + `  \n_(${notes.join(", ")})_`);
+      return;
+    }
+    this._queue.push({ text, attachments: attachments || [], echoed: false, dryRun: false });
+    this._renderQueue();
+    this._sys("_The turn had just finished — that message goes out next._");
   }
 
   // Dispatch the next queued message once the pipeline is free (called on `done`).
@@ -1800,7 +1870,8 @@ class AgentChat {
   // than in this panel — a generated node still belongs on the graph even if the
   // user has looked away. Everything else only paints the chat log, so it is
   // dropped while its conversation is off-screen.
-  static ALWAYS_HANDLE = ["thread", "request", "done", "output", "canvas_patch", "notify"];
+  static ALWAYS_HANDLE = ["thread", "request", "done", "output", "canvas_patch", "notify",
+    "checkpoint", "undo"];
 
   _onEvent(ev) {
     const rendering = this._isRendering();
@@ -1862,6 +1933,12 @@ class AgentChat {
         break;
       case "plan_step":
         break; // (kept lightweight)
+      case "checkpoint":
+        this._noteCheckpoint(ev);
+        break;
+      case "undo":
+        this._applyUndo(ev);
+        break;
       case "output":
         this.curAssistant = null;
         this.injectNode(ev);
@@ -1922,6 +1999,7 @@ class AgentChat {
       case "done":
         // Unpin: outside a turn, "the graph in front of you" is the right answer
         // again, and holding a reference to a closed workflow keeps it alive.
+        this._reportCheckpointCanvas();
         this._turnGraph = null;
         this._clearStatus();
         this.curStep = null;
@@ -2088,6 +2166,159 @@ class AgentChat {
   // log instead of a stale snapshot.
   // Returns the backend write so a caller that re-renders straight afterwards can
   // await it — otherwise the re-read races the clear and restores what it dropped.
+  // ── undo ─────────────────────────────────────────────────────────────────
+  // The canvas as undo compares it: serialised the way ComfyUI saves it, with
+  // the workflow it belongs to.
+  _graphSnapshot() {
+    try {
+      if (!app.graph || typeof app.graph.serialize !== "function") return null;
+      const graph = app.graph.serialize();
+      let workflow = "";
+      try {
+        const active = (openWorkflows() || []).find((w) => w.active);
+        workflow = active ? String(active.path || active.name || "") : "";
+      } catch (_) {}
+      return { graph, hash: graphHash(graph), workflow };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // The host wrote this turn's checkpoint. Mark the message that started the
+  // turn, so an undo can take the log back to exactly there — not to "the last
+  // user message", which by then may be the /undo itself, or a message queued
+  // behind this one.
+  _noteCheckpoint(ev) {
+    const tid = ev.thread_id || this.streamThreadId || this.threadId;
+    this._pendingCheckpoint = { id: ev.id, threadId: tid };
+    if (this._adoptedRun || tid !== this.threadId || !this._isRendering()) return;
+    const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
+    const want = flat(ev.text).slice(0, 30);
+    const users = Array.from(this.logEl.querySelectorAll(".ay-msg.ay-user"))
+      .filter((u) => !u.dataset.checkpoint);
+    let target = null;
+    for (let i = users.length - 1; i >= 0 && !target; i--) {
+      if (want && flat(users[i].textContent).startsWith(want)) target = users[i];
+    }
+    if (!target && users.length) target = users[users.length - 1];
+    if (target) target.dataset.checkpoint = String(ev.id);
+  }
+
+  // At the end of the turn, tell the host what the canvas looks like now. Undo
+  // restores the old graph automatically only while the canvas still matches
+  // this — so an edit made after the turn is never silently thrown away.
+  _reportCheckpointCanvas() {
+    const cp = this._pendingCheckpoint;
+    this._pendingCheckpoint = null;
+    if (!cp || !cp.threadId || cp.id == null) return;
+    setTimeout(() => {
+      const snap = this._graphSnapshot();
+      if (!snap) return;
+      fetch(backendBase() + "/agentY/threads/" + cp.threadId + "/checkpoint_canvas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkpoint_id: cp.id, canvas_after_hash: snap.hash }),
+      }).catch(() => {});
+    }, CHECKPOINT_SETTLE_MS);
+  }
+
+  async undoLastStep() {
+    if (!this.threadId) return;
+    if (this.streaming) {
+      this._sys("⏳ The agent is still working — stop it or let it finish, then undo.");
+      return;
+    }
+    if (this.undoBtn) this.undoBtn.disabled = true;
+    try {
+      const r = await fetch(backendBase() + "/agentY/threads/" + this.threadId + "/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const data = await r.json();
+      for (const ev of data.events || []) this._onEvent(ev);
+    } catch (e) {
+      this._sys("❌ Undo failed: " + e);
+    } finally {
+      if (this.undoBtn) this.undoBtn.disabled = false;
+    }
+  }
+
+  async _applyUndo(ev) {
+    const tid = ev.thread_id || this.threadId;
+    if (tid === this.threadId && this._isRendering()) {
+      const mark = ev.checkpoint_id != null
+        ? this.logEl.querySelector(`[data-checkpoint="${ev.checkpoint_id}"]`) : null;
+      this.curAssistant = null;
+      this.curStep = null;
+      this._thinkStep = null;
+      this._toolBlocks = {};
+      this._consoleEl = null;
+      if (mark) {
+        while (mark.nextSibling) mark.nextSibling.remove();
+        mark.remove();
+      } else {
+        // Rendered before this existed, or from the transcript: rebuild from what
+        // the host now holds, which no longer includes the step.
+        await this._renderThread(tid, true);
+      }
+      if (ev.message) this._sys(ev.message);
+      this._savePanel();
+    } else {
+      this.domCache.delete(tid);
+    }
+    await this._undoCanvas(ev);
+    this._loadThreads();
+  }
+
+  async _undoCanvas(ev) {
+    const graph = ev.canvas_graph;
+    if (!graph || !Array.isArray(graph.nodes)) return;
+    const before = ev.canvas_before_hash || "";
+    const after = ev.canvas_after_hash || "";
+    if (before && after && before === after) return;  // that step never touched it
+    const now = this._graphSnapshot();
+    if (!now) return;
+    if (before && now.hash === before) return;        // already as it was
+    const sameTab = !ev.canvas_workflow || !now.workflow || ev.canvas_workflow === now.workflow;
+    if (sameTab && after && now.hash === after) {
+      if (await this._loadUndoGraph(graph)) this._sys("🧩 Canvas put back to how it was before that step.");
+      return;
+    }
+    const why = !sameTab
+      ? `that step ran in **${ev.canvas_workflow}**, which is not the workflow open now`
+      : after ? "it has been edited since that step"
+        : "there is no record of how that step left it, so an edit made since can't be ruled out";
+    const btn = el("button", { className: "ay-btn", textContent: "Restore canvas anyway" });
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      if (await this._loadUndoGraph(graph)) btn.textContent = "Canvas restored";
+      else btn.disabled = false;
+    });
+    this.logEl.append(el("div", { className: "ay-msg ay-system ay-transient" }, [
+      el("span", { innerHTML: mdToHtml(`🧩 Canvas left as it is — ${why}. `) }), btn,
+    ]));
+    this._scroll(true);
+  }
+
+  // Put a graph back into the OPEN workflow, the way ComfyUI's own Ctrl+Z does:
+  // passing the active workflow keeps it in its tab (a name, or nothing, opens a
+  // new temporary tab in current frontends), and clean/restore_view off keeps
+  // outputs and the view where they are.
+  async _loadUndoGraph(graph) {
+    let workflow = null;
+    try { workflow = (app.workflowManager && app.workflowManager.activeWorkflow) || null; } catch (_) {}
+    try {
+      await app.loadGraphData(graph, false, false, workflow,
+        { showMissingNodesDialog: false, showMissingModelsDialog: false });
+      return true;
+    } catch (err) {
+      console.error("[agentY] undo: loadGraphData failed:", err);
+      this._sys("❌ Could not restore the canvas: " + err);
+      return false;
+    }
+  }
+
   _forgetStalePanel(threadId) {
     if (!threadId) return Promise.resolve();
     this.domCache.delete(threadId);
@@ -2116,6 +2347,18 @@ class AgentChat {
     // The conversation this stream belongs to. On the very first turn the id is
     // assigned by the server and arrives in the "thread" event.
     this.streamThreadId = body.thread_id || this.threadId || null;
+    // The canvas as it stands before this turn, kept by the host with the turn's
+    // checkpoint so an undo can put it back. Not for a slash command: none of
+    // them change anything on the canvas that would need restoring.
+    if (body && body.canvas_graph === undefined
+        && !String(body.message || "").trim().startsWith("/")) {
+      const snap = this._graphSnapshot();
+      if (snap) {
+        body.canvas_graph = snap.graph;
+        body.canvas_hash = snap.hash;
+        body.canvas_workflow = snap.workflow;
+      }
+    }
     this.abortController = new AbortController();
     this._setBusy(true);
     try {
@@ -2229,6 +2472,9 @@ class AgentChat {
     // a /help or an ask-reply must not leave it armed for something unrelated.
     const dryRun = !!this._dryRunOnce;
     this._dryRunOnce = false;
+    // One-shot, like dryRun: Ctrl/⌘+Enter during a turn sends this urgently.
+    const urgent = !!this._urgentOnce;
+    this._urgentOnce = false;
 
     // First send is a user gesture — a good moment to ask (once) for browser-
     // notification permission so background auto-drops (e.g. Magnific finishing
@@ -2307,10 +2553,17 @@ class AgentChat {
       return this.send();
     }
 
-    // A turn is already running (and we're not answering an ask): queue this
-    // message instead of dropping it — it auto-sends when the turn finishes.
+    // A turn is already running (and we're not answering an ask): hand the message
+    // to it NOW. The agent reads it at its next step — or is woken for it while
+    // ComfyUI renders. Slash commands and dry runs are not things to say to a
+    // running turn; those, and a message the turn can no longer take, queue.
     if (this.streaming) {
-      if (text || this.attachments.length) this._queueMessage(text, { dryRun });
+      if (!text && !this.attachments.length) return;
+      if (dryRun || text.startsWith("/") || !this.curRequestId) {
+        this._queueMessage(text, { dryRun });
+        return;
+      }
+      await this._sendIntoTurn(text, this.attachments.slice(), urgent);
       return;
     }
     const imgs = this.attachments.map((a) => a.path);
@@ -3225,7 +3478,13 @@ class AgentChat {
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); this._pickCmd(this._filtered[this._popSel]); return; }
       if (e.key === "Escape") { this._hidePop(); return; }
     }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.send(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // Ctrl/⌘+Enter during a turn: urgent — the agent drops the step it was about
+      // to take and reads this first.
+      if ((e.ctrlKey || e.metaKey) && this.streaming) this._urgentOnce = true;
+      this.send();
+    }
   }
 }
 
