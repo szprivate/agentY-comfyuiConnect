@@ -209,7 +209,7 @@ async function openTokenUsageModal() {
     if (sel !== "__all__") rows = rows.filter((r) => r.model === sel);
 
     // sum the visible rows for the headline tiles
-    const t = { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, calls: 0 };
+    const t = { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, calls: 0, tokens: 0 };
     for (const r of rows) for (const k of Object.keys(t)) t[k] += r[k] || 0;
 
     tiles.innerHTML = "";
@@ -223,7 +223,7 @@ async function openTokenUsageModal() {
       tile("cache", "Cache read (hits)", el("div", { className: "v", textContent: compact(t.cache_read), title: full(t.cache_read) + " tokens" }), `${compact(t.cache_write)} written`),
       tile("cache", "Cache hit rate", el("div", { className: "v", textContent: pct(rate) }), "of input from cache"),
       tile("", "Est. cost", el("div", { className: "v", textContent: money(t.cost) }), t.cost === 0 ? "model unpriced" : "USD"),
-      tile("", "Calls", el("div", { className: "v", textContent: full(t.calls) }), `${compact(t.input + t.output + t.cache_read + t.cache_write)} tokens total`),
+      tile("", "Calls", el("div", { className: "v", textContent: full(t.calls) }), `${compact(t.tokens || (t.input + t.output))} tokens total`),
     );
 
     // per-model table
