@@ -183,6 +183,30 @@ function injectStyles() {
   .ays-note{font-size:11.5px;color:#9aa0aa;margin:2px 0 10px;}
   .ays-msg{font-size:12px;margin-right:auto;align-self:center;}
   .ays-toggle{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#9aa0aa;margin-bottom:8px;cursor:pointer;}
+  .ays-card [hidden]{display:none !important;}
+  .ays-err{color:#e5736f;}
+  .ays-btn.ays-sm{padding:5px 10px;font-size:12px;}
+  .ays-btn.ays-x{padding:5px 9px;color:#9aa0aa;}
+  .ays-btn.ays-x:hover{color:#e5736f;border-color:#e5736f;}
+  /* Model pricing: model | input | output | remove. */
+  .ays-ptable{display:flex;flex-direction:column;gap:6px;margin:6px 0 10px;}
+  .ays-prow{display:grid;grid-template-columns:minmax(0,1fr) 110px 110px 34px;gap:8px;align-items:center;}
+  .ays-phead{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#9aa0aa;}
+  .ays-prow input[type=number]::placeholder{color:#5d6470;}
+  /* MCP servers: one card per server, details folded until Edit. */
+  .ays-mcplist{display:flex;flex-direction:column;gap:8px;margin:6px 0 10px;}
+  .ays-mcp{background:#161a20;border:1px solid #2c313b;border-left:4px solid #6f97ff;border-radius:9px;overflow:hidden;}
+  .ays-mcphead{display:flex;align-items:center;gap:8px;padding:7px 10px;flex-wrap:wrap;}
+  .ays-mcpname{font-family:ui-monospace,monospace;font-size:12.5px;font-weight:600;}
+  input.ays-input.ays-mcpname{flex:0 0 150px;}
+  .ays-mcpsum{color:#9aa0aa;font-size:11.5px;}
+  .ays-chip{margin-left:auto;background:#262b34;border-radius:999px;padding:1px 9px;font-size:11px;color:#c3c8d0;}
+  .ays-mcpbody{padding:6px 12px 10px;border-top:1px solid #2c313b;}
+  .ays-code{width:100%;min-height:90px;font-family:ui-monospace,monospace;white-space:pre;box-sizing:border-box;}
+  .ays-adv{margin:6px 0;}
+  .ays-adv>summary{cursor:pointer;font-size:11.5px;color:#9aa0aa;margin-bottom:4px;}
+  .ays-mcpadd{background:#161a20;border:1px dashed #3a4150;border-radius:9px;padding:10px 12px;margin:8px 0;}
+  .ays-input.ays-missing{border-color:#e5c07b;}
   `;
   document.head.append(el("style", { id: "agentY-settings-styles", textContent: css }));
 }
@@ -226,6 +250,8 @@ const GROUP_LABELS = {
   anthropic: "Anthropic",
   dashscope: "DashScope (Qwen)",
   llm: "Memory writer",   // memory.llm — the only `llm` still shown as a group
+  pricing: "Model pricing",
+  mcp: "MCP servers",
 };
 
 // Which sections are advanced now lives on the section itself (see SECTIONS),
@@ -243,6 +269,13 @@ let TIER_LABELS = {};
 // is generated from the settings file, so there is nowhere else to say what a
 // section is FOR — the TOML comments never reach the browser.
 const GROUP_NOTES = {
+  pricing: "What each model costs, in USD per million tokens, so Token usage matches "
+    + "your bill. Pick the model from the list your providers report; a blank price "
+    + "uses the built-in one shown greyed out. Saved to config/pricing.json.",
+  mcp: "External MCP servers whose tools the orchestrator can call. Add one by "
+    + "pasting its address, its start command or its JSON config; Test connects once "
+    + "and lists the tools. Keys go to .env, never into config/mcp.json. Servers load "
+    + "into the orchestrator on the next agent start.",
   qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
     + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
@@ -480,6 +513,467 @@ function collectSettings(refs) {
   return out;
 }
 
+// ── model pricing card ──────────────────────────────────────────────────────
+// A table instead of a JSON box: model (from the providers' own model lists),
+// input and output price per million tokens, add and remove. Saved as
+// config/pricing.json in its existing shape; the "_comment" and "provider_defaults"
+// it already has are carried over untouched.
+const bareModelId = (spec) => String(spec || "").split(",").pop().trim();
+
+function buildPricingCard(data) {
+  const current = data.pricing && typeof data.pricing === "object" && !Array.isArray(data.pricing)
+    ? data.pricing : {};
+  const saved = current.models && typeof current.models === "object" ? current.models : {};
+  const builtin = data.pricing_builtin || {};
+  // The LLMs the agent runs on, as each cloud provider lists them. Ollama is left
+  // out: a local model costs nothing per token.
+  const groups = Object.fromEntries(Object.entries(data.model_groups || {})
+    .filter(([vendor]) => !/ollama/i.test(vendor)));
+  const { group, body } = makeCollapsibleGroup("pricing", "", false);
+  const listed = new Set();
+  for (const models of Object.values(groups)) {
+    for (const item of Array.isArray(models) ? models : []) listed.add(bareModelId(item[0]));
+  }
+
+  const table = el("div", { className: "ays-ptable" }, [
+    el("div", { className: "ays-prow ays-phead" }, [
+      el("span", { textContent: "Model" }), el("span", { textContent: "Input $ / 1M" }),
+      el("span", { textContent: "Output $ / 1M" }), el("span")]),
+  ]);
+  const rows = [];
+  const addRow = (id, prices) => {
+    const sel = el("select", { className: "ays-input" });
+    sel.append(el("option", { value: "", textContent: "— choose a model —" }));
+    for (const [vendor, models] of Object.entries(groups)) {
+      if (!Array.isArray(models) || !models.length) continue;
+      const og = el("optgroup", { label: vendor });
+      for (const [spec, label] of models) {
+        const mid = bareModelId(spec);
+        og.append(el("option", { value: mid, textContent: label && label !== mid ? `${label} · ${mid}` : mid }));
+      }
+      sel.append(og);
+    }
+    // A price for a model no provider lists right now (an old snapshot, a key that
+    // is not set here) stays in the table rather than silently disappearing.
+    if (id && !listed.has(id)) {
+      sel.append(el("optgroup", { label: "Not listed by a provider right now" },
+        [el("option", { value: id, textContent: id })]));
+    }
+    sel.value = id || "";
+    const num = (v) => el("input", { className: "ays-input", type: "number", min: "0", step: "any",
+                                     value: v == null ? "" : String(v) });
+    const inp = num(prices && prices.in);
+    const outp = num(prices && prices.out);
+    const hint = () => {
+      const b = builtin[sel.value];
+      inp.placeholder = b ? String(b.in) : "";
+      outp.placeholder = b ? String(b.out) : "";
+      inp.title = outp.title = b ? "Blank uses the built-in price shown" : "";
+    };
+    sel.addEventListener("change", hint);
+    hint();
+    const del = el("button", { className: "ays-btn ays-x", textContent: "✕", title: "Remove this price" });
+    const row = el("div", { className: "ays-prow" }, [sel, inp, outp, del]);
+    const entry = { sel, inp, outp };
+    del.addEventListener("click", (e) => { e.preventDefault(); row.remove(); rows.splice(rows.indexOf(entry), 1); });
+    rows.push(entry);
+    table.append(row);
+  };
+  for (const [id, prices] of Object.entries(saved)) addRow(id, prices || {});
+  const addBtn = el("button", { className: "ays-btn", textContent: "+ Add model price" });
+  addBtn.addEventListener("click", (e) => { e.preventDefault(); addRow("", {}); });
+  const err = el("div", { className: "ays-note ays-err" });
+  body.append(table, addBtn, err);
+
+  let baseline = JSON.stringify(saved);
+  const collect = () => {
+    const models = {};
+    const seen = new Set();
+    for (const { sel, inp, outp } of rows) {
+      const id = sel.value.trim();
+      if (!id) continue;
+      if (seen.has(id.toLowerCase())) return { error: `${id} is in the table twice. Keep one row per model.` };
+      seen.add(id.toLowerCase());
+      const read = (input) => (input.value.trim() === "" ? null : Number(input.value));
+      let pin = read(inp);
+      let pout = read(outp);
+      if (pin === null && pout === null) continue;   // nothing set: the built-in price applies
+      const b = builtin[id] || {};
+      if (pin === null) pin = b.in ?? null;
+      if (pout === null) pout = b.out ?? null;
+      if (pin === null || pout === null) {
+        return { error: `Set both prices for ${id}; there is no built-in price to fall back on.` };
+      }
+      if (!Number.isFinite(pin) || !Number.isFinite(pout) || pin < 0 || pout < 0) {
+        return { error: `Prices for ${id} must be numbers of 0 or more.` };
+      }
+      models[id] = { in: pin, out: pout };
+    }
+    return {
+      payload: { ...current, models, provider_defaults: current.provider_defaults || {} },
+      changed: JSON.stringify(models) !== baseline,
+    };
+  };
+  const markSaved = () => {
+    const c = collect();
+    if (c.payload) baseline = JSON.stringify(c.payload.models);
+  };
+  return { group, err, collect, markSaved };
+}
+
+// ── MCP servers card ────────────────────────────────────────────────────────
+// Adding a server means pasting what its page says (address, start command or
+// JSON block); the host turns that into an entry and splits any key out for .env
+// (POST /agentY/mcp/parse). Each server is then a small form: address or command,
+// connection type, sign-in, and a password field for every ${VAR} it references.
+// Test connects once from the form as it stands (POST /agentY/mcp/test).
+const MCP_AUTH_LABELS = { none: "No sign-in", apikey: "API key", oauth: "Browser sign-in (OAuth)" };
+
+function splitCommand(text) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(String(text || "")))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+function joinCommand(command, args) {
+  return [command, ...(args || [])].filter((a) => a != null && a !== "")
+    .map((a) => (/\s/.test(String(a)) ? `"${a}"` : String(a))).join(" ");
+}
+
+function envRefs(obj) {
+  const refs = [];
+  for (const value of Object.values(obj || {})) {
+    for (const m of String(value).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+      if (!refs.includes(m[1])) refs.push(m[1]);
+    }
+  }
+  return refs;
+}
+
+const mcpKeyVar = (name) => `MCP_${String(name || "SERVER").toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+
+async function postJson(path, payload) {
+  const r = await fetch(backendBase() + path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  try {
+    return await r.json();
+  } catch (_) {
+    return { ok: false, error: `the agentY host answered ${r.status}; restart it to load this version` };
+  }
+}
+
+function buildMcpCard(mcpData, envSet) {
+  const servers = (mcpData.config && mcpData.config.servers) || {};
+  const status = mcpData.status || {};
+  const { group, body } = makeCollapsibleGroup("mcp", "", false);
+  const list = el("div", { className: "ays-mcplist" });
+  const err = el("div", { className: "ays-note ays-err" });
+  const rows = [];
+
+  const addRow = (name, sc, opts = {}) => {
+    const original = { ...(sc || {}) };
+    let isNew = !!opts.isNew;
+    const pasted = opts.secrets || {};
+    const headers = { ...(original.headers || {}) };
+    const fixedKeyVar = envRefs(headers)[0] || "";
+    let mode = String(original.auth || "none").toLowerCase() === "oauth" ? "oauth"
+      : (fixedKeyVar ? "apikey" : "none");
+    // The header the API-key choice writes is shown as that choice, not as JSON.
+    if (fixedKeyVar && headers.Authorization === `Bearer \${${fixedKeyVar}}`) delete headers.Authorization;
+    const extra = {};
+    if (Object.keys(headers).length) extra.headers = headers;
+    if (original.env && Object.keys(original.env).length) extra.env = original.env;
+
+    const enabled = el("input", { type: "checkbox", checked: original.enabled !== false,
+                                  title: "Load this server's tools" });
+    const nameEl = isNew
+      ? el("input", { className: "ays-input ays-mcpname", value: name, title: "Its tools appear as <name>_<tool>" })
+      : el("span", { className: "ays-mcpname", textContent: name });
+    const summary = el("span", { className: "ays-mcpsum" });
+    const state = el("span", { className: "ays-chip" });
+    const testBtn = el("button", { className: "ays-btn ays-sm", textContent: "Test" });
+    const authBtn = el("button", { className: "ays-btn ays-sm", textContent: "Authorize…" });
+    const editBtn = el("button", { className: "ays-btn ays-sm", textContent: isNew ? "Hide" : "Edit" });
+    const delBtn = el("button", { className: "ays-btn ays-sm ays-x", textContent: "✕", title: "Remove this server" });
+    const head = el("div", { className: "ays-mcphead" },
+      [enabled, nameEl, summary, state, testBtn, authBtn, editBtn, delBtn]);
+
+    const typeSel = el("select", { className: "ays-input" }, [
+      el("option", { value: "http", textContent: "HTTP (streamable)" }),
+      el("option", { value: "sse", textContent: "SSE" }),
+      el("option", { value: "stdio", textContent: "Local command (stdio)" }),
+    ]);
+    const transport = String(original.transport || (original.command ? "stdio" : "http")).toLowerCase();
+    typeSel.value = transport === "sse" || transport === "stdio" ? transport : "http";
+    const addr = el("input", { className: "ays-input",
+      value: typeSel.value === "stdio" ? joinCommand(original.command, original.args) : (original.url || "") });
+    const addrLabel = el("label", { className: "ays-label" });
+    const authSel = el("select", { className: "ays-input" });
+    const adv = el("textarea", { className: "ays-input ays-code", spellcheck: false,
+      value: Object.keys(extra).length ? JSON.stringify(extra, null, 2) : "",
+      placeholder: '{"headers": {"X-Api-Key": "${MY_KEY}"}, "env": {"TOKEN": "${MY_TOKEN}"}}' });
+    const secretWrap = el("div", {});
+    const secretInputs = {};
+    const result = el("div", { className: "ays-note", textContent: (opts.notes || []).join(" ") });
+    const details = el("div", { className: "ays-mcpbody" }, [
+      el("div", { className: "ays-row" }, [addrLabel, addr]),
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Connection" }), typeSel]),
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Sign-in" }), authSel]),
+      secretWrap,
+      el("details", { className: "ays-adv" }, [el("summary", { textContent: "Headers & environment (JSON, advanced)" }), adv]),
+      result,
+    ]);
+    details.hidden = !isNew;
+    const card = el("div", { className: "ays-mcp" }, [head, details]);
+
+    const currentName = () => (isNew ? nameEl.value.trim() : name);
+    const readExtra = () => { const t = adv.value.trim(); return t ? JSON.parse(t) : {}; };
+    const safeExtra = () => { try { return readExtra(); } catch (_) { return {}; } };
+    const apiVar = () => envRefs(safeExtra().headers)[0] || fixedKeyVar || mcpKeyVar(currentName());
+
+    const renderAuthChoices = () => {
+      const keep = authSel.value || mode;
+      authSel.textContent = "";
+      const choices = typeSel.value === "stdio" ? ["none"] : ["none", "apikey", "oauth"];
+      for (const c of choices) authSel.append(el("option", { value: c, textContent: MCP_AUTH_LABELS[c] }));
+      authSel.value = choices.includes(keep) ? keep : "none";
+    };
+    // One password field per variable the server needs: the API key, and every
+    // ${VAR} in its headers or environment.
+    const renderSecrets = () => {
+      const ex = safeExtra();
+      const vars = [];
+      const push = (v) => { if (v && !vars.includes(v)) vars.push(v); };
+      if (typeSel.value !== "stdio" && authSel.value === "apikey") push(apiVar());
+      if (typeSel.value !== "stdio") envRefs(ex.headers).forEach(push);
+      if (typeSel.value === "stdio") envRefs(ex.env).forEach(push);
+      secretWrap.textContent = "";
+      for (const v of vars) {
+        if (!secretInputs[v]) {
+          secretInputs[v] = el("input", { className: "ays-input", type: "password", value: pasted[v] || "" });
+          secretInputs[v].addEventListener("input", () => { paintSecret(v); paintHead(); });
+        }
+        paintSecret(v);
+        secretWrap.append(el("div", { className: "ays-row" }, [
+          el("label", { className: "ays-label", textContent: v === apiVar() && authSel.value === "apikey" ? `API key (${v})` : v }),
+          secretInputs[v]]));
+      }
+    };
+    const paintSecret = (v) => {
+      const input = secretInputs[v];
+      const stored = envSet.has(v);
+      input.placeholder = stored ? "saved in .env — type to replace" : "needs a value";
+      input.classList.toggle("ays-missing", !stored && !input.value);
+    };
+
+    const build = () => {
+      const nm = currentName();
+      if (!/^[a-z0-9_]+$/.test(nm)) return { error: "the name may use lowercase letters, digits and _" };
+      let ex;
+      try { ex = readExtra(); } catch (_) { return { error: "Headers & environment is not valid JSON" }; }
+      const sc = { enabled: enabled.checked, transport: typeSel.value };
+      if (typeSel.value === "stdio") {
+        const parts = splitCommand(addr.value);
+        if (!parts.length) return { error: "needs the command that starts it" };
+        sc.command = parts[0];
+        sc.args = parts.slice(1);
+      } else {
+        const url = addr.value.trim();
+        if (!/^https?:\/\/\S+$/i.test(url)) return { error: "needs an http(s) address" };
+        sc.url = url;
+      }
+      const hdrs = { ...((ex && ex.headers) || {}) };
+      if (typeSel.value !== "stdio" && authSel.value === "apikey" && !envRefs(hdrs).length) {
+        hdrs.Authorization = `Bearer \${${apiVar()}}`;
+      }
+      sc.auth = authSel.value === "oauth" ? "oauth" : (Object.keys(hdrs).length && typeSel.value !== "stdio" ? "header" : "none");
+      if (typeSel.value !== "stdio" && Object.keys(hdrs).length) sc.headers = hdrs;
+      if (typeSel.value === "stdio" && ex && ex.env && Object.keys(ex.env).length) sc.env = ex.env;
+      // Keys the form does not show (redirect_port, …) stay as they were.
+      for (const [k, v] of Object.entries(original)) {
+        if (!["enabled", "transport", "url", "command", "args", "auth", "headers", "env"].includes(k)) sc[k] = v;
+      }
+      const secrets = {};
+      for (const [v, input] of Object.entries(secretInputs)) {
+        if (input.isConnected && input.value) secrets[v] = input.value;
+      }
+      return { name: nm, sc, secrets };
+    };
+    let savedJson = null;
+    const paintHead = () => {
+      const kind = typeSel.value === "stdio" ? "local command" : typeSel.value.toUpperCase();
+      summary.textContent = `${kind} · ${MCP_AUTH_LABELS[authSel.value] || authSel.value}`;
+      const b = build();
+      const dirty = b.error || savedJson !== JSON.stringify(b.sc) || Object.keys(b.secrets).length > 0;
+      const s = status[name];
+      state.textContent = isNew ? "not saved" : dirty ? "changed · not saved" : (s ? s.state : "saved");
+      authBtn.hidden = authSel.value !== "oauth";
+    };
+    const refresh = () => {
+      addrLabel.textContent = typeSel.value === "stdio" ? "Command" : "Address";
+      addr.placeholder = typeSel.value === "stdio" ? "npx -y @scope/server-name" : "https://example.com/mcp";
+      renderAuthChoices();
+      renderSecrets();
+      paintHead();
+    };
+
+    typeSel.addEventListener("change", refresh);
+    authSel.addEventListener("change", () => { mode = authSel.value; renderSecrets(); paintHead(); });
+    adv.addEventListener("input", () => { renderSecrets(); paintHead(); });
+    for (const input of [addr, enabled]) input.addEventListener("input", paintHead);
+    enabled.addEventListener("change", paintHead);
+    if (isNew) nameEl.addEventListener("input", () => { renderSecrets(); paintHead(); });
+    editBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      details.hidden = !details.hidden;
+      editBtn.textContent = details.hidden ? "Edit" : "Hide";
+    });
+    delBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      card.remove();
+      rows.splice(rows.indexOf(row), 1);
+    });
+    testBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      details.hidden = false;
+      editBtn.textContent = "Hide";
+      const b = build();
+      if (b.error) { result.textContent = "❌ " + b.error; return; }
+      testBtn.disabled = true;
+      result.textContent = "Connecting…";
+      try {
+        const j = await postJson("/agentY/mcp/test", { name: b.name, server: b.sc, secrets: b.secrets });
+        if (j.ok) {
+          const names = (j.names || []).slice(0, 8).join(", ");
+          const more = (j.names || []).length > 8 ? ", …" : "";
+          result.textContent = `✅ Connected · ${j.tools} tool${j.tools === 1 ? "" : "s"}${names ? `: ${names}${more}` : ""}`;
+        } else {
+          let hint = "";
+          if (j.needs_auth && authSel.value === "oauth") hint = " Save, then click Authorize… to sign in.";
+          else if (j.needs_auth) hint = " The server wants credentials: choose Sign-in ▸ API key or Browser sign-in.";
+          result.textContent = "❌ " + (j.error || "could not connect") + hint;
+        }
+      } catch (err2) {
+        result.textContent = "❌ " + err2;
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+    authBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      if (isNew || state.textContent.startsWith("changed")) {
+        details.hidden = false;
+        result.textContent = "Save first, then Authorize: sign-in uses the saved settings.";
+        return;
+      }
+      authBtn.disabled = true;
+      authBtn.textContent = "Opening browser…";
+      try {
+        const j = await postJson("/agentY/mcp/authorize", { name });
+        state.textContent = j.ok ? "authorized" : "needs_auth";
+        result.textContent = j.ok ? "✅ " + (j.message || "authorized") : "❌ " + (j.error || "failed");
+        details.hidden = false;
+      } catch (err2) {
+        result.textContent = "❌ " + err2;
+      } finally {
+        authBtn.disabled = false;
+        authBtn.textContent = "Authorize…";
+      }
+    });
+
+    const row = {
+      currentName, build,
+      markSaved: () => {
+        const b = build();
+        if (b.error) return;
+        if (isNew) { isNew = false; nameEl.disabled = true; name = b.name; }
+        for (const [v, input] of Object.entries(secretInputs)) {
+          if (input.value) { envSet.add(v); input.value = ""; }
+        }
+        savedJson = JSON.stringify(build().sc);
+        renderSecrets();
+        paintHead();
+        if (!status[name]) state.textContent = "saved · loads on next agent start";
+      },
+    };
+    refresh();
+    if (!isNew) savedJson = JSON.stringify(build().sc);
+    paintHead();
+    rows.push(row);
+    list.append(card);
+    return row;
+  };
+
+  for (const [name, sc] of Object.entries(servers)) addRow(name, sc);
+
+  const pasteTa = el("textarea", { className: "ays-input ays-code", spellcheck: false,
+    placeholder: "https://mcp.example.com/mcp\n\nnpx -y @modelcontextprotocol/server-filesystem C:/Users/me/Documents\n\n"
+      + '{ "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],\n'
+      + '  "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "…" } } } }' });
+  const addGo = el("button", { className: "ays-btn primary ays-sm", textContent: "Add" });
+  const addCancel = el("button", { className: "ays-btn ays-sm", textContent: "Cancel" });
+  const addMsg = el("div", { className: "ays-note" });
+  const addBox = el("div", { className: "ays-mcpadd" }, [
+    el("div", { className: "ays-note", textContent: "Paste what the server's page tells you to use: its address, "
+      + "the command that starts it, or its JSON config. agentY fills in the rest, and any key or token "
+      + "in it is moved to .env." }),
+    pasteTa,
+    el("div", { className: "ays-row" }, [addGo, addCancel]),
+    addMsg,
+  ]);
+  addBox.hidden = true;
+  const addBtn = el("button", { className: "ays-btn", textContent: "+ Add MCP server" });
+  const closeAdd = () => { addBox.hidden = true; addBtn.hidden = false; addMsg.textContent = ""; };
+  addBtn.addEventListener("click", (e) => { e.preventDefault(); addBox.hidden = false; addBtn.hidden = true; pasteTa.focus(); });
+  addCancel.addEventListener("click", (e) => { e.preventDefault(); closeAdd(); });
+  addGo.addEventListener("click", async (e) => {
+    e.preventDefault();
+    addGo.disabled = true;
+    addMsg.textContent = "Reading…";
+    try {
+      const j = await postJson("/agentY/mcp/parse", { text: pasteTa.value, existing: rows.map((r) => r.currentName()) });
+      if (!j.ok) { addMsg.textContent = "❌ " + (j.error || "could not read that"); return; }
+      for (const [nm, sc] of Object.entries(j.servers || {})) {
+        addRow(nm, sc, { isNew: true, secrets: j.secrets || {}, notes: j.notes || [] });
+      }
+      pasteTa.value = "";
+      closeAdd();
+    } catch (err2) {
+      addMsg.textContent = "❌ " + err2;
+    } finally {
+      addGo.disabled = false;
+    }
+  });
+  body.append(list, addBtn, addBox, err);
+
+  let savedServers = null;
+  const collect = () => {
+    const out = {};
+    const secrets = {};
+    for (const row of rows) {
+      const b = row.build();
+      if (b.error) return { error: `${row.currentName() || "new server"}: ${b.error}` };
+      if (out[b.name]) return { error: `two servers are called ${b.name}` };
+      out[b.name] = b.sc;
+      Object.assign(secrets, b.secrets);
+    }
+    return {
+      config: { servers: out }, secrets,
+      changed: JSON.stringify(out) !== savedServers || Object.keys(secrets).length > 0,
+    };
+  };
+  savedServers = JSON.stringify((collect().config || {}).servers || {});
+  const markSaved = () => {
+    for (const row of rows) row.markSaved();
+    const c = collect();
+    if (!c.error) savedServers = JSON.stringify(c.config.servers);
+  };
+  return { group, err, collect, markSaved };
+}
+
 async function openAgentYSettingsModal() {
   injectStyles();
   let data;
@@ -624,69 +1118,17 @@ async function openAgentYSettingsModal() {
   applyAdvanced();
   body.append(setSec);
 
-  // ── model pricing section (config/pricing.json) ──
-  const priceSec = el("div", { className: "ays-sec" });
-  priceSec.append(el("h3", { textContent: "Model pricing (config/pricing.json)" }));
-  priceSec.append(el("div", { className: "ays-note", textContent:
-    "Per-model USD prices per MILLION tokens. Overrides the built-in tables so the token-usage cost column matches your endpoint (e.g. your MaaS deployment) and covers models the tables don't ship (deepseek, kimi). Entries with in/out ≤ 0 are ignored. Shape: {\"models\":{\"<model>\":{\"in\":0.4,\"out\":1.2}},\"provider_defaults\":{\"dashscope\":{\"in\":…,\"out\":…}}}." }));
-  const priceTa = el("textarea", {
-    className: "ays-input",
-    spellcheck: false,
-    value: JSON.stringify(data.pricing || { models: {}, provider_defaults: {} }, null, 2),
-    style: { width: "100%", minHeight: "200px", fontFamily: "ui-monospace,monospace", whiteSpace: "pre" },
-  });
-  const priceErr = el("div", { className: "ays-note", style: { color: "#e5736f" } });
-  priceSec.append(priceTa, priceErr);
-  body.append(priceSec);
-
-  // ── MCP servers section (config/mcp.json) ──
-  let mcpTa = null;
-  let mcpErr = null;
-  if (mcpData && mcpData.ok) {
-    const mcpSec = el("div", { className: "ays-sec" });
-    mcpSec.append(el("h3", { textContent: "MCP servers (config/mcp.json)" }));
-    mcpSec.append(el("div", { className: "ays-note", textContent:
-      "External MCP servers whose tools the orchestrator can call. Each server has a transport (http/sse/stdio), a url (or command/args), and an auth mode: \"none\", \"header\" (reference ${ENV_VAR} in headers and store the secret in .env above), or \"oauth\" (browser sign-in — click Authorize below). Saved changes load into the orchestrator on the next agent start." }));
-    // Per-server status + Authorize (oauth only).
-    const status = mcpData.status || {};
-    const statusWrap = el("div", {});
-    for (const [name, s] of Object.entries(status)) {
-      const line = el("div", { className: "ays-row" });
-      line.append(el("label", { className: "ays-label", textContent: name }));
-      const state = el("span", { className: "ays-note", style: { margin: "0", flex: "1" }, textContent: `${s.transport}/${s.auth} — ${s.state}` });
-      line.append(state);
-      if (String(s.auth).toLowerCase() === "oauth") {
-        const authBtn = el("button", { className: "ays-btn", textContent: "Authorize…" });
-        authBtn.addEventListener("click", async (e) => {
-          e.preventDefault();
-          authBtn.disabled = true; authBtn.textContent = "Opening browser…";
-          try {
-            const ra = await fetch(backendBase() + "/agentY/mcp/authorize", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name }),
-            });
-            const ja = await ra.json();
-            state.textContent = ja.ok ? "✅ " + (ja.message || "authorized") : "❌ " + (ja.error || "failed");
-          } catch (err) {
-            state.textContent = "❌ " + err;
-          } finally {
-            authBtn.disabled = false; authBtn.textContent = "Authorize…";
-          }
-        });
-        line.append(authBtn);
-      }
-      statusWrap.append(line);
-    }
-    mcpSec.append(statusWrap);
-    mcpTa = el("textarea", {
-      className: "ays-input", spellcheck: false,
-      value: JSON.stringify(mcpData.config || { servers: {} }, null, 2),
-      style: { width: "100%", minHeight: "160px", fontFamily: "ui-monospace,monospace", whiteSpace: "pre" },
-    });
-    mcpErr = el("div", { className: "ays-note", style: { color: "#e5736f" } });
-    mcpSec.append(mcpTa, mcpErr);
-    body.append(mcpSec);
-  }
+  // ── model pricing and MCP servers: a card each, like every other group ──
+  const intSec = el("div", { className: "ays-sec" });
+  intSec.append(el("h3", { textContent: "Costs & MCP servers" }));
+  const pricing = buildPricingCard(data);
+  intSec.append(pricing.group);
+  // Which .env variables already hold a value, so a server's key field can say
+  // "saved" instead of asking for it again. The values themselves stay masked.
+  const envSet = new Set(Object.entries(data.env || {}).filter(([, v]) => v).map(([k]) => k));
+  const mcp = mcpData && mcpData.ok ? buildMcpCard(mcpData, envSet) : null;
+  if (mcp) intSec.append(mcp.group);
+  body.append(intSec);
 
   // ── footer ──
   const msg = el("div", { className: "ays-msg" });
@@ -709,20 +1151,15 @@ async function openAgentYSettingsModal() {
       const k = (name.value || "").trim();
       if (k) envChanges[k] = val.value;
     }
-    let pricingPayload;
-    try {
-      pricingPayload = JSON.parse(priceTa.value);
-      priceErr.textContent = "";
-    } catch (e) {
-      priceErr.textContent = "Pricing JSON is invalid — not saved: " + e;
-    }
-    let mcpPayload;
-    if (mcpTa) {
-      try { mcpPayload = JSON.parse(mcpTa.value); if (mcpErr) mcpErr.textContent = ""; }
-      catch (e) { if (mcpErr) mcpErr.textContent = "MCP JSON is invalid — not saved: " + e; }
-    }
+    const priceOut = pricing.collect();
+    pricing.err.textContent = priceOut.error ? "Not saved: " + priceOut.error : "";
+    const mcpOut = mcp ? mcp.collect() : null;
+    if (mcp) mcp.err.textContent = mcpOut.error ? "Not saved: " + mcpOut.error : "";
+    // A server's keys are .env variables like any other, written before the
+    // server that references them.
+    if (mcpOut && !mcpOut.error) Object.assign(envChanges, mcpOut.secrets);
     const payload = { env: envChanges, settings: collectSettings(refs) };
-    if (pricingPayload !== undefined) payload.pricing = pricingPayload;
+    if (priceOut.payload && priceOut.changed) payload.pricing = priceOut.payload;
     try {
       const r = await fetch(backendBase() + "/agentY/settings", {
         method: "POST",
@@ -731,14 +1168,14 @@ async function openAgentYSettingsModal() {
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "save failed");
+      if (j.pricing_updated) pricing.markSaved();
       let mcpSaved = false;
-      if (mcpPayload !== undefined) {
+      if (mcpOut && !mcpOut.error && mcpOut.changed) {
         try {
-          const rm = await fetch(backendBase() + "/agentY/mcp", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ config: mcpPayload }),
-          });
-          mcpSaved = (await rm.json()).ok;
+          const jm = await postJson("/agentY/mcp", { config: mcpOut.config });
+          mcpSaved = !!jm.ok;
+          if (mcpSaved) mcp.markSaved();
+          else mcp.err.textContent = "Not saved: " + (jm.error || "the host refused it");
         } catch (_) { /* leave mcpSaved false */ }
       }
       const parts = [];
