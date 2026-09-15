@@ -1700,26 +1700,65 @@ class AgentChat {
     this.runDock.append(details);
     this.runDock.hidden = false;
     this._runEl = { details, anchor, text, count, bar, fill, steps, outs, con, conSum, conBody, body,
-      conLines: 0, outputs: 0, total: 0, finished: 0, failed: false, lastBar: null };
+      conLines: 0, outputs: 0, total: 0, finished: 0, failed: false,
+      bars: new Map(), queued: new Map(), queueRow: null };
     return this._runEl;
   }
-  // One status line. A progress bar rewrites the bar line before it rather than
-  // stacking a line per step; the newest line is also the card's title.
+  // One status line; the newest is also the card's title. Two kinds are rewritten
+  // in place instead of stacking: a run's progress bar (one row per run, keyed by
+  // its "[i/N]" prefix, so parallel runs don't overwrite each other), and ComfyUI
+  // queue reports. Every waiting run re-reports its place whenever the queue
+  // moves — ten parallel runs made forty-odd "⏳ Queue: n job(s) ahead" lines that
+  // said one thing — so those fold into a single row for the whole run.
   _status(text) {
     const line = String(text || "").trim();
     if (!line) return;
     const r = this._run();
+    const pm = line.match(/^\[\d+\/\d+\]\s*/);
+    const prefix = pm ? pm[0].trim() : "";
+    const bare = pm ? line.slice(pm[0].length) : line;
+    const queue = bare.match(/^⏳ Queue: (\d+) job/u);
+    // "🚀 Queuing iteration i/N…" + "✅ Iteration i/N queued · prompt_id=…", a pair
+    // per run: one row that counts up. The latest line, prompt id and all, stays
+    // on the row's tooltip.
+    const sub = bare.match(/^(🚀 Queuing iteration|✅ Iteration) (\d+)\/(\d+)/u);
     const isBar = /[█░]/.test(line);
-    let row = isBar ? r.lastBar : null;
-    if (!row) {
-      row = el("div", { className: "ay-run-step" });
-      r.steps.append(row);
+    if (sub) {
+      const n = Number(sub[3]);
+      if (sub[1].startsWith("✅")) r.submitted = Math.max(r.submitted || 0, Number(sub[2]));
+      if (!r.submitRow) {
+        r.submitRow = el("div", { className: "ay-run-step" });
+        r.steps.append(r.submitRow);
+      }
+      const done = r.submitted || 0;
+      r.submitRow.textContent = done >= n ? `✅ ${n}/${n} queued` : `🚀 Queuing ${done}/${n}…`;
+      r.submitRow.title = line;
+      r.text.textContent = r.submitRow.textContent;
+      r.text.title = line;
+    } else if (queue) {
+      r.queued.set(prefix, Number(queue[1]));
+      if (!r.queueRow) {
+        r.queueRow = el("div", { className: "ay-run-step" });
+        r.steps.append(r.queueRow);
+      }
+      this._queueText();
+    } else {
+      // A run that says anything else has left the queue.
+      if (r.queued.delete(prefix)) {
+        if (r.queued.size) this._queueText();
+        else r.queueRow = null;   // the row stays as history; a new wait starts a new one
+      }
+      let row = isBar ? r.bars.get(prefix) : null;
+      if (!row) {
+        row = el("div", { className: "ay-run-step" });
+        r.steps.append(row);
+      }
+      row.textContent = line;
+      if (isBar) r.bars.set(prefix, row);
+      else r.bars.delete(prefix);
+      r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
+      r.text.title = line;
     }
-    row.textContent = line;
-    r.lastBar = isBar ? row : null;
-    r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
-    r.text.title = line;
-    const bare = line.replace(/^\[\d+\/\d+\]\s*/, "");
     if (/^(❌|🛑|⏹)/u.test(bare)) r.failed = true;
     else if (/^✅/u.test(bare)) r.failed = false;
     const it = line.match(/Iteration (\d+)\/(\d+)/) || line.match(/^\[(\d+)\/(\d+)\]/);
@@ -1729,6 +1768,18 @@ class AgentChat {
     if (pct && r.total <= 1) this._runBar(Number(pct[1]));
     this._runCount();
     r.body.scrollTop = r.body.scrollHeight;
+  }
+  // The run's one queue row: how far back the furthest waiting run is, and how
+  // many are waiting.
+  _queueText() {
+    const r = this._runEl;
+    const ahead = Math.max(...r.queued.values());
+    const waiting = r.queued.size;
+    const text = `⏳ Queue: ${ahead} job${ahead === 1 ? "" : "s"} ahead`
+      + (waiting > 1 ? ` · ${waiting} runs waiting` : "");
+    r.queueRow.textContent = text;
+    r.text.textContent = text;
+    r.text.title = text;
   }
   _runBar(pct) {
     const r = this._runEl;
