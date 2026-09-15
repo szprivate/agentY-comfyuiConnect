@@ -4,7 +4,10 @@ Run as a SUBPROCESS by the ``/agent/pick_files`` route (never imported), so each
 dialog is a fresh Tk process off ComfyUI's event loop — no Tk-on-a-thread issues,
 no state leaking between calls.
 
-Usage:  python _filepicker.py <kind:media|image|video> <mode:files|folder>
+Usage:  python _filepicker.py <kind:media|image|video|any> <mode:files|folder|dir>
+
+``any`` shows every file (an MCP bundle's file setting); ``dir`` is the folder
+dialog, for a caller that wants the folder itself rather than its files.
 
 ``media`` is what the merged collector asks for — both filters in one dialog, with
 "Media files" preselected so a mixed folder can be picked from in one pass.
@@ -42,6 +45,8 @@ _VID = "*.mp4 *.mov *.webm *.mkv *.avi *.m4v *.mpg *.mpeg"
 
 
 def _exts_for(kind: str) -> list:
+    if kind == "any":
+        return []
     if kind == "video":
         return _EXTS_VID
     if kind == "image":
@@ -55,14 +60,15 @@ def _osascript_pick(kind: str, mode: str) -> list:
     Raises on anything that is not a plain cancel, so the caller can report the
     real reason rather than an empty selection the user did not make.
     """
-    label = {"video": "videos", "image": "images"}.get(kind, "media files")
-    if mode == "folder":
+    label = {"video": "videos", "image": "images", "any": "files"}.get(kind, "media files")
+    if mode in ("folder", "dir"):
         src = ('set f to choose folder with prompt "agentY — select a folder"\n'
                'return POSIX path of f')
     else:
         types = ", ".join('"%s"' % e for e in _exts_for(kind))
+        of_type = f"of type {{{types}}} " if types else ""
         src = (f'set fs to choose file with prompt "agentY — select {label}" '
-               f'of type {{{types}}} with multiple selections allowed\n'
+               f'{of_type}with multiple selections allowed\n'
                'set out to ""\n'
                'repeat with f in fs\n'
                '  set out to out & POSIX path of f & linefeed\n'
@@ -90,12 +96,14 @@ def _tk_pick(kind: str, mode: str) -> list:
 
     paths: list = []
     try:
-        if mode == "folder":
+        if mode in ("folder", "dir"):
             d = filedialog.askdirectory(title="agentY — select a folder")
             if d:
                 paths = [d]
         else:
-            if kind == "video":
+            if kind == "any":
+                label, types = "Files", []
+            elif kind == "video":
                 label, types = "Videos", [("Videos", _VID)]
             elif kind == "image":
                 label, types = "Images", [("Images", _IMG)]

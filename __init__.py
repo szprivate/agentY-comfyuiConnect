@@ -63,6 +63,8 @@ _PICK_KINDS = {
     "image": _PICK_IMG_EXTS,
     "video": _PICK_VID_EXTS,
     "media": _PICK_IMG_EXTS | _PICK_VID_EXTS,
+    # No filter: an MCP bundle's file/folder setting in agentY Settings.
+    "any": set(),
 }
 # An unrecognised kind falls to the SUPERSET, never to one kind — a fallback that
 # hides files the caller asked for is how the above stayed invisible.
@@ -336,7 +338,7 @@ try:
         if kind not in _PICK_KINDS:
             kind = _PICK_DEFAULT_KIND
         mode = str((data or {}).get("mode", "files")).lower()
-        if mode not in ("files", "folder"):
+        if mode not in ("files", "folder", "dir"):
             mode = "files"
         if not _os.path.isfile(_PICKER):
             return web.json_response({"ok": False, "error": "picker helper missing"}, status=500)
@@ -360,6 +362,10 @@ try:
         if isinstance(parsed, dict) and parsed.get("error"):
             return web.json_response({"ok": False, "error": str(parsed["error"])}, status=500)
         paths = parsed if isinstance(parsed, list) else []
+        if mode == "dir":
+            # The folder itself (an MCP bundle's directory setting), not its files.
+            folders = [p for p in paths if isinstance(p, str) and _os.path.isdir(p)]
+            return web.json_response({"ok": True, "paths": folders[:1], "kind": kind})
         if mode == "folder" and paths:
             exts = _PICK_KINDS[kind]
             folder = paths[0]
@@ -367,7 +373,7 @@ try:
             try:
                 for name in sorted(_os.listdir(folder)):
                     full = _os.path.join(folder, name)
-                    if _os.path.isfile(full) and name.rsplit(".", 1)[-1].lower() in exts:
+                    if _os.path.isfile(full) and (not exts or name.rsplit(".", 1)[-1].lower() in exts):
                         expanded.append(full)
             except Exception:  # noqa: BLE001
                 expanded = []

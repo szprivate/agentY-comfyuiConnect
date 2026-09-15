@@ -207,6 +207,15 @@ function injectStyles() {
   .ays-adv>summary{cursor:pointer;font-size:11.5px;color:#9aa0aa;margin-bottom:4px;}
   .ays-mcpadd{background:#161a20;border:1px dashed #3a4150;border-radius:9px;padding:10px 12px;margin:8px 0;}
   .ays-input.ays-missing{border-color:#e5c07b;}
+  .ays-warn{color:#e5c07b;}
+  /* Installing a bundle (.mcpb). */
+  .ays-bundlehead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;}
+  .ays-bundlecmd{margin:2px 0 8px;padding:6px 8px;background:#15171c;border:1px solid #2c313b;border-radius:7px;
+    font-family:ui-monospace,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:#c3c8d0;}
+  .ays-pathpick{flex:1;display:flex;gap:6px;min-width:0;align-items:flex-start;}
+  .ays-pathpick .ays-input{flex:1;min-width:0;}
+  .ays-fieldnote{margin:-2px 0 6px calc(42% + 10px);}
+  .ays-btnrow{display:flex;gap:8px;flex-wrap:wrap;}
   `;
   document.head.append(el("style", { id: "agentY-settings-styles", textContent: css }));
 }
@@ -273,9 +282,9 @@ const GROUP_NOTES = {
     + "your bill. Pick the model from the list your providers report; a blank price "
     + "uses the built-in one shown greyed out. Saved to config/pricing.json.",
   mcp: "External MCP servers whose tools the orchestrator can call. Add one by "
-    + "pasting its address, its start command or its JSON config; Test connects once "
-    + "and lists the tools. Keys go to .env, never into config/mcp.json. Servers load "
-    + "into the orchestrator on the next agent start.",
+    + "pasting its address, its start command or its JSON config, or install a bundle "
+    + "(.mcpb) file; Test connects once and lists the tools. Keys go to .env, never into "
+    + "config/mcp.json. Servers load into the orchestrator on the next agent start.",
   qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
     + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
@@ -652,6 +661,11 @@ function envRefs(obj) {
   return refs;
 }
 
+const formatSize = (bytes) => {
+  const n = Number(bytes) || 0;
+  return n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+};
+
 const mcpKeyVar = (name) => `MCP_${String(name || "SERVER").toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
 
 async function postJson(path, payload) {
@@ -749,7 +763,10 @@ function buildMcpCard(mcpData, envSet) {
       const push = (v) => { if (v && !vars.includes(v)) vars.push(v); };
       if (typeSel.value !== "stdio" && authSel.value === "apikey") push(apiVar());
       if (typeSel.value !== "stdio") envRefs(ex.headers).forEach(push);
-      if (typeSel.value === "stdio") envRefs(ex.env).forEach(push);
+      if (typeSel.value === "stdio") {
+        envRefs(ex.env).forEach(push);
+        envRefs({ command: addr.value }).forEach(push);   // a bundle can put a key in its arguments
+      }
       secretWrap.textContent = "";
       for (const v of vars) {
         if (!secretInputs[v]) {
@@ -804,7 +821,9 @@ function buildMcpCard(mcpData, envSet) {
     };
     let savedJson = null;
     const paintHead = () => {
-      const kind = typeSel.value === "stdio" ? "local command" : typeSel.value.toUpperCase();
+      const bundle = original.bundle;
+      const kind = bundle ? `bundle ${bundle.name || ""} v${bundle.version || "?"}`
+        : typeSel.value === "stdio" ? "local command" : typeSel.value.toUpperCase();
       summary.textContent = `${kind} · ${MCP_AUTH_LABELS[authSel.value] || authSel.value}`;
       const b = build();
       const dirty = b.error || savedJson !== JSON.stringify(b.sc) || Object.keys(b.secrets).length > 0;
@@ -886,6 +905,7 @@ function buildMcpCard(mcpData, envSet) {
 
     const row = {
       currentName, build,
+      remove: () => { card.remove(); const i = rows.indexOf(row); if (i >= 0) rows.splice(i, 1); },
       markSaved: () => {
         const b = build();
         if (b.error) return;
@@ -947,7 +967,163 @@ function buildMcpCard(mcpData, envSet) {
       addGo.disabled = false;
     }
   });
-  body.append(list, addBtn, addBox, err);
+  // ── install a bundle (.mcpb, formerly .dxt) ──
+  // The file goes to the host as the request body (POST /agentY/mcp/bundle/inspect),
+  // which says what the bundle is, what it will run and which settings it asks for.
+  // Install unpacks it and hands back an entry, added here as an unsaved server.
+  const bundleInput = el("input", { type: "file", accept: ".mcpb,.dxt", style: { display: "none" } });
+  const bundleBtn = el("button", { className: "ays-btn", textContent: "Install bundle (.mcpb)…" });
+  const bundleBox = el("div", { className: "ays-mcpadd" });
+  bundleBox.hidden = true;
+  const closeBundle = () => {
+    bundleBox.hidden = true;
+    bundleBox.textContent = "";
+    bundleBtn.hidden = false;
+    addBtn.hidden = false;
+  };
+  const bundleError = (message) => {
+    bundleBox.textContent = "";
+    const close = el("button", { className: "ays-btn ays-sm", textContent: "Close" });
+    close.addEventListener("click", (e) => { e.preventDefault(); closeBundle(); });
+    bundleBox.append(el("div", { className: "ays-note ays-err", textContent: "❌ " + message }), close);
+  };
+  const pickPath = async (type, multiple) => {
+    // ComfyUI's own route opens the native dialog on this machine.
+    const r = await fetch("/agent/pick_files", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "any", mode: type === "directory" ? "dir" : "files" }),
+    });
+    const j = await r.json();
+    const paths = (j && j.ok && j.paths) || [];
+    return multiple ? paths : paths.slice(0, 1);
+  };
+  const renderBundle = (j) => {
+    const b = j.bundle || {};
+    bundleBox.textContent = "";
+    bundleBox.append(el("div", { className: "ays-bundlehead" }, [
+      el("span", { className: "ays-mcpname", textContent: "📦 " + (b.display_name || b.name) }),
+      el("span", { className: "ays-mcpsum", textContent: `v${b.version}${b.author ? " · " + b.author : ""}` }),
+      el("span", { className: "ays-chip", textContent: b.signed ? "signed (not verified)" : "unsigned" }),
+    ]));
+    if (b.description) bundleBox.append(el("div", { className: "ays-note", textContent: b.description }));
+    const facts = [`${b.server_type || "local"} server`, `${b.files} files`, formatSize(b.unpacked)];
+    if (b.tools && b.tools.length) facts.push(`tools: ${b.tools.slice(0, 8).join(", ")}${b.tools.length > 8 ? ", …" : ""}`);
+    bundleBox.append(
+      el("div", { className: "ays-note", textContent: facts.join(" · ") }),
+      el("div", { className: "ays-note", textContent: "Installing unpacks it and runs this on your machine:" }),
+      el("pre", { className: "ays-bundlecmd", textContent: b.command || "" }));
+    for (const p of j.problems || []) bundleBox.append(el("div", { className: "ays-note ays-err", textContent: "⛔ " + p }));
+    for (const w of j.warnings || []) bundleBox.append(el("div", { className: "ays-note ays-warn", textContent: "⚠ " + w }));
+
+    const nameInp = el("input", { className: "ays-input", value: j.name || "" });
+    bundleBox.append(el("div", { className: "ays-row" },
+      [el("label", { className: "ays-label", textContent: "Server name" }), nameInp]));
+    if (j.replaces) {
+      bundleBox.append(el("div", { className: "ays-note ays-fieldnote",
+        textContent: `Replaces the installed "${j.replaces}" and its files.` }));
+    }
+    const getters = {};
+    for (const f of j.user_config || []) {
+      const label = el("label", { className: "ays-label", textContent: (f.title || f.key) + (f.required ? " *" : "") });
+      let control;
+      if (f.type === "boolean") {
+        control = el("input", { type: "checkbox", checked: f.default === true || f.default === "true" });
+        getters[f.key] = () => control.checked;
+      } else if (f.type === "directory" || f.type === "file") {
+        const initial = Array.isArray(f.default) ? f.default.join("\n") : (f.default == null ? "" : String(f.default));
+        const text = f.multiple
+          ? el("textarea", { className: "ays-input", rows: 3, value: initial, placeholder: "one path per line" })
+          : el("input", { className: "ays-input", value: initial });
+        const browse = el("button", { className: "ays-btn ays-sm", textContent: "Browse…" });
+        browse.addEventListener("click", async (e) => {
+          e.preventDefault();
+          try {
+            const picked = await pickPath(f.type, f.multiple);
+            if (!picked.length) return;
+            text.value = f.multiple ? [text.value.trim(), ...picked].filter(Boolean).join("\n") : picked[0];
+          } catch (_) { /* no dialog here: the field still takes a typed path */ }
+        });
+        control = el("div", { className: "ays-pathpick" }, [text, browse]);
+        getters[f.key] = () => (f.multiple
+          ? text.value.split("\n").map((s) => s.trim()).filter(Boolean) : text.value.trim());
+      } else {
+        control = el("input", {
+          className: "ays-input",
+          type: f.type === "number" ? "number" : (f.sensitive ? "password" : "text"),
+          value: f.default == null ? "" : String(f.default),
+        });
+        if (f.min != null) control.min = f.min;
+        if (f.max != null) control.max = f.max;
+        getters[f.key] = () => control.value;
+      }
+      bundleBox.append(el("div", { className: "ays-row" }, [label, control]));
+      if (f.description) bundleBox.append(el("div", { className: "ays-note ays-fieldnote", textContent: f.description }));
+    }
+
+    const msg = el("div", { className: "ays-note" });
+    const go = el("button", { className: "ays-btn primary ays-sm", textContent: "Install" });
+    const cancel = el("button", { className: "ays-btn ays-sm", textContent: "Cancel" });
+    go.disabled = (j.problems || []).length > 0;
+    cancel.addEventListener("click", (e) => { e.preventDefault(); closeBundle(); });
+    go.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const nm = nameInp.value.trim();
+      if (nm !== j.replaces && rows.some((r) => r.currentName() === nm)) {
+        msg.textContent = `❌ a server is already called ${nm}`;
+        return;
+      }
+      const values = {};
+      for (const [key, get] of Object.entries(getters)) values[key] = get();
+      go.disabled = true;
+      msg.textContent = "Unpacking…";
+      try {
+        const res = await postJson("/agentY/mcp/bundle/install", { token: j.token, name: nm, values });
+        if (!res.ok) { msg.textContent = "❌ " + (res.error || "install failed"); go.disabled = false; return; }
+        if (j.replaces) {
+          const old = rows.find((r) => r.currentName() === j.replaces);
+          if (old) old.remove();
+        }
+        addRow(res.name, res.server, {
+          isNew: true, secrets: res.secrets || {},
+          notes: [`Unpacked to ${res.server.bundle.dir}. Test it, then Save.`, ...(res.warnings || [])],
+        });
+        closeBundle();
+      } catch (err2) {
+        msg.textContent = "❌ " + err2;
+        go.disabled = false;
+      }
+    });
+    bundleBox.append(el("div", { className: "ays-btnrow" }, [go, cancel]), msg);
+  };
+  bundleBtn.addEventListener("click", (e) => { e.preventDefault(); bundleInput.value = ""; bundleInput.click(); });
+  bundleInput.addEventListener("change", async () => {
+    const file = bundleInput.files && bundleInput.files[0];
+    if (!file) return;
+    bundleBox.hidden = false;
+    bundleBtn.hidden = true;
+    addBtn.hidden = true;
+    bundleBox.textContent = "";
+    bundleBox.append(el("div", { className: "ays-note", textContent: `Reading ${file.name}…` }));
+    let j;
+    try {
+      const query = `?filename=${encodeURIComponent(file.name)}`
+        + `&existing=${encodeURIComponent(rows.map((r) => r.currentName()).join(","))}`;
+      const r = await fetch(backendBase() + "/agentY/mcp/bundle/inspect" + query, {
+        method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+      });
+      try {
+        j = await r.json();
+      } catch (_) {
+        j = { ok: false, error: `the agentY host answered ${r.status}; restart it to load this version` };
+      }
+    } catch (err2) {
+      j = { ok: false, error: String(err2) };
+    }
+    if (j.ok) renderBundle(j);
+    else bundleError(j.error || "could not read that bundle");
+  });
+
+  body.append(list, el("div", { className: "ays-btnrow" }, [addBtn, bundleBtn]), bundleInput, addBox, bundleBox, err);
 
   let savedServers = null;
   const collect = () => {
