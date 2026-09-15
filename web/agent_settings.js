@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
+import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 
 // agentY Application Settings — adds an entry to the ComfyUI Settings panel that
 // opens a modal for editing the agent's auth keys (.env) and everything in
@@ -170,6 +171,8 @@ function injectStyles() {
   .ays-btn{background:#3b3936;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-radius:9px;
     padding:8px 16px;cursor:pointer;font-size:12.5px;}
   .ays-btn:hover{background:#464440;}
+  .ays-btn.ay-icon-btn{display:inline-flex;align-items:center;gap:8px;}
+  .ays-btn.ay-icon-btn svg{width:16px;height:16px;display:block;flex-shrink:0;}
   .ays-btn.primary{background:#5b9bf5;color:#0a1a30;border-color:transparent;font-weight:650;}
   .ays-btn.primary:hover{background:#4785e6;}
   .ays-note{font-size:11.5px;color:#a8a39a;margin:2px 0 10px;}
@@ -499,16 +502,20 @@ async function openAgentYSettingsModal() {
   const toolsSec = el("div", { className: "ays-sec" });
   toolsSec.append(el("h3", { textContent: "Viewers" }));
   toolsSec.append(el("div", { className: "ays-note", textContent: "The message-history log (includes tool calls), the long-term memory editor (everything the agent remembers from previous runs), the project memory (what is true of THIS project — characters, style, named references; it switches with the project), and the token/cost breakdown." }));
-  const logViewBtn = el("button", { className: "ays-btn", textContent: "📜  Message-history log…" });
-  logViewBtn.addEventListener("click", () => window.agentYOpenLogViewer && window.agentYOpenLogViewer());
-  const memViewBtn = el("button", { className: "ays-btn", textContent: "🧠  Long-term memory…" });
-  memViewBtn.addEventListener("click", () => window.agentYOpenMemoryViewer && window.agentYOpenMemoryViewer());
-  const projMemBtn = el("button", { className: "ays-btn", textContent: "📌  Project memory…" });
-  projMemBtn.addEventListener("click", () => window.agentYOpenProjectMemory && window.agentYOpenProjectMemory());
-  const usageViewBtn = el("button", { className: "ays-btn", textContent: "📊  Token usage…" });
-  usageViewBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
+  // Lucide icons from iconsUI.json; the emoji text shows until they load.
+  const viewerBtn = (key, emoji, label, open) => {
+    const btn = el("button", { className: "ays-btn" });
+    setButtonIcon(btn, key, `${emoji}  ${label}`, label);
+    btn.addEventListener("click", () => open && open());
+    return btn;
+  };
+  const logViewBtn = viewerBtn("logViewer", "📜", "Message-history log…", () => window.agentYOpenLogViewer?.());
+  const memViewBtn = viewerBtn("memoryViewer", "🧠", "Long-term memory…", () => window.agentYOpenMemoryViewer?.());
+  const projMemBtn = viewerBtn("projectMemory", "📌", "Project memory…", () => window.agentYOpenProjectMemory?.());
+  const usageViewBtn = viewerBtn("tokenUsage", "📊", "Token usage…", () => window.agentYOpenTokenUsage?.());
   toolsSec.append(el("div", { className: "ays-row" }, [logViewBtn, memViewBtn, projMemBtn, usageViewBtn]));
   body.append(toolsSec);
+  iconsReady.then(() => applyIcons(toolsSec));
 
   // ── .env auth section ──
   const envInputs = {};

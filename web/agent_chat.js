@@ -741,17 +741,14 @@ class AgentChat {
     this.undoBtn = el("button", { className: "ay-btn", title: "Undo the agent's last step" });
     setButtonIcon(this.undoBtn, "undoStep", "↩");
     this.undoBtn.addEventListener("click", () => this.undoLastStep());
-    const usageBtn = el("button", { className: "ay-btn", title: "Token usage overview" });
-    setButtonIcon(usageBtn, "tokenUsage", "📊");
-    usageBtn.addEventListener("click", () => window.agentYOpenTokenUsage && window.agentYOpenTokenUsage());
     // Auto-graph toggle: flips `autoload_workflows_into_canvas` on the host. The
-    // message-history and long-term-memory viewers moved OUT of this bar into the
-    // agentY Settings modal (agent_settings.js) to declutter — they're opened from
-    // there via the same window.agentYOpen* globals.
+    // viewers — message history, long-term memory, project memory, token usage —
+    // live in the agentY Settings modal (agent_settings.js), not in this bar;
+    // they open from there via the window.agentYOpen* globals.
     this.autographBtn = el("button", { className: "ay-btn", title: "Auto-graph workflows onto canvas" });
     setButtonIcon(this.autographBtn, "autograph", "🖼");
     this.autographBtn.addEventListener("click", () => this._toggleAutograph());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, this.undoBtn, usageBtn, this.autographBtn]));
+    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, this.undoBtn, this.autographBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
