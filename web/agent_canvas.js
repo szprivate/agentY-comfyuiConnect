@@ -187,6 +187,87 @@ function applyNodeParams(node_id, params) {
   return { ok: applied.length > 0, applied, unknown, node: title, error: "" };
 }
 
+// A graph the agent built arrives with every node at a size estimated on the
+// server. Once it is on the canvas, give each node the size ComfyUI gives a node
+// you add yourself — computeSize(), the padding widget nodes get, and never below
+// a widget's minimum (a prompt box is at least 400x200) — and lay the columns,
+// rows and group boxes out again around those sizes. graph.extra.agentY_layout
+// carries the arrangement: band, column and row per node, and each group's
+// members. This is agenty_core's graph_groups.arrange; keep the two alike.
+function standardSize(node) {
+  const size = node.computeSize();
+  let padded = true;
+  try {
+    padded = !app.extensionManager?.setting?.get?.("LiteGraph.Node.DefaultPadding");
+  } catch (_) {}
+  if (node.widgets?.length && padded) size[0] += 60;
+  for (const w of node.widgets || []) {
+    const min = w?.options?.minNodeSize;
+    if (Array.isArray(min)) {
+      size[0] = Math.max(size[0], min[0] || 0);
+      size[1] = Math.max(size[1], min[1] || 0);
+    }
+  }
+  return size;
+}
+
+function arrangeAgentGraph(layout) {
+  const graph = app.graph;
+  if (!graph || !layout || !layout.slots || !layout.gaps || !layout.origin) return;
+  const gaps = layout.gaps;
+  const placed = [];
+  for (const [id, slot] of Object.entries(layout.slots)) {
+    const node = graph.getNodeById(Number(id));
+    if (!node || !Array.isArray(slot)) continue;
+    node.setSize(standardSize(node));
+    placed.push({ id, node, band: slot[0], col: slot[1], row: slot[2] });
+  }
+  if (!placed.length) return;
+
+  const columns = [...new Set(placed.map((p) => p.col))].sort((a, b) => a - b);
+  const width = {};
+  for (const p of placed) width[p.col] = Math.max(width[p.col] || 0, p.node.size[0]);
+  const xOf = {};
+  let x = layout.origin[0];
+  for (const c of columns) { xOf[c] = x; x += width[c] + gaps.column; }
+
+  const grouped = new Set(layout.grouped_bands || []);
+  let top = layout.origin[1];
+  for (const band of [...new Set(placed.map((p) => p.band))].sort((a, b) => a - b)) {
+    const head = grouped.has(band) ? gaps.pad + gaps.group_title : 0;
+    let bottom = top;
+    for (const c of columns) {
+      let y = top + head + gaps.title_bar;
+      for (const p of placed.filter((q) => q.band === band && q.col === c)
+                            .sort((a, b) => a.row - b.row)) {
+        p.node.pos = [xOf[c], y];
+        bottom = Math.max(bottom, y + p.node.size[1]);
+        y += p.node.size[1] + gaps.title_bar + gaps.node;
+      }
+    }
+    top = bottom + (grouped.has(band) ? gaps.pad : 0) + gaps.band;
+  }
+
+  // Boxes, in the order the server wrote them, fitted to their members.
+  const byId = new Map(placed.map((p) => [String(p.id), p.node]));
+  const boxes = graph._groups || graph.groups || [];
+  (layout.groups || []).forEach((members, index) => {
+    const box = boxes[index];
+    const nodes = (members || []).map((id) => byId.get(String(id))).filter(Boolean);
+    if (!box || !nodes.length || typeof box.configure !== "function") return;
+    const x0 = Math.min(...nodes.map((n) => n.pos[0])) - gaps.pad;
+    const y0 = Math.min(...nodes.map((n) => n.pos[1])) - gaps.title_bar - gaps.pad - gaps.group_title;
+    const x1 = Math.max(...nodes.map((n) => n.pos[0] + n.size[0])) + gaps.pad;
+    const y1 = Math.max(...nodes.map((n) => n.pos[1] + n.size[1])) + gaps.pad;
+    const data = typeof box.serialize === "function" ? box.serialize() : {};
+    box.configure({ ...data, bounding: [x0, y0, x1 - x0, y1 - y0] });
+  });
+
+  if (graph.extra) delete graph.extra.agentY_layout;
+  graph.setDirtyCanvas(true, true);
+  try { app.workflowManager?.activeWorkflow?.changeTracker?.checkState?.(); } catch (_) {}
+}
+
 app.registerExtension({
   name: "agentY.canvas.autoload",
   async setup() {
@@ -223,6 +304,11 @@ app.registerExtension({
         } else {
           // clean=true, restore_view=true — replace the current graph with the run.
           await app.loadGraphData(graph, true, true, "agent workflow");
+          try {
+            arrangeAgentGraph(graph.extra && graph.extra.agentY_layout);
+          } catch (err) {
+            console.warn("[agentY-comfyuiConnect] could not re-space the graph:", err);
+          }
         }
       } catch (err) {
         try {
