@@ -145,6 +145,26 @@ function el(tag, props = {}, children = []) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
+// One colour per agent, derived the way the memory viewer colours a session: a
+// string hash onto the hue wheel, so an agent keeps its colour across turns and
+// reloads with no table to maintain. The orchestrator takes the accent blue.
+function agentHue(s) {
+  let h = 0;
+  for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
+function agentColor(agent) {
+  return !agent || agent === "orchestrator" ? "#6f97ff" : `hsl(${agentHue(agent)} 62% 62%)`;
+}
+// "[orchestrator] upload_image" -> { agent: "orchestrator", name: "upload_image" }.
+// The host folds the agent into the name; a newer event also carries it apart.
+function splitToolName(ev) {
+  let agent = String(ev.agent || "").trim();
+  let name = String(ev.name || "tool");
+  const m = name.match(/^\[([^\]]+)\]\s*(.+)$/);
+  if (m) { agent = agent || m[1]; name = m[2]; }
+  return { agent, name };
+}
 // Minimal markdown: **bold**, `code`, newlines. Enough for the agent's messages.
 function mdToHtml(s) {
   let h = escapeHtml(s);
@@ -598,40 +618,44 @@ class AgentChat {
        the host a real height is what makes the log the thing that scrolls. */
     .ay-host{height:100%;min-height:0;overflow:hidden;position:relative;}
     .ay-wrap{
-      --ay-bg:#262624; --ay-surface:#302f2c; --ay-surface2:#3b3936;
-      --ay-border:rgba(240,235,225,.10); --ay-text:#f2f0ea; --ay-muted:#a8a39a;
-      --ay-accent:#5b9bf5; --ay-accent2:#4785e6; --ay-accent-soft:rgba(91,155,245,.15);
+      /* The long-term memory viewer's dark palette (scripts/memory_viewer.html). */
+      --ay-bg:#15171c; --ay-surface:#1e2128; --ay-surface2:#262b34; --ay-code:#161a20;
+      --ay-border:#2c313b; --ay-text:#e6e8ec; --ay-muted:#9aa0aa;
+      --ay-accent:#6f97ff; --ay-accent2:#5c86f2; --ay-accent-soft:rgba(111,151,255,.13);
+      --ay-ok:#7bd88f; --ay-danger:#e5736f;
       position:relative;display:flex;flex-direction:column;height:100%;
       max-height:100%;
       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
       font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
     }
     .ay-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--ay-border);flex-shrink:0;}
-    .ay-bar select{flex:1;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
-    .ay-btn{background:var(--ay-surface2);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:10px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
+    .ay-bar{background:var(--ay-surface);}
+    .ay-bar select{flex:1;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
+    .ay-btn{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
     /* Toggle button in its ON state (e.g. auto-graph enabled). */
-    .ay-btn.ay-on{background:var(--ay-accent);color:#0a1a30;border-color:transparent;}
+    .ay-btn.ay-on{background:var(--ay-accent);color:#fff;border-color:var(--ay-accent);}
     .ay-btn.ay-on:hover{background:var(--ay-accent2);}
-    .ay-btn:hover{background:#464440;}
+    .ay-btn:hover{border-color:var(--ay-accent);}
     .ay-btn:active{transform:translateY(1px);}
-    .ay-btn.ay-send{background:var(--ay-accent);color:#0a1a30;border-color:transparent;border-radius:999px;padding:9px 18px;font-weight:600;}
+    .ay-btn.ay-send{background:var(--ay-accent);color:#fff;border-color:var(--ay-accent);border-radius:7px;padding:9px 18px;font-weight:600;}
     .ay-icon-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;}
     .ay-icon-btn svg{width:17px;height:17px;display:block;flex-shrink:0;}
     .ay-btn-label{font-size:12.5px;line-height:1;}
     .ay-btn.ay-send:hover{background:var(--ay-accent2);}
-    .ay-btn.ay-stop{background:#8a4034;color:#ffe1d9;border-color:transparent;border-radius:999px;}
-    .ay-btn.ay-stop:hover{background:#9c4a3c;}
+    .ay-btn.ay-stop{background:var(--ay-danger);color:#fff;border-color:var(--ay-danger);border-radius:7px;}
+    .ay-btn.ay-stop:hover{filter:brightness(1.06);}
     .ay-log{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
     /* Log children are flex items in a column; without this they shrink to fit the
        panel (collapsing tool/step boxes to a sliver) instead of overflowing into
        the scroll area. Pin their height so the log scrolls as it grows. */
     .ay-log>*{flex-shrink:0;}
-    .ay-msg{padding:10px 13px;border-radius:16px;max-width:92%;word-wrap:break-word;line-height:1.5;}
-    .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(91,155,245,.28);align-self:flex-end;border-bottom-right-radius:5px;}
-    .ay-assistant{background:var(--ay-surface);align-self:flex-start;border-bottom-left-radius:5px;}
+    .ay-msg{padding:10px 13px;border-radius:9px;max-width:92%;word-wrap:break-word;line-height:1.5;}
+    .ay-user{background:var(--ay-accent-soft);border:1px solid rgba(111,151,255,.30);align-self:flex-end;}
+    .ay-assistant{background:var(--ay-surface);border:1px solid var(--ay-border);align-self:flex-start;}
     .ay-system{background:transparent;color:var(--ay-muted);font-size:12px;align-self:center;text-align:center;max-width:100%;padding:2px 8px;}
-    .ay-ask{background:rgba(91,155,245,.10);color:#f0d9c2;border:1px solid rgba(91,155,245,.35);align-self:stretch;max-width:100%;}
-    .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:rgba(0,0,0,.25);padding:2px 5px;border-radius:6px;font-size:12px;}
+    .ay-ask{background:var(--ay-accent-soft);color:var(--ay-text);border:1px solid rgba(111,151,255,.35);border-left:4px solid var(--ay-accent);align-self:stretch;max-width:100%;}
+    .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:var(--ay-code);padding:2px 5px;border-radius:6px;font-size:12px;}
+    .ay-msg code{background:var(--ay-code);border:1px solid var(--ay-border);border-radius:5px;padding:0 4px;font-size:12px;}
     .ay-link{color:var(--ay-accent);text-decoration:underline;}
     .ay-link:hover{color:var(--ay-accent2);}
     /* "Working" marker: an animated "..." shown from the moment a turn starts
@@ -640,16 +664,60 @@ class AgentChat {
        inside this ComfyUI sidebar panel. */
     .ay-working{align-self:flex-start;padding:2px 13px 8px;}
     .ay-working .ay-dots{font-family:ui-monospace,SFMono-Regular,monospace;font-size:22px;line-height:1;font-weight:700;letter-spacing:3px;color:var(--ay-muted);display:inline-block;min-width:34px;}
-    .ay-step{border:1px solid var(--ay-border);border-radius:12px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
-    .ay-step>summary{cursor:pointer;padding:8px 12px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;}
+    /* Cards, drawn the way the memory viewer draws a memory: a surface, a hairline
+       border, and a 4px left edge whose colour says whose card it is. */
+    .ay-step{border:1px solid var(--ay-border);border-left:4px solid var(--ay-muted);border-radius:9px;background:var(--ay-surface);overflow:hidden;align-self:stretch;}
+    .ay-step>summary{cursor:pointer;padding:7px 11px;color:var(--ay-muted);font-weight:600;font-size:12px;list-style:none;display:flex;align-items:center;gap:7px;min-width:0;}
     .ay-step>summary::-webkit-details-marker{display:none;}
-    .ay-step>summary::before{content:"▸ ";opacity:.7;}
-    .ay-step[open]>summary::before{content:"▾ ";}
-    .ay-step .ay-step-body{padding:8px 12px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:240px;overflow:auto;word-break:break-word;border-top:1px solid var(--ay-border);}
-    .ay-step.ay-tool{border-color:rgba(127,212,160,.22);}
-    .ay-step.ay-tool>summary{color:#8fd6ab;}
-    .ay-step.ay-console{border-color:rgba(150,175,220,.22);}
-    .ay-step.ay-console>summary{color:#9db8de;}
+    .ay-step>summary::before{content:"▸";opacity:.6;flex-shrink:0;}
+    .ay-step[open]>summary::before{content:"▾";}
+    .ay-step .ay-step-body{padding:8px 12px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:240px;overflow:auto;word-break:break-word;border-top:1px solid var(--ay-border);background:var(--ay-code);}
+    /* A tool call: edged and chipped in the colour of the agent that made it, and
+       packed tighter when several follow one another. --ay-agent is set per card. */
+    .ay-step.ay-tool{border-left-color:var(--ay-agent,var(--ay-accent));}
+    .ay-step.ay-tool>summary{color:var(--ay-text);font-weight:500;}
+    .ay-tool+.ay-tool{margin-top:-6px;}
+    .ay-agent{display:inline-flex;align-items:center;gap:5px;background:var(--ay-surface2);border-radius:999px;padding:1px 8px 1px 6px;font-size:11px;font-weight:500;color:var(--ay-muted);flex-shrink:0;}
+    .ay-agent .ay-dot{width:8px;height:8px;border-radius:50%;background:var(--ay-agent,var(--ay-accent));}
+    .ay-tname{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+    .ay-tstate{margin-left:auto;padding-left:6px;color:var(--ay-muted);flex-shrink:0;}
+    .ay-tool.ay-done .ay-tstate{color:var(--ay-ok);}
+    .ay-tool.ay-failed{border-left-color:var(--ay-danger);}
+    .ay-tool.ay-failed .ay-tstate{color:var(--ay-danger);}
+    .ay-kv+.ay-kv{margin-top:8px;}
+    .ay-kv-key{display:block;font-family:ui-sans-serif,system-ui,sans-serif;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ay-muted);margin-bottom:2px;}
+    .ay-kv-val{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit;color:var(--ay-text);}
+    .ay-step.ay-console{border-left-color:#7f9cc9;}
+    .ay-step.ay-console>summary{color:#a9bddb;}
+    /* The run: what the executor is doing, docked above the composer while the turn
+       runs and filed into the conversation, where the run began, once it ends. */
+    .ay-rundock{display:flex;flex-direction:column;}
+    .ay-rundock[hidden],.ay-run-anchor,.ay-run [hidden]{display:none !important;}
+    .ay-step.ay-run{border-left-color:var(--ay-accent);}
+    .ay-step.ay-run.ay-done{border-left-color:var(--ay-ok);}
+    .ay-step.ay-run.ay-failed{border-left-color:var(--ay-danger);}
+    .ay-run>summary{flex-wrap:wrap;color:var(--ay-text);font-weight:500;row-gap:6px;}
+    .ay-livedot{width:8px;height:8px;border-radius:50%;background:var(--ay-muted);flex-shrink:0;}
+    .ay-run.ay-live .ay-livedot{background:var(--ay-accent);box-shadow:0 0 0 3px var(--ay-accent-soft);}
+    .ay-run.ay-done .ay-livedot{background:var(--ay-ok);}
+    .ay-run.ay-failed .ay-livedot{background:var(--ay-danger);}
+    .ay-run-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ay-run-count{color:var(--ay-muted);font-variant-numeric:tabular-nums;font-weight:600;flex-shrink:0;}
+    .ay-bar-track{flex-basis:100%;height:4px;border-radius:4px;background:var(--ay-surface2);overflow:hidden;}
+    .ay-bar-fill{height:100%;width:0;background:var(--ay-accent);transition:width .3s;}
+    .ay-run.ay-done .ay-bar-fill{background:var(--ay-ok);}
+    .ay-run.ay-failed .ay-bar-fill{background:var(--ay-danger);}
+    .ay-run-body{border-top:1px solid var(--ay-border);background:var(--ay-code);padding:8px 12px;display:flex;flex-direction:column;gap:8px;max-height:260px;overflow:auto;}
+    .ay-run-steps{display:flex;flex-direction:column;gap:2px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);}
+    .ay-run-step{white-space:pre-wrap;word-break:break-word;}
+    .ay-run-step:last-child{color:var(--ay-text);}
+    .ay-run-outs{display:flex;flex-direction:column;gap:3px;}
+    .ay-run-out{display:flex;gap:7px;align-items:center;font-size:12px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:7px;padding:3px 8px;}
+    .ay-run-out-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11.5px;}
+    .ay-run-out-note{color:var(--ay-muted);font-size:11px;flex-shrink:0;}
+    .ay-run-console>summary{cursor:pointer;font-size:11.5px;color:#a9bddb;list-style:none;}
+    .ay-run-console>summary::-webkit-details-marker{display:none;}
+    .ay-con-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:160px;overflow:auto;}
     .ay-status{font-size:11px;color:var(--ay-muted);padding:2px 12px;font-family:ui-monospace,monospace;align-self:center;}
     .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
@@ -667,26 +735,26 @@ class AgentChat {
        padding = 38.25px, under the 40px floor), and when it grows past one line the
        buttons stay pinned to the bottom via align-items:flex-end. */
     .ay-inrow .ay-btn{height:var(--ay-composer-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
-    .ay-input{flex:1;resize:none;min-height:var(--ay-composer-h);max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:14px;padding:8px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
-    .ay-input:focus{border-color:rgba(91,155,245,.55);}
+    .ay-input{flex:1;resize:none;min-height:var(--ay-composer-h);max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
+    .ay-input:focus{border-color:rgba(111,151,255,.55);}
     .ay-input::placeholder{color:var(--ay-muted);}
     .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
     .ay-mlabel{color:var(--ay-muted);font-size:11.5px;flex-shrink:0;}
-    .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:9px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
-    .ay-modelbar select:hover{border-color:rgba(91,155,245,.45);}
+    .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
+    .ay-modelbar select:hover{border-color:rgba(111,151,255,.45);}
     .ay-modelbar select:disabled{opacity:.45;cursor:not-allowed;}
     .ay-mmodel{flex:1;min-width:0;}
-    .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
+    .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
     .ay-pop-item{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;}
     .ay-pop-item:hover,.ay-pop-item.sel{background:var(--ay-surface2);}
     .ay-pop-item.sel{box-shadow:inset 3px 0 0 var(--ay-accent);}
     .ay-pop-name{font-family:ui-monospace,monospace;color:var(--ay-accent);min-width:130px;font-size:12.5px;}
     .ay-pop-desc{color:var(--ay-muted);font-size:12px;}
-    .ay-log::-webkit-scrollbar,.ay-step-body::-webkit-scrollbar,.ay-pop::-webkit-scrollbar{width:8px;height:8px;}
-    .ay-log::-webkit-scrollbar-thumb,.ay-step-body::-webkit-scrollbar-thumb,.ay-pop::-webkit-scrollbar-thumb{background:var(--ay-surface2);border-radius:8px;}
+    .ay-log::-webkit-scrollbar,.ay-step-body::-webkit-scrollbar,.ay-pop::-webkit-scrollbar,.ay-run-body::-webkit-scrollbar,.ay-con-body::-webkit-scrollbar{width:8px;height:8px;}
+    .ay-log::-webkit-scrollbar-thumb,.ay-step-body::-webkit-scrollbar-thumb,.ay-pop::-webkit-scrollbar-thumb,.ay-run-body::-webkit-scrollbar-thumb,.ay-con-body::-webkit-scrollbar-thumb{background:var(--ay-surface2);border-radius:8px;}
     /* Queued messages (typed while a turn is running; auto-sent on completion). */
     .ay-queue{display:flex;flex-direction:column;gap:5px;}
-    .ay-qchip{display:flex;gap:8px;align-items:center;background:var(--ay-accent-soft);border:1px solid rgba(91,155,245,.30);border-radius:10px;padding:5px 10px;font-size:12px;color:var(--ay-text);}
+    .ay-qchip{display:flex;gap:8px;align-items:center;background:var(--ay-accent-soft);border:1px solid rgba(111,151,255,.30);border-radius:7px;padding:5px 10px;font-size:12px;color:var(--ay-text);}
     .ay-qchip .ay-qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .ay-qchip .ay-qx{cursor:pointer;color:var(--ay-muted);flex-shrink:0;}
     .ay-qchip .ay-qx:hover{color:var(--ay-text);}
@@ -698,25 +766,25 @@ class AgentChat {
        _positionOffline(). Absolute + inset:0 centred the card in the PANEL, which is
        as tall as its content — so the button drifted somewhere down the conversation
        instead of sitting in the middle of the screen. */
-    .ay-offline-panel{position:fixed;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(38,38,36,.86);backdrop-filter:blur(2px);}
-    .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:16px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
+    .ay-offline-panel{position:fixed;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(21,23,28,.86);backdrop-filter:blur(2px);}
+    .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
     .ay-offline-card .ay-offline-icon{font-size:30px;line-height:1;}
     .ay-offline-card .ay-offline-title{font-weight:600;font-size:15px;color:var(--ay-text);}
     .ay-offline-card .ay-offline-msg{font-size:12.5px;color:var(--ay-muted);line-height:1.55;}
-    .ay-offline-card .ay-start{background:var(--ay-accent);color:#0a1a30;border:none;border-radius:999px;padding:10px 22px;font-weight:600;font-size:13px;cursor:pointer;transition:background .12s;}
+    .ay-offline-card .ay-start{background:var(--ay-accent);color:#fff;border:none;border-radius:7px;padding:10px 22px;font-weight:600;font-size:13px;cursor:pointer;transition:background .12s;}
     .ay-offline-card .ay-start:hover{background:var(--ay-accent2);}
     .ay-offline-card .ay-start:disabled{opacity:.55;cursor:default;}
     /* Toast host lives on <body> (outside .ay-wrap) so notifications pop even when
        the agentY tab isn't the active sidebar — hence self-contained colors. */
     .ay-toast-host{position:fixed;top:16px;right:16px;z-index:100000;display:flex;flex-direction:column;gap:10px;max-width:340px;pointer-events:none;}
-    .ay-toast{pointer-events:auto;background:#302f2c;color:#f2f0ea;border:1px solid rgba(240,235,225,.14);border-left:3px solid #5b9bf5;border-radius:12px;padding:12px 14px;box-shadow:0 12px 40px rgba(0,0,0,.5);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;line-height:1.45;cursor:default;opacity:0;transform:translateX(12px);transition:opacity .18s ease,transform .18s ease;}
+    .ay-toast{pointer-events:auto;background:#1e2128;color:#e6e8ec;border:1px solid #2c313b;border-left:4px solid #6f97ff;border-radius:9px;padding:12px 14px;box-shadow:0 12px 40px rgba(0,0,0,.5);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;line-height:1.45;cursor:default;opacity:0;transform:translateX(12px);transition:opacity .18s ease,transform .18s ease;}
     .ay-toast.ay-in{opacity:1;transform:translateX(0);}
-    .ay-toast.ay-success{border-left-color:#57b96b;}
-    .ay-toast.ay-error{border-left-color:#d1685a;}
+    .ay-toast.ay-success{border-left-color:#7bd88f;}
+    .ay-toast.ay-error{border-left-color:#e5736f;}
     .ay-toast .ay-toast-title{font-weight:600;margin-bottom:2px;display:flex;align-items:center;gap:7px;}
-    .ay-toast .ay-toast-body{color:#cfcabf;}
-    .ay-toast .ay-toast-link{display:inline-block;margin-top:6px;color:#5b9bf5;text-decoration:underline;font-size:12px;cursor:pointer;}
-    .ay-toast .ay-toast-x{position:absolute;top:8px;right:10px;color:#a8a39a;cursor:pointer;font-size:13px;line-height:1;}
+    .ay-toast .ay-toast-body{color:#c3c8d0;}
+    .ay-toast .ay-toast-link{display:inline-block;margin-top:6px;color:#6f97ff;text-decoration:underline;font-size:12px;cursor:pointer;}
+    .ay-toast .ay-toast-x{position:absolute;top:8px;right:10px;color:#9aa0aa;cursor:pointer;font-size:13px;line-height:1;}
     `;
     document.head.append(el("style", { id: "agentY-chat-styles", textContent: css }));
   }
@@ -773,6 +841,7 @@ class AgentChat {
     this.attachEl = el("div", { className: "ay-attach" });
     this.selBarEl = el("div", { className: "ay-selbar" });
     this.queueEl = el("div", { className: "ay-queue" });
+    this.runDock = el("div", { className: "ay-rundock", hidden: true });
     this.pop = el("div", { className: "ay-pop" });
     this.input = el("textarea", { className: "ay-input", placeholder: "Message agentY…  (type / for commands)" });
     this.input.addEventListener("input", () => this._onInput());
@@ -790,7 +859,7 @@ class AgentChat {
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
     const inwrap = el("div", { className: "ay-inwrap" },
-      [this.pop, this.queueEl, this.selBarEl, this.attachEl, inrow, this.fileInput]);
+      [this.pop, this.runDock, this.queueEl, this.selBarEl, this.attachEl, inrow, this.fileInput]);
     wrap.append(inwrap);
     this._startSelectionIndicator();
 
@@ -1421,6 +1490,7 @@ class AgentChat {
     this._thinkStep = null;
     this._toolBlocks = {};
     this._consoleEl = null;
+    this._clearStatus();
     this.threadId = id;
     this._saveActive(id);
     this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
@@ -1556,64 +1626,169 @@ class AgentChat {
     this._scroll();
   }
   _stepEnd() { this.curStep = null; }
-  // Render an agent tool call / result as a collapsible block, inline in the
-  // chat log (so it persists via _savePanel like every other block).
+  // Render an agent tool call / result as a card, inline in the chat log (so it
+  // persists via _savePanel like every other block). The call opens the card and
+  // its result completes it; the edge and the chip carry the calling agent's colour.
   _toolBlock(ev) {
     this.curAssistant = null; // close the current text bubble; keep ordering
     this._toolBlocks = this._toolBlocks || {};
     const id = ev.id || "";
+    let blk = ev.phase === "call" ? null : (id && this._toolBlocks[id]);
+    if (!blk) {
+      blk = this._toolCard(ev);
+      this.logEl.append(blk.details);
+      if (id) this._toolBlocks[id] = blk;
+    }
     if (ev.phase === "call") {
-      const details = el("details", { className: "ay-step ay-tool", open: false });
-      const body = el("div", { className: "ay-step-body" });
-      body.textContent = ev.input ? "input: " + ev.input : "(no input)";
-      details.append(el("summary", { textContent: "🔧 " + (ev.name || "tool") }), body);
-      this.logEl.append(details);
-      if (id) this._toolBlocks[id] = { details, body };
+      blk.input.textContent = ev.input || "(no input)";
+      blk.inputRow.hidden = false;
     } else {
-      const blk = id && this._toolBlocks[id];
-      if (blk) {
-        blk.body.textContent += "\n\n→ " + (ev.result || "(done)");
-      } else {
-        const details = el("details", { className: "ay-step ay-tool", open: false });
-        details.append(
-          el("summary", { textContent: "🔧 " + (ev.name || "tool") }),
-          el("div", { className: "ay-step-body", textContent: "→ " + (ev.result || "(done)") }),
-        );
-        this.logEl.append(details);
-      }
+      const failed = /^error/i.test(String(ev.result || "").trim());
+      blk.result.textContent = ev.result || "(done)";
+      blk.resultRow.hidden = false;
+      blk.state.textContent = failed ? "⚠" : "✓";
+      blk.details.classList.add(failed ? "ay-failed" : "ay-done");
     }
     this._scroll();
   }
-  // ComfyUI's own terminal, relayed while the queue runs. A log you scroll back
-  // through, not a status line that replaces itself — so it goes in one
-  // collapsible block per turn, closed by default, because a model load can run
-  // to dozens of lines and must not bury the conversation to be available.
-  _consoleLine(text) {
-    if (!this._consoleEl || !this._consoleEl.details.isConnected) {
-      this.curAssistant = null;   // close the text bubble first; keeps ordering
-      const details = el("details", { className: "ay-step ay-console", open: false });
-      const summary = el("summary", { textContent: "🖥 ComfyUI console" });
-      const body = el("div", { className: "ay-step-body" });
-      details.append(summary, body);
-      this.logEl.append(details);
-      this._consoleEl = { details, summary, body, n: 0 };
+  _toolCard(ev) {
+    const { agent, name } = splitToolName(ev);
+    const details = el("details", { className: "ay-step ay-tool", open: false });
+    details.style.setProperty("--ay-agent", agentColor(agent));
+    const state = el("span", { className: "ay-tstate", textContent: "…" });
+    const summary = el("summary", {}, [el("span", { textContent: "🔧" })]);
+    if (agent) {
+      summary.append(el("span", { className: "ay-agent" }, [el("span", { className: "ay-dot" }), agent]));
     }
-    const blk = this._consoleEl;
-    blk.body.textContent += (blk.n ? "\n" : "") + text;
-    blk.n += 1;
-    blk.summary.textContent = `🖥 ComfyUI console · ${blk.n} line${blk.n === 1 ? "" : "s"}`;
-    if (blk.details.open) blk.body.scrollTop = blk.body.scrollHeight;
-    this._scroll();
+    summary.append(el("span", { className: "ay-tname", textContent: name, title: name }), state);
+    const row = (key) => {
+      const val = el("pre", { className: "ay-kv-val" });
+      const kv = el("div", { className: "ay-kv", hidden: true },
+        [el("span", { className: "ay-kv-key", textContent: key }), val]);
+      return { kv, val };
+    };
+    const inp = row("input");
+    const res = row("result");
+    details.append(summary, el("div", { className: "ay-step-body" }, [inp.kv, res.kv]));
+    return { details, state, input: inp.val, inputRow: inp.kv, result: res.val, resultRow: res.kv };
   }
+  // ── the run ──────────────────────────────────────────────────────────────
+  // Everything the executor says while a turn runs — its status lines, ComfyUI's
+  // console, the files it saved — in ONE card. While the turn runs the card is
+  // docked above the composer, where it can be watched without scrolling; when the
+  // turn ends it is filed into the conversation at the point the run began. It used
+  // to be a status line that replaced itself, a console block per burst of output
+  // and a system line per saved file: twenty lines for a ten-image run.
+  _run() {
+    if (this._runEl) return this._runEl;
+    this.curAssistant = null;   // close the text bubble first; keeps ordering
+    const anchor = el("div", { className: "ay-run-anchor" });
+    this.logEl.append(anchor);
+    const text = el("span", { className: "ay-run-text", textContent: "Working…" });
+    const count = el("span", { className: "ay-run-count" });
+    const fill = el("div", { className: "ay-bar-fill" });
+    const bar = el("div", { className: "ay-bar-track", hidden: true }, [fill]);
+    const summary = el("summary", {},
+      [el("span", { className: "ay-livedot" }), el("span", { textContent: "⚙️" }), text, count, bar]);
+    const steps = el("div", { className: "ay-run-steps" });
+    const outs = el("div", { className: "ay-run-outs", hidden: true });
+    const conSum = el("summary", { textContent: "🖥 ComfyUI console" });
+    const conBody = el("div", { className: "ay-con-body" });
+    const con = el("details", { className: "ay-run-console", hidden: true }, [conSum, conBody]);
+    const body = el("div", { className: "ay-run-body" }, [steps, outs, con]);
+    const details = el("details", { className: "ay-step ay-run ay-live", open: false }, [summary, body]);
+    this.runDock.append(details);
+    this.runDock.hidden = false;
+    this._runEl = { details, anchor, text, count, bar, fill, steps, outs, con, conSum, conBody, body,
+      conLines: 0, outputs: 0, total: 0, finished: 0, failed: false, lastBar: null };
+    return this._runEl;
+  }
+  // One status line. A progress bar rewrites the bar line before it rather than
+  // stacking a line per step; the newest line is also the card's title.
   _status(text) {
-    if (!this._statusEl || !this._statusEl.isConnected) {
-      this._statusEl = el("div", { className: "ay-status" });
-      this.logEl.append(this._statusEl);
+    const line = String(text || "").trim();
+    if (!line) return;
+    const r = this._run();
+    const isBar = /[█░]/.test(line);
+    let row = isBar ? r.lastBar : null;
+    if (!row) {
+      row = el("div", { className: "ay-run-step" });
+      r.steps.append(row);
     }
-    this._statusEl.textContent = text;
-    this._scroll();
+    row.textContent = line;
+    r.lastBar = isBar ? row : null;
+    r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
+    r.text.title = line;
+    const bare = line.replace(/^\[\d+\/\d+\]\s*/, "");
+    if (/^(❌|🛑|⏹)/u.test(bare)) r.failed = true;
+    else if (/^✅/u.test(bare)) r.failed = false;
+    const it = line.match(/Iteration (\d+)\/(\d+)/) || line.match(/^\[(\d+)\/(\d+)\]/);
+    if (it) r.total = Math.max(r.total, Number(it[2]));
+    if (/^\[\d+\/\d+\]\s*✅ Done/u.test(line)) r.finished += 1;
+    const pct = isBar && line.match(/\((\d+)%\)/);
+    if (pct && r.total <= 1) this._runBar(Number(pct[1]));
+    this._runCount();
+    r.body.scrollTop = r.body.scrollHeight;
   }
-  _clearStatus() { this._statusEl = null; }
+  _runBar(pct) {
+    const r = this._runEl;
+    r.bar.hidden = false;
+    r.fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  }
+  _runCount() {
+    const r = this._runEl;
+    if (r.total > 1) {
+      const done = Math.min(Math.max(r.finished, r.outputs), r.total);
+      r.count.textContent = `${done}/${r.total}`;
+      this._runBar(Math.round((100 * done) / r.total));
+    } else {
+      r.count.textContent = r.outputs ? `${r.outputs} output${r.outputs === 1 ? "" : "s"}` : "";
+    }
+  }
+  // ComfyUI's own terminal, relayed while the queue runs: a log to scroll back
+  // through, nested in the run and closed, because a model load can run to
+  // dozens of lines.
+  _consoleLine(text) {
+    const r = this._run();
+    r.con.hidden = false;
+    r.conBody.textContent += (r.conLines ? "\n" : "") + text;
+    r.conLines += 1;
+    r.conSum.textContent = `🖥 ComfyUI console · ${r.conLines} line${r.conLines === 1 ? "" : "s"}`;
+    if (r.con.open) r.conBody.scrollTop = r.conBody.scrollHeight;
+  }
+  // A file the run produced, named in the run rather than as a line of its own.
+  _runOutput(ev, placed) {
+    const r = this._run();
+    const path = String(ev.path || ev.filename || "");
+    r.outputs += 1;
+    r.outs.hidden = false;
+    r.outs.append(el("div", { className: "ay-run-out", title: path }, [
+      el("span", { textContent: "🖼" }),
+      el("span", { className: "ay-run-out-name", textContent: path.split(/[\\/]/).pop() || path }),
+      el("span", {
+        className: "ay-run-out-note",
+        textContent: placed ? "on the canvas" : "saved",
+        title: placed ? "" : "Not placed on the canvas — Settings ▸ Canvas",
+      }),
+    ]));
+    this._runCount();
+  }
+  // File the run into the conversation where it began. Called wherever the old
+  // status line was cleared: the turn ending, a stop, a stream that went quiet.
+  _clearStatus() {
+    const r = this._runEl;
+    this._runEl = null;
+    if (!r) return;
+    r.details.classList.remove("ay-live");
+    r.details.classList.add(r.failed ? "ay-failed" : "ay-done");
+    if (!r.failed && !r.bar.hidden) r.fill.style.width = "100%";
+    // Filed, the card says how the run ended; its last line is one click away.
+    const outs = r.outputs ? ` · ${r.outputs} output${r.outputs === 1 ? "" : "s"}` : "";
+    r.text.textContent = (r.failed ? "Stopped" : "Finished") + outs;
+    if (r.anchor.isConnected) r.anchor.replaceWith(r.details);
+    else r.details.remove();
+    this.runDock.hidden = !this.runDock.children.length;
+  }
 
   // The visible graph rect ([x, y, w, h] in graph coordinates), or null when the
   // canvas hasn't laid out yet.
@@ -1751,7 +1926,8 @@ class AgentChat {
     if (ev && ev.drop === false) {
       // Still say where it is. The panel does not render media inline, so with no
       // node and no line the result would exist only as a file nobody was told
-      // about.
+      // about. During a turn that is a row in the run; outside one, a line.
+      if (this.streaming) { this._runOutput(ev, false); return; }
       this._sys(`🖼 ${ev.kind === "video" ? "Video" : "Image"} saved → \`${ev.path}\`` +
                 "  \n_(not placed on the canvas — Settings ▸ Canvas)_");
       return;
@@ -1783,6 +1959,7 @@ class AgentChat {
     // workflow instead of each one starting where the last ended.
     markAgentDrop(node);
     node.pos = this._dropPos(null, node);
+    if (this.streaming) this._runOutput(ev, true);
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
     const w = (node.widgets || []).find((x) => wnames.includes(x.name));
     if (w) {
@@ -1922,8 +2099,8 @@ class AgentChat {
         this._consoleLine(ev.data);
         break;
       case "exec":
+        // The run card stays up between workflows; the turn's end files it.
         if (ev.state === "start") this._status("⚙️ ComfyUI running…");
-        else this._clearStatus();
         break;
       case "plan":
         this._sys("🗂️ **Plan:**\n" + (ev.steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n"));
@@ -2004,6 +2181,7 @@ class AgentChat {
         this._thinkStep = null;
         this._toolBlocks = {};
         this._consoleEl = null;
+        this._clearStatus();
         this.streaming = false;
         this._adoptedRun = false;
         // A question cannot outlive the turn that asked it. The host pops its
@@ -2251,6 +2429,7 @@ class AgentChat {
       this._thinkStep = null;
       this._toolBlocks = {};
       this._consoleEl = null;
+      this._clearStatus();
       if (mark) {
         while (mark.nextSibling) mark.nextSibling.remove();
         mark.remove();
@@ -2341,6 +2520,7 @@ class AgentChat {
     this._thinkStep = null;
     this._toolBlocks = {};
     this._consoleEl = null;
+    this._clearStatus();
     // The conversation this stream belongs to. On the very first turn the id is
     // assigned by the server and arrives in the "thread" event.
     this.streamThreadId = body.thread_id || this.threadId || null;
