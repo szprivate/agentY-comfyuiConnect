@@ -200,6 +200,27 @@ function graphHash(graph) {
   return (h >>> 0).toString(16) + ":" + s.length;
 }
 
+// Slash commands that open one of the viewers (the same ones the Settings modal
+// lists under Viewers), each through the window.agentYOpen* global its module
+// sets. The first name is the one the popup offers; the rest are typed aliases.
+const VIEWER_COMMANDS = [
+  { names: ["history", "message_history", "log"], opener: "agentYOpenLogViewer",
+    label: "message-history viewer", done: "📜 Opened the message-history log in a new tab." },
+  { names: ["memory", "long_term_memory", "ltm"], opener: "agentYOpenMemoryViewer",
+    label: "long-term memory viewer", done: "🧠 Opened the long-term memory viewer in a new tab." },
+  { names: ["project_memory", "projectmemory"], opener: "agentYOpenProjectMemory",
+    label: "project-memory editor", done: "📌 Opened the project-memory editor in a new tab." },
+  { names: ["costs", "cost", "usage", "token_usage"], opener: "agentYOpenTokenUsage",
+    label: "cost overview", done: "📊 Opened the cost overview." },
+];
+
+function viewerCommand(text) {
+  const m = /^\/([a-z_ ]+?)\s*$/i.exec(String(text || "").trim());
+  if (!m) return null;
+  const name = m[1].toLowerCase().replace(/ /g, "_");
+  return VIEWER_COMMANDS.find((v) => v.names.includes(name)) || null;
+}
+
 const SLASH_FALLBACK = [
   { name: "/help", description: "Open the agentY usage guide in a new browser tab" },
   { name: "/restart", description: "Restart the agent pipeline" },
@@ -209,7 +230,10 @@ const SLASH_FALLBACK = [
   { name: "/images", description: "List images generated in this thread" },
   { name: "/undo", description: "Undo the agent's last step in this conversation" },
   { name: "/qa", description: "Show / set / clear the QA briefing outputs are checked against" },
+  { name: "/history", description: "Open the message-history log viewer" },
+  { name: "/memory", description: "Open the long-term memory viewer" },
   { name: "/project_memory", description: "Inspect and forget what is remembered for THIS project" },
+  { name: "/costs", description: "Open the cost overview (token usage per model)" },
   { name: "/clearhistory", description: "Delete all conversation history" },
   { name: "/switch_model", description: "Switch an agent's LLM" },
   { name: "/add_workflow", description: "Add a workflow (JSON path, or 'canvas <name>' for the open graph)" },
@@ -2735,15 +2759,20 @@ class AgentChat {
       return;
     }
 
-    // /project_memory — open the editor for what is true of THIS project. Also
-    // client-side and for the same reason: window.open only survives the popup
-    // blocker inside the gesture that asked for it, and there is nothing here for
-    // the agent to do. The user message is echoed so the transcript still shows
-    // what was asked for.
-    if (/^\/project[_ ]?memory\s*$/i.test(text)) {
+    // The viewers — /history, /memory, /project_memory, /costs. Client-side, like
+    // /help: window.open only survives the popup blocker inside the gesture that
+    // asked for it, and there is nothing here for the agent to do. The user
+    // message is echoed so the transcript still shows what was asked for.
+    const viewer = viewerCommand(text);
+    if (viewer) {
       this._userMsg(text.trim());
-      if (window.agentYOpenProjectMemory) window.agentYOpenProjectMemory();
-      this._sys("📌 Opened the project-memory editor in a new tab.");
+      const open = window[viewer.opener];
+      if (open) {
+        open();
+        this._sys(viewer.done);
+      } else {
+        this._sys(`⚠️ The ${viewer.label} isn't loaded — reload the page.`);
+      }
       this.input.value = "";
       this._autosize();
       this._hidePop();
