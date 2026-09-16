@@ -156,6 +156,8 @@ function injectStyles() {
     width:min(720px,92vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;}
   .ays-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #2c313b;background:#1e2128;}
   .ays-head h2{font-size:15px;margin:0;font-weight:650;flex:1;}
+  .ays-hostline{font-size:11px;color:#9aa0aa;font-family:ui-monospace,monospace;text-align:right;
+    max-width:60%;overflow-wrap:anywhere;}
   .ays-body{padding:14px 18px;overflow:auto;}
   .ays-body::-webkit-scrollbar{width:8px;}
   .ays-body::-webkit-scrollbar-thumb{background:#262b34;border-radius:8px;}
@@ -1407,8 +1409,21 @@ async function openAgentYSettingsModal() {
   });
 
   const foot = el("div", { className: "ays-foot" }, [msg, saveBtn]);
+  // Which host these settings came from. A browser can keep talking to another
+  // host than the one just updated (a pinned address outranks discovery while it
+  // answers), and then the form is another host's without saying so.
+  const host = data.host || {};
+  const hostLine = el("div", {
+    className: "ays-hostline",
+    textContent: host.root
+      ? `${backendBase()} · ${host.root}${host.commit ? " · " + host.commit : ""}`
+      : `${backendBase()} · this host is older than the panel: update and restart it`,
+    title: "The agentY host these settings come from. If this is not the checkout you "
+      + "updated, another host is answering (check localStorage.agentY_backend).",
+  });
+  if (!host.root) hostLine.classList.add("ays-err");
   const card = el("div", { className: "ays-card" }, [
-    el("div", { className: "ays-head" }, [el("h2", { textContent: "agentY — Application Settings" })]),
+    el("div", { className: "ays-head" }, [el("h2", { textContent: "agentY — Application Settings" }), hostLine]),
     body,
     foot,
   ]);
