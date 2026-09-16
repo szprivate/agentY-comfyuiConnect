@@ -163,6 +163,11 @@ function injectStyles() {
   .ays-sec{margin-bottom:18px;}
   .ays-sec>h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#9aa0aa;margin:0 0 8px;}
   .ays-row{display:flex;align-items:center;gap:10px;padding:4px 0;}
+  /* A setting and its explanation are one block: the note sits right under the
+     control it explains, lined up with it, and the space goes BETWEEN settings. */
+  .ays-field .ays-row{padding:3px 0;}
+  .ays-field .ays-keynote{margin:0 0 0 calc(42% + 10px);}
+  .ays-field.ays-hasnote{margin:12px 0;}
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#c3c8d0;word-break:break-word;font-family:ui-monospace,monospace;}
   .ays-input{flex:1;min-width:0;background:#161a20;color:#e6e8ec;border:1px solid #2c313b;
     border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;}
@@ -369,12 +374,11 @@ function makeCollapsibleGroup(key, suffix, open) {
 // Render one leaf setting (scalar / array / model-select) as a labelled row and
 // register its ref for save-time collection.
 function renderLeafRow(container, key, val, path, modelGroups, refs) {
-  // A switch whose name does not carry its trade-off gets the trade-off, above
-  // the row. Hovering is not discovery: nobody hovers a setting they have not
-  // already decided to think about.
-  if (KEY_NOTES[key]) {
-    container.append(el("div", { className: "ays-note", textContent: KEY_NOTES[key] }));
-  }
+  // A switch whose name does not carry its trade-off gets the trade-off written
+  // out. Hovering is not discovery: nobody hovers a setting they have not already
+  // decided to think about. The note goes UNDER its own row, inside one block with
+  // it: above the row it read as a footnote to the setting before it.
+  const field = el("div", { className: "ays-field" });
   const row = el("div", { className: "ays-row" });
   row.append(el("label", { className: "ays-label", textContent: key }));
   let input;
@@ -405,7 +409,12 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     refs.push({ path, get: () => input.value });
   }
   row.append(input);
-  container.append(row);
+  field.append(row);
+  if (KEY_NOTES[key]) {
+    field.classList.add("ays-hasnote");
+    field.append(el("div", { className: "ays-note ays-keynote", textContent: KEY_NOTES[key] }));
+  }
+  container.append(field);
 }
 
 // Recursively render a settings object: nested objects become collapsed groups,
