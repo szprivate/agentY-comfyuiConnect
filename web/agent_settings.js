@@ -1300,6 +1300,14 @@ async function openAgentYSettingsModal() {
   const setSec = el("div", { className: "ays-sec" });
   setSec.append(el("h3", { textContent: "Application settings (config/settings.json)" }));
   setSec.append(el("div", { className: "ays-note", textContent: "Model per stage (llm ▸ pipeline), directories, and behaviour toggles. Comments are preserved on save; only changed values are written." }));
+  // The host could not read its committed defaults, so what follows is only this
+  // machine's overrides. Said up front, or a section with one checkbox in it just
+  // looks like the settings went missing.
+  if (data.settings_problem) {
+    setSec.append(el("div", { className: "ays-note ays-err",
+      textContent: "⚠ Most settings are missing below, because the agentY host could not load its defaults. "
+        + data.settings_problem }));
+  }
   const setForm = el("div");
   TIER_LABELS = data.tier_labels || {};
   buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
