@@ -690,7 +690,8 @@ class AgentChat {
     .ay-step.ay-console{border-left-color:#7f9cc9;}
     .ay-step.ay-console>summary{color:#a9bddb;}
     /* The run: what the executor is doing, docked above the composer while the turn
-       runs and filed into the conversation, where the run began, once it ends. */
+       runs and filed into the conversation when it ends: after the turn's last
+       step, ahead of the agent's closing words. */
     .ay-rundock{display:flex;flex-direction:column;}
     .ay-rundock[hidden],.ay-run-anchor,.ay-run [hidden]{display:none !important;}
     .ay-step.ay-run{border-left-color:var(--ay-accent);}
@@ -1836,8 +1837,22 @@ class AgentChat {
     // Filed, the card says how the run ended; its last line is one click away.
     const outs = r.outputs ? ` · ${r.outputs} output${r.outputs === 1 ? "" : "s"}` : "";
     r.text.textContent = (r.failed ? "Stopped" : "Finished") + outs;
-    if (r.anchor.isConnected) r.anchor.replaceWith(r.details);
-    else r.details.remove();
+    // Filed at the END of what the turn did, because finished/stopped is where the
+    // run ends: after the tool call that started it and anything else since, but
+    // ahead of the agent's closing words. The anchor (dropped when the first
+    // status line arrived, often mid-intro) only bounds how far up it may go —
+    // placing the card AT the anchor put it above the call that launched the run.
+    if (r.anchor.isConnected) {
+      let after = r.anchor.parentNode.lastElementChild;
+      while (after && after !== r.anchor
+             && (after.classList.contains("ay-assistant") || after.classList.contains("ay-working"))) {
+        after = after.previousElementSibling;
+      }
+      (after || r.anchor).after(r.details);
+      r.anchor.remove();
+    } else {
+      r.details.remove();
+    }
     this.runDock.hidden = !this.runDock.children.length;
   }
 
