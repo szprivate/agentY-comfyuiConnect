@@ -169,6 +169,16 @@ function injectStyles() {
   .ays-input:focus{border-color:#6f97ff;}
   input.ays-input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#6f97ff;}
   .ays-group{background:#1e2128;border:1px solid #2c313b;border-left:4px solid #6f97ff;border-radius:9px;margin:8px 0;overflow:hidden;}
+  /* One edge colour per subject (see GROUP_FAMILY), so sections that belong
+     together look like it and the panel sorts itself at a glance. */
+  .ays-group[data-family="models"]{border-left-color:#b48ce3;}
+  .ays-group[data-family="connections"]{border-left-color:#4fc3c3;}
+  .ays-group[data-family="canvas"]{border-left-color:#7bd88f;}
+  .ays-group[data-family="checks"]{border-left-color:#e5c07b;}
+  .ays-group[data-family="integrations"]{border-left-color:#6f97ff;}
+  .ays-group[data-family="memory"]{border-left-color:#d68ab0;}
+  .ays-group[data-family="safety"]{border-left-color:#e5736f;}
+  .ays-group[data-family="other"]{border-left-color:#6b7280;}
   .ays-grouphead{background:#1e2128;padding:7px 12px;font-size:12px;font-weight:600;color:#e6e8ec;
     font-family:ui-monospace,monospace;cursor:pointer;}
   .ays-grouphead:hover{background:#262b34;}
@@ -321,6 +331,23 @@ const GROUP_NOTES = {
     + "on this machine. Full walkthrough in docs/slack.md.",
 };
 
+// What a section is ABOUT, which decides its edge colour. Sections that mean the
+// same kind of thing share one — the models live with the per-role overrides, the
+// providers and their prices; memory with its writer and embedder — so the panel
+// reads as a handful of subjects rather than eleven identically blue boxes. Keyed
+// by section title or, for a nested group, by its settings key.
+const GROUP_FAMILY = {
+  models: "models", "per-role overrides": "models", providers: "models", pipeline: "models",
+  ollama: "models", anthropic: "models", dashscope: "models", pricing: "models",
+  connections: "connections", "files & logs": "connections", prompts: "connections",
+  system_prompts: "connections",
+  canvas: "canvas", annotation: "canvas", annotate: "canvas",
+  "output checks": "checks", qa: "checks", refine: "checks",
+  slack: "integrations", mcp: "integrations",
+  memory: "memory", embedder: "memory", llm: "memory",   // memory.llm = the memory writer
+  security: "safety", updates: "safety",
+};
+
 // A collapsible group, COLLAPSED by default (item 2: settings start folded).
 function makeCollapsibleGroup(key, suffix, open) {
   const title = (GROUP_LABELS[key] || key) + (suffix || "");
@@ -336,6 +363,7 @@ function makeCollapsibleGroup(key, suffix, open) {
   const note = GROUP_NOTES[key];
   if (note) body.append(el("div", { className: "ays-note", textContent: note }));
   const group = el("div", { className: "ays-group" }, [head, body]);
+  group.dataset.family = GROUP_FAMILY[String(key).trim().toLowerCase()] || "other";
   return { group, body };
 }
 
