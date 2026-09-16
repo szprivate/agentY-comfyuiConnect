@@ -192,7 +192,6 @@ function injectStyles() {
   .ays-btn.primary:hover{background:#5c86f2;}
   .ays-note{font-size:11.5px;color:#9aa0aa;margin:2px 0 10px;}
   .ays-msg{font-size:12px;margin-right:auto;align-self:center;}
-  .ays-toggle{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#9aa0aa;margin-bottom:8px;cursor:pointer;}
   .ays-card [hidden]{display:none !important;}
   .ays-err{color:#e5736f;}
   .ays-btn.ays-sm{padding:5px 10px;font-size:12px;}
@@ -1222,7 +1221,6 @@ async function openAgentYSettingsModal() {
 
   // ── .env auth section ──
   const envInputs = {};
-  const secretEls = [];
   const envSec = el("div", { className: "ays-sec" });
   envSec.append(el("h3", { textContent: "Authentication (.env)" }));
   envSec.append(el("div", { className: "ays-note", textContent:
@@ -1247,17 +1245,11 @@ async function openAgentYSettingsModal() {
         "below and the clock restarts on its own." }));
   }
 
-  const showToggle = el("input", { type: "checkbox" });
-  const toggleLabel = el("label", { className: "ays-toggle" }, [showToggle, el("span", { textContent: "Show typed values" })]);
-  showToggle.addEventListener("change", () => {
-    for (const inp of secretEls) inp.type = showToggle.checked ? "text" : "password";
-  });
-  envSec.append(toggleLabel);
+  // No "show values" toggle: the host sends a mask, never a secret, so revealing
+  // the field would only show the mask back. A key is replaced by typing over it.
   for (const key of data.env_keys || Object.keys(data.env || {})) {
     const cur = (data.env || {})[key] || "";
-    const secret = isSecret(key);
-    const inp = el("input", { className: "ays-input", type: secret ? "password" : "text", value: cur });
-    if (secret) secretEls.push(inp);
+    const inp = el("input", { className: "ays-input", type: isSecret(key) ? "password" : "text", value: cur });
     envInputs[key] = { input: inp, original: cur };
     const label = el("label", { className: "ays-label", textContent: key });
     const age = ages.get(key);
