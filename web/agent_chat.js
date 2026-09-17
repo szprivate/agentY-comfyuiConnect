@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
-import { hookReaches, wireIntoAnchor } from "./agent_hook.js";
+import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -2229,6 +2229,7 @@ class AgentChat {
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
+        else if (ev.op === "place_python") this._placePythonNode(ev);
         else this._applyCanvasPatch(ev);
         break;
       case "system":
@@ -3205,6 +3206,61 @@ class AgentChat {
   // canvas edits, so none of them were undoable; it matters most here, because
   // this is the only one that destroys something. (The others are worth wrapping
   // too — a separate job, and not one to do in the same change as deletion.)
+  // run_python_node: the snippet has already run on the host; this puts the
+  // node on the canvas with the same code and wiring, showing what it produced,
+  // so the user can read it, edit it and run it again with their graph.
+  _placePythonNode(ev) {
+    const LG = window.LiteGraph;
+    const graph = this._targetGraph();
+    if (!graph) return;
+    if (!LG || !LG.registered_node_types || !LG.registered_node_types["AgentYPython"]) {
+      this._sys("⚠️ The snippet ran, but this ComfyUI has no **agentY python** node "
+        + "registered — `git pull` the agentY-comfyuiConnect extension and restart ComfyUI "
+        + "to place it on the canvas.");
+      return;
+    }
+    let node;
+    try {
+      node = LG.createNode("AgentYPython");
+      graph.add(node);
+    } catch (e) {
+      this._sys(`⚠️ Could not add the agentY python node: ${e}`);
+      return;
+    }
+    const code = (node.widgets || []).find((x) => x && x.name === "code");
+    if (code) {
+      code.value = String(ev.code || "");
+      try { if (code.callback) code.callback(code.value, app.canvas, node); } catch (_) {}
+    }
+    if (ev.title) node.title = String(ev.title);
+    const byId = (id) => (graph.getNodeById && graph.getNodeById(Number(id)))
+      || (graph._nodes || []).find((n) => n && String(n.id) === String(id));
+    const missed = [];
+    let first = null;
+    (ev.inputs || []).forEach((src, i) => {
+      const from = byId(src.node_id);
+      if (!from) { missed.push(`in${i} ← #${src.node_id}`); return; }
+      first = first || from;
+      // The slots auto-grow on connection; a node fresh from createNode may not
+      // have the next one yet, so add it under the name the schema gives it.
+      const name = `inputs.in${i}`;
+      let slot = (node.inputs || []).findIndex((x) => x && (x.name === name || x.name === `in${i}`));
+      if (slot < 0) {
+        try { node.addInput(name, "*"); } catch (_) {}
+        slot = (node.inputs || []).findIndex((x) => x && x.name === name);
+      }
+      let ok = false;
+      try { ok = slot >= 0 && !!from.connect(Number(src.output) || 0, node, slot); } catch (_) {}
+      if (!ok) missed.push(`in${i} ← #${src.node_id}`);
+    });
+    markAgentDrop(node);
+    node.pos = this._dropPos(first, node);
+    showPythonResult(node, ev.result || []);
+    graph.setDirtyCanvas(true, true);
+    this._sys("🐍 Placed an **agentY python** node with the snippet on the canvas"
+      + (missed.length ? ` — could not wire ${missed.join(", ")}; connect those by hand.` : "."));
+  }
+
   _deleteNodes(ev) {
     const graph = this._targetGraph();
     if (!graph) return;

@@ -370,5 +370,45 @@ app.registerExtension({
       if (!this.size || (this.size[0] === 0 && this.size[1] === 0)) this.size = [340, 220];
       return r;
     };
+    // What the snippet produced, shown on the node after a run: one line per
+    // output (`out0: 42`, a tensor by its shape). Files it saved come back as the
+    // run's images and are previewed by ComfyUI itself.
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+      const r = onExecuted ? onExecuted.apply(this, arguments) : undefined;
+      showPythonResult(this, (message && message.text) || []);
+      return r;
+    };
   },
 });
+
+export function showPythonResult(node, lines) {
+  const text = (Array.isArray(lines) ? lines : [lines]).join("
+") || "(no outputs set)";
+  let w = (node.widgets || []).find((x) => x && x.name === "result");
+  if (!w) {
+    // Read-only and never saved: it describes the last run, and a stale copy in
+    // the workflow file would read as a value the node was given.
+    const box = document.createElement("textarea");
+    box.readOnly = true;
+    box.className = "comfy-multiline-input";
+    box.style.opacity = "0.85";
+    box.placeholder = "result of the last run";
+    if (typeof node.addDOMWidget === "function") {
+      w = node.addDOMWidget("result", "customtext", box, {
+        getValue: () => box.value,
+        setValue: (v) => { box.value = String(v ?? ""); },
+        serialize: false,
+      });
+      if (w) w.serialize = false;
+    } else {
+      w = node.addWidget("text", "result", "", () => {}, { serialize: false });
+      if (w) w.serialize = false;
+    }
+    if (!w) return;
+    w.__ayBox = box;
+  }
+  w.value = text;
+  if (w.__ayBox) w.__ayBox.value = text;
+  node.setDirtyCanvas?.(true, true);
+}

@@ -898,12 +898,16 @@ class AgentYPython(io.ComfyNode):
             node_id="AgentYPython",
             display_name="agentY python",
             category="agentY",
-            **_agent_placed(),   # the bake step places these; you don't add them by hand
             description=(
-                "Run an agent-authored Python snippet as a node (used when baking computed "
-                "values into subgraphs). Inputs bind as in0, in1, …; set a list `outputs`. "
-                "Executes arbitrary Python on run — self-hosted, agent-built workflows only."
+                "Run a Python snippet as a node — written by you or by the agent. Inputs "
+                "bind as in0, in1, …; set a list `outputs`. Files the snippet saves "
+                "(save_image, or a path in `files`/`outputs`) become this run's outputs, "
+                "and what it produced is shown on the node. Executes arbitrary Python "
+                "on run — self-hosted workflows only."
             ),
+            # Runs on its own: a snippet whose outputs are wired nowhere is still
+            # the whole point when it saves a file or answers a question.
+            is_output_node=True,
             inputs=[
                 io.String.Input(
                     "code",
@@ -943,8 +947,12 @@ class AgentYPython(io.ComfyNode):
             return int(str(name)[2:] or 0)
 
         ordered = sorted(bound.items(), key=lambda kv: _idx(kv[0]))
+        files: list = []
         ns: dict = {"__builtins__": builtins,
-                    "inputs": [v for _k, v in ordered], "outputs": []}
+                    "inputs": [v for _k, v in ordered], "outputs": [],
+                    "files": files, "output_dir": str(_python_output_dir()),
+                    "save_image": lambda image, name="image.png":
+                        _py_save_image(image, name, files)}
         for name, value in ordered:
             ns[str(name)] = value
         try:
@@ -954,7 +962,123 @@ class AgentYPython(io.ComfyNode):
         outs = ns.get("outputs")
         outs = list(outs) if isinstance(outs, (list, tuple)) else [outs]
         outs = outs[:_N_PY_OUT] + [None] * (_N_PY_OUT - len(outs))
-        return io.NodeOutput(*outs)
+        ui = _python_ui(outs, list(ns.get("files") or []))
+        return io.NodeOutput(*outs, ui=ui)
+
+
+_PY_MEDIA = {
+    "images": {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"},
+    "videos": {".mp4", ".webm", ".mov", ".mkv", ".avi"},
+    "audio": {".wav", ".mp3", ".flac", ".ogg", ".m4a"},
+}
+
+
+def _python_output_dir():
+    """Where a python node's files go: ``<ComfyUI output>/agentY_python``."""
+    from pathlib import Path
+    import folder_paths
+    return Path(folder_paths.get_output_directory()) / "agentY_python"
+
+
+def _py_save_image(image, name, files):
+    """``save_image`` for snippets: a tensor, array or PIL image → a PNG in the output.
+
+    A ComfyUI IMAGE is a float tensor ``[B,H,W,C]`` in 0..1; every frame of a
+    batch is written (``name``, ``name_1``, …). Returns the path(s) written and
+    records them as this run's outputs.
+    """
+    from pathlib import Path
+    import numpy as np
+    from PIL import Image
+
+    out_dir = _python_output_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(str(name)).stem or "image"
+    frames = []
+    if isinstance(image, Image.Image):
+        frames = [image]
+    else:
+        arr = image.detach().cpu().numpy() if hasattr(image, "detach") else np.asarray(image)
+        if arr.ndim == 3:
+            arr = arr[None]
+        for frame in arr:
+            if frame.dtype != np.uint8:
+                frame = (np.clip(frame, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+            if frame.ndim == 3 and frame.shape[-1] == 1:
+                frame = frame[..., 0]
+            frames.append(Image.fromarray(frame))
+    written = []
+    for i, frame in enumerate(frames):
+        path = out_dir / f"{stem}{'' if i == 0 else f'_{i}'}.png"
+        n = 1
+        while path.exists():
+            path = out_dir / f"{stem}{'' if i == 0 else f'_{i}'}_{n:03d}.png"
+            n += 1
+        frame.save(path)
+        written.append(str(path))
+    files.extend(written)
+    return written[0] if len(written) == 1 else written
+
+
+def _python_ui(outs, files):
+    """The node's ``ui``: what each output holds, plus the files it produced.
+
+    Files are reported the way a Save node reports them, so a run's history lists
+    them and whatever collects outputs (the agent, the panel) picks them up. A
+    file outside ComfyUI's output folder is copied into it first — /view serves
+    nothing else.
+    """
+    import shutil
+    from pathlib import Path
+    import folder_paths
+
+    root = Path(folder_paths.get_output_directory()).resolve()
+    candidates = list(files)
+    for value in outs:
+        if isinstance(value, str) and len(value) < 1024:
+            candidates.append(value)
+    ui: dict = {}
+    seen = set()
+    for raw in candidates:
+        try:
+            path = Path(str(raw)).expanduser()
+            if not path.is_file():
+                continue
+            path = path.resolve()
+        except (OSError, ValueError):
+            continue
+        kind = next((k for k, exts in _PY_MEDIA.items() if path.suffix.lower() in exts), None)
+        if kind is None or path in seen:
+            continue
+        seen.add(path)
+        if root not in path.parents:
+            dest_dir = _python_output_dir()
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / path.name
+            if dest.exists():
+                dest = dest_dir / f"{path.stem}_{len(seen):03d}{path.suffix}"
+            shutil.copyfile(path, dest)
+            path = dest.resolve()
+        rel = path.relative_to(root)
+        ui.setdefault(kind, []).append({
+            "filename": rel.name,
+            "subfolder": rel.parent.as_posix() if str(rel.parent) != "." else "",
+            "type": "output",
+        })
+    ui["text"] = [_describe_value(i, v) for i, v in enumerate(outs) if v is not None]
+    return ui
+
+
+def _describe_value(index, value):
+    """One readable line for ``out<index>``: a tensor by its shape, text as text."""
+    shape = getattr(value, "shape", None)
+    if shape is not None and not isinstance(value, (str, bytes)):
+        kind = type(value).__name__
+        return f"out{index}: {kind} {tuple(int(d) for d in shape)}"
+    text = value if isinstance(value, str) else repr(value)
+    if len(text) > 2000:
+        text = text[:2000] + " …"
+    return f"out{index}: {text}"
 
 
 class AgentYText(io.ComfyNode):
