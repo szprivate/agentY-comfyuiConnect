@@ -383,8 +383,8 @@ app.registerExtension({
 });
 
 export function showPythonResult(node, lines) {
-  const text = (Array.isArray(lines) ? lines : [lines]).join("
-") || "(no outputs set)";
+  const text = (Array.isArray(lines) ? lines : [lines]).map(String).join(String.fromCharCode(10))
+    || "(no outputs set)";
   let w = (node.widgets || []).find((x) => x && x.name === "result");
   if (!w) {
     // Read-only and never saved: it describes the last run, and a stale copy in
