@@ -45,7 +45,7 @@ const SECTIONS = [
   // Models first and OPEN. It is the setting people come here to change, and it
   // used to be two collapsed levels down ("Models & providers" -> "Model tiers").
   { title: "Models", open: true, inline: ["llm", "tiers"],
-    objects: [["llm", "pipeline"]] },
+    objects: [["llm", "triage"], ["llm", "pipeline"]] },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas",
@@ -143,6 +143,21 @@ const KEY_NOTES = {
     + "address or \"localhost\" is refused, because a name pointed at 127.0.0.1 is "
     + "how DNS rebinding reaches a local server. Add your machine's real name "
     + "here if you use it.",
+  simple:
+    "Answers the turns where being wrong is cheap — a thank-you, a question about "
+    + "what just happened, a setting change. Make this the cheapest model you trust "
+    + "to talk to you.",
+  complex:
+    "Answers everything that generates, plans, batches or touches your canvas, and "
+    + "every follow-up to one of those. Worth a strong model: this is the seat that "
+    + "chooses templates and drives the specialists.",
+  classifier:
+    "Reads the message to decide which of the two seats takes the turn. One short "
+    + "JSON call, so a small fast model is the right choice; blank uses the Fast "
+    + "utility tier.",
+  min_confidence:
+    "How sure the reading has to be before the model is switched. Below this the "
+    + "turn runs on whatever is already in the seat.",
 };
 
 function injectStyles() {
@@ -267,6 +282,7 @@ function buildModelSelect(groups, current, inheritable) {
 // from the settings file, so without this the UI is stuck with whatever the TOML
 // key is called — "pipeline" for what is really "which model does which job".
 const GROUP_LABELS = {
+  triage: "Cheap or strong, per message",
   pipeline: "Per-role overrides",
   qa: "Checking finished outputs",
   refine: "Refine loops",
@@ -314,6 +330,14 @@ const GROUP_NOTES = {
     + "“QA judge” tier under Models.",
   tiers: "Every role takes its model from one of these six. Set them and you are "
     + "done — per-role overrides below are for the exceptions.",
+  triage: "Reads each message before the turn starts and runs it on the cheap or the "
+    + "strong model depending on what it asks for. Anything that generates, plans, "
+    + "batches, touches your canvas or comes with attachments is complex; a thank-you, "
+    + "a question about what just happened or a settings change is simple — and a short "
+    + "follow-up (\"make it brighter\") counts as whatever it follows. Reading costs one "
+    + "short call on the Fast utility tier, skipped where the answer is obvious. Leave a "
+    + "seat blank and it uses the Orchestrator tier above, so the model picker in the "
+    + "composer still decides that one.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
     + "that single job wants a different model from the rest of its tier.",
   memory: "Long-term memory. The store is always local FAISS. The two models here "
@@ -384,9 +408,12 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
   const row = el("div", { className: "ays-row" });
   row.append(el("label", { className: "ays-label", textContent: key }));
   let input;
-  // Both llm.tiers.* and llm.pipeline.* are model choices; only the per-role
-  // overrides may be left blank to inherit.
-  const isOverride = path[0] === "llm" && path[1] === "pipeline";
+  // llm.tiers.*, llm.pipeline.* and the two llm.triage seats are all model
+  // choices; the per-role overrides and the triage seats may be left blank to
+  // inherit (a blank seat follows the orchestrator tier).
+  const isTriageSeat = path[0] === "llm" && path[1] === "triage"
+    && (key === "simple" || key === "complex" || key === "classifier");
+  const isOverride = (path[0] === "llm" && path[1] === "pipeline") || isTriageSeat;
   const underPipeline = isOverride || (path[0] === "llm" && path[1] === "tiers");
   const label = row.firstChild;
   if (path[0] === "llm" && path[1] === "tiers" && TIER_LABELS[key]) {

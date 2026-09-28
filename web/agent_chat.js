@@ -236,6 +236,7 @@ const SLASH_FALLBACK = [
   { name: "/costs", description: "Open the cost overview (token usage per model)" },
   { name: "/clearhistory", description: "Delete all conversation history" },
   { name: "/switch_model", description: "Switch an agent's LLM" },
+  { name: "/triage", description: "Pick the model per message (cheap vs strong) — /triage [on|off]" },
   { name: "/add_workflow", description: "Add a workflow (JSON path, or 'canvas <name>' for the open graph)" },
   { name: "/resend", description: "Resend the first user message" },
   { name: "/remove_workflow", description: "Remove a workflow by name" },
