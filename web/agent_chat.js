@@ -648,9 +648,14 @@ class AgentChat {
                                  canvas_hooks: this._collectCanvasHooks() }),
         });
         const j = await r.json();
-        if (!j || !j.ok) return;
-        if (threadId === this.threadId) this._setPromptLoopUI(j);
-        if (j.qa && j.qa.line) this._sys(j.qa.line);
+        if (!j || !j.ok || threadId !== this.threadId) return;
+        this._setPromptLoopUI(j);
+        if (!j.judge) return;
+        // Judging is a turn of its own, so the QA agent's work shows up like
+        // any other agent's, and a FAIL goes straight to the orchestrator. Wait
+        // for a running turn to finish first (_maybeDispatchQueued picks it up).
+        this._pendingJudge = { v, threadId };
+        this._maybeDispatchQueued();
       } catch (_) {
         // The next turn pairs and judges it instead.
       }
@@ -658,6 +663,25 @@ class AgentChat {
     for (const name of ["execution_success", "execution_error", "execution_interrupted"]) {
       api.addEventListener(name, done);
     }
+  }
+
+  // A turn nobody typed: v's render landed. The host judges it against the
+  // canvas's QA node (a [qa] card), ends there on a pass, and on a FAIL with
+  // retries left has the orchestrator write the next version — which queues,
+  // lands, and comes back here.
+  async _judgeRender(v) {
+    this._sys(`🔍 v${v} rendered — QA is judging it.`);
+    let openTabs = [];
+    try { openTabs = openWorkflows(); } catch (_) {}
+    await this._stream({
+      thread_id: this.threadId,
+      message: "",
+      loop_render: { v },
+      canvas_hooks: this._collectCanvasHooks(),
+      canvas_selection: this._collectCanvasSelection(),
+      canvas_prompt: await this._captureCanvasGraph(),
+      open_workflows: openTabs,
+    });
   }
 
   // Clicking a version writes it to the canvas HERE, from the host's answer —
@@ -1547,7 +1571,15 @@ class AgentChat {
 
   // Dispatch the next queued message once the pipeline is free (called on `done`).
   _maybeDispatchQueued() {
-    if (this.streaming || this.activeAsk || !this._hostUp || !this._queue.length) return;
+    if (this.streaming || this.activeAsk || !this._hostUp) return;
+    // A prompt-loop render that landed while a turn ran is judged first: what the
+    // user typed meanwhile is usually about that very render.
+    if (this._pendingJudge) {
+      const { v, threadId } = this._pendingJudge;
+      this._pendingJudge = null;
+      if (threadId === this.threadId) { this._judgeRender(v); return; }
+    }
+    if (!this._queue.length) return;
     const item = this._queue.shift();
     this._renderQueue();
     this.input.value = item.text || "";
