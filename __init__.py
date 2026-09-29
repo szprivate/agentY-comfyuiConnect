@@ -657,18 +657,13 @@ class AgentYHook(io.ComfyNode):
       it when the task doesn't fit the more specific purposes; media results stage
       onto the canvas, a single produced value goes to the wired target, and a plain
       question is answered in chat.
-    * ``iterate`` — turns this graph into an **interactive refinement loop**: the
-      agent runs it ONE generation per turn and feeds each result back in as the
-      next input, so you refine an image step by step in chat. Wire this hook's
-      **output into the prompt node's text input** (where each prompt you type in
-      chat is written) and wire the **LoadImage node's image output into an
-      anchor** (the node whose image the agent replaces with the running result).
-      Each turn you give the next prompt; the agent runs the graph, updates that
-      LoadImage in place, and asks for the next step. You can jump back to an
-      earlier generation ("go back to the original", "back to generation 3, then …")
-      and keep going until you say stop. Requires a save node that writes to
-      ComfyUI's history (e.g. a SaveImage, or the bEpic viewer with
-      ``save_to_output`` ON) so the agent can fetch each result to feed forward.
+    Step-by-step refinement used to be a purpose here (``iterate``): the agent ran
+    this graph one generation per turn and fed each result back in. It is now the
+    panel's **prompt loop** — the ✍ button in the agentY side panel — because the
+    loop people actually run keeps the queueing in their own hands: the agent writes
+    each prompt into your prompt node, you queue it and look at the render, you say
+    what to change. No hook, and nothing to wire. A saved graph whose hook is still
+    set to ``iterate`` is told so and otherwise does nothing.
     Quality assessment used to be a purpose here. It is now its own node —
     ``agentY qa`` — because it was never one field: the prose lived on this
     dropdown and the measured checks (ratio, resolution, sharpness, likeness) on a
@@ -738,7 +733,7 @@ class AgentYHook(io.ComfyNode):
     load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
     read comes back with ``remember`` on.
 
-    It is hidden on ``human_review`` and ``iterate``, which produce nothing to keep.
+    It is hidden on ``human_review``, which produces nothing to keep.
 
     To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
     (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
@@ -788,7 +783,7 @@ class AgentYHook(io.ComfyNode):
                 io.Combo.Input(
                     "purpose",
                     options=["inline_parameter", "make_workflow", "text", "general_request",
-                             "iterate", "human_review"],
+                             "human_review"],
                     default="inline_parameter",
                     tooltip=(
                         "'qa' is no longer here — quality assessment has its own node, "
@@ -816,8 +811,7 @@ class AgentYHook(io.ComfyNode):
                         "hindsight. On a make_workflow hook this reads 'bake into subgraph' "
                         "instead: what that hook produced is a workflow, so keeping it means "
                         "nesting it into a subgraph beside the hook (its outputs are kept "
-                        "too). Hidden on qa, review and iterate, which produce nothing "
-                        "to keep."
+                        "too). Hidden on qa and review, which produce nothing to keep."
                     ),
                 ),
                 io.Autogrow.Input("anchors", template=anchors),

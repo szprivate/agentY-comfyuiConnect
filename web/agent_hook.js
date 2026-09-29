@@ -22,10 +22,10 @@ import { app } from "../../scripts/app.js";
 //    which everyone calls baking. bake_hooks_to_canvas consults it.
 //  • everything else produces a result → keeping it means memorizing it to
 //    agent/memory/ beside the outputs, which hook_cache does.
-// human_review and iterate produce nothing to keep: a qa hook is expressly told
-// never to place_canvas_text, a human_review hook is a stop, and an iterate hook runs
-// through iterate_step — so the switch has never done anything at all there and
-// is hidden.
+// human_review produces nothing to keep: a qa hook is expressly told never to
+// place_canvas_text and a human_review hook is a stop, so the switch has never done
+// anything at all there and is hidden. (`iterate` used to be in this sentence; the
+// purpose is retired — step-by-step refinement is the panel's prompt loop now.)
 const PRODUCES_A_RESULT = ["inline_parameter", "text", "general_request"];
 
 // name → "has this widget nothing to do under this purpose?"

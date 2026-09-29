@@ -438,6 +438,7 @@ class AgentChat {
     this._startHeartbeat();       // notice a host that crashes or is stopped while we sit idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
     this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
+    this._loadPromptLoop();       // and this conversation's prompt loop + its versions
 
     // Say so in the panel. Coming back from an offline overlay is obvious enough
     // visually, but a restart the panel rode out silently is not — and either way
@@ -483,6 +484,126 @@ class AgentChat {
       this._setAutographUI(!!j.enabled, false);
     } catch (_) {
       this._setAutographUI(!next, false); // revert on failure
+    }
+  }
+
+  // ── prompt loop (✍) ─────────────────────────────────────────────────────────
+  // The user's own way of refining: the agent writes a prompt into ONE node on the
+  // canvas, they queue the graph in ComfyUI and look at the render, they say what to
+  // change. State lives on the host, per conversation, so it survives a reload and a
+  // thread switch — this is only its face.
+  _setPromptLoopUI(state) {
+    this._loop = state && typeof state === "object" ? state : { on: false, versions: [] };
+    if (this.loopBtn) {
+      this.loopBtn.classList.toggle("ay-on", !!this._loop.on);
+      const target = this._loop.node_id ? ` — writing into node ${this._loop.node_id}` : "";
+      this.loopBtn.title = this._loop.on
+        ? `Prompt loop: ON${target}. The agent writes each prompt; you queue it. Click to stop.`
+        : "Prompt loop: OFF — select your prompt node and click to start. "
+          + "The agent then writes each new prompt into it and you queue the graph yourself.";
+    }
+    this._renderVersions();
+  }
+
+  _renderVersions() {
+    const bar = this.vBarEl;
+    if (!bar) return;
+    const loop = this._loop || {};
+    const versions = Array.isArray(loop.versions) ? loop.versions : [];
+    bar.innerHTML = "";
+    // Off, or on with nothing written yet: no strip. An empty strip would be a row
+    // of furniture explaining that nothing has happened.
+    if (!loop.on || !versions.length) {
+      bar.style.display = "none";
+      return;
+    }
+    bar.style.display = "flex";
+    bar.append(el("span", { className: "ay-vlabel", textContent: "prompt" }));
+    versions.forEach((entry, i) => {
+      const last = i === versions.length - 1;
+      const chip = el("button", {
+        className: "ay-vchip" + (last ? " ay-vnow" : "") + (entry.rendered ? "" : " ay-vdry"),
+        textContent: "v" + entry.v,
+        title: (entry.text || "")
+          + (entry.rendered ? "\n\n(rendered)" : "\n\n(not queued yet)")
+          + (last ? "" : "\n\nClick to put this prompt back on the canvas."),
+      });
+      chip.addEventListener("click", () => this._restoreVersion(entry.v));
+      bar.append(chip);
+    });
+    if (bar.lastChild) bar.scrollLeft = bar.scrollWidth;
+  }
+
+  async _loadPromptLoop() {
+    if (!this.threadId) { this._setPromptLoopUI({ on: false, versions: [] }); return; }
+    try {
+      const r = await fetch(backendBase() + "/agentY/prompt_loop?thread_id="
+                            + encodeURIComponent(this.threadId), { cache: "no-store" });
+      const j = await r.json();
+      if (j && j.ok) this._setPromptLoopUI(j);
+    } catch (_) { /* host down — leave the button as it is */ }
+  }
+
+  async _togglePromptLoop() {
+    // Starting with a node selected points the loop at it, which is the whole
+    // gesture: click the prompt node, click ✍, ask for a prompt. With nothing
+    // selected the agent resolves the node on its first write (and asks when the
+    // graph has several text nodes).
+    const on = !(this._loop && this._loop.on);
+    if (!this.threadId) {
+      this._sys("Start a conversation first — the prompt loop belongs to one.");
+      return;
+    }
+    const node_id = on ? String((this._selOrder || [])[0] || "") : "";
+    try {
+      const r = await fetch(backendBase() + "/agentY/prompt_loop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: this.threadId, on, node_id }),
+      });
+      const j = await r.json();
+      if (!j || !j.ok) throw new Error((j && j.error) || "could not switch the prompt loop");
+      this._setPromptLoopUI(j);
+      this._sys(on
+        ? "✍ Prompt loop ON" + (node_id ? ` — prompts go into node ${node_id}.` : ".")
+          + " Ask for a prompt; it lands on the canvas and you queue it yourself."
+          + (node_id ? "" : " Select your prompt node, or say which node it is.")
+        : "✍ Prompt loop off. The versions are kept — switch it back on to carry on.");
+    } catch (e) {
+      this._sys("❌ " + e);
+    }
+  }
+
+  // The agent just wrote a prompt version. Append it locally so the strip moves
+  // with the turn instead of after it; the host is still the record, and the next
+  // load reconciles (a version this missed appears then).
+  _notePromptVersion(ev) {
+    const loop = this._loop || { on: true, versions: [] };
+    loop.on = true;
+    if (ev.node_id) loop.node_id = String(ev.node_id);
+    if (ev.input) loop.input = String(ev.input);
+    loop.versions = Array.isArray(loop.versions) ? loop.versions : [];
+    if (!loop.versions.some((e) => e.v === ev.v)) {
+      loop.versions.push({ v: ev.v, text: String(ev.text || ""), rendered: false });
+    }
+    this._setPromptLoopUI(loop);
+  }
+
+  async _restoreVersion(v) {
+    if (!this.threadId) return;
+    try {
+      const r = await fetch(backendBase() + "/agentY/prompt_loop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: this.threadId, restore: v }),
+      });
+      const j = await r.json();
+      if (!j || !j.ok) throw new Error((j && j.error) || "could not restore that version");
+      this._setPromptLoopUI(j);
+      this._sys(`✍ Put v${v} back on the canvas (recorded as v${
+        (j.versions || []).length ? j.versions[j.versions.length - 1].v : "?"}).`);
+    } catch (e) {
+      this._sys("❌ " + e);
     }
   }
 
@@ -753,6 +874,18 @@ class AgentChat {
     .ay-selbar .ay-selcount{font-size:11px;color:var(--ay-muted);font-weight:600;}
     .ay-selbar .ay-selchip{background:transparent;border-color:rgba(150,175,220,.35);color:#9db8de;}
     .ay-selbar .ay-selmore{font-size:11px;color:var(--ay-muted);}
+    /* Prompt loop: every prompt version this conversation has written, newest last.
+       Click one to put it back on the canvas. Scrolls sideways rather than wrapping —
+       it is a timeline, and a timeline that reflows loses its order at a glance. */
+    .ay-vbar{display:none;gap:5px;align-items:center;overflow-x:auto;padding-bottom:2px;}
+    .ay-vbar .ay-vlabel{font-size:11px;color:var(--ay-muted);font-weight:600;flex-shrink:0;}
+    .ay-vchip{background:var(--ay-surface2);border:1px solid var(--ay-border);border-radius:999px;
+      padding:3px 9px;font-size:11px;color:var(--ay-text);cursor:pointer;flex-shrink:0;
+      font-family:ui-monospace,monospace;}
+    .ay-vchip:hover{border-color:#6f97ff;}
+    .ay-vchip.ay-vnow{border-color:#6f97ff;color:#cfe0ff;font-weight:650;}
+    /* A version nobody has queued yet: it is on the canvas, no render came back. */
+    .ay-vchip.ay-vdry{opacity:.62;}
     .ay-inrow{display:flex;gap:8px;align-items:flex-end;--ay-composer-h:40px;}
     /* The message field and the buttons beside it share ONE height so nothing sits
        higher than its neighbours. The field's vertical padding is chosen so a single
@@ -841,7 +974,14 @@ class AgentChat {
     this.autographBtn = el("button", { className: "ay-btn", title: "Auto-graph workflows onto canvas" });
     setButtonIcon(this.autographBtn, "autograph", "🖼");
     this.autographBtn.addEventListener("click", () => this._toggleAutograph());
-    wrap.append(el("div", { className: "ay-bar" }, [this.threadSel, newBtn, delBtn, this.undoBtn, this.autographBtn]));
+    // Prompt loop: the agent writes each prompt into one node on the canvas and you
+    // queue it yourself. Per conversation, so two threads can be refining two
+    // different prompts; the strip above the composer is this loop's history.
+    this.loopBtn = el("button", { className: "ay-btn", title: "Prompt loop" });
+    setButtonIcon(this.loopBtn, "promptLoop", "✍");
+    this.loopBtn.addEventListener("click", () => this._togglePromptLoop());
+    wrap.append(el("div", { className: "ay-bar" },
+      [this.threadSel, newBtn, delBtn, this.undoBtn, this.autographBtn, this.loopBtn]));
 
     // message log
     this.logEl = el("div", { className: "ay-log" });
@@ -865,6 +1005,7 @@ class AgentChat {
     // input area
     this.attachEl = el("div", { className: "ay-attach" });
     this.selBarEl = el("div", { className: "ay-selbar" });
+    this.vBarEl = el("div", { className: "ay-vbar" });
     this.queueEl = el("div", { className: "ay-queue" });
     this.runDock = el("div", { className: "ay-rundock", hidden: true });
     this.pop = el("div", { className: "ay-pop" });
@@ -884,7 +1025,8 @@ class AgentChat {
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
     const inwrap = el("div", { className: "ay-inwrap" },
-      [this.pop, this.runDock, this.queueEl, this.selBarEl, this.attachEl, inrow, this.fileInput]);
+      [this.pop, this.runDock, this.queueEl, this.vBarEl, this.selBarEl, this.attachEl,
+       inrow, this.fileInput]);
     wrap.append(inwrap);
     this._startSelectionIndicator();
 
@@ -1519,6 +1661,7 @@ class AgentChat {
     this.threadId = id;
     this._saveActive(id);
     this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
+    this._loadPromptLoop(); // this conversation's prompt loop, if it has one
     // Restore the live-rendered panel if we've shown this thread already this
     // session (keeps the thinking/step blocks); otherwise rebuild from the
     // persisted messages, which store only the final user/assistant text.
@@ -2223,9 +2366,12 @@ class AgentChat {
         // Only the ops that actually put something on a graph say where it went;
         // a review being released places nothing and must not claim otherwise,
         // and neither does a text answer whose node placement is switched off.
-        if (ev.op !== "review_released"
+        if (ev.op !== "review_released" && ev.op !== "prompt_version"
             && !(ev.op === "place_text" && ev.place === false)) this._noteOffscreenDrop();
         if (ev.op === "place_text") this._placeCanvasText(ev);
+        // A prompt version is a strip entry, not a node placement: the widget write
+        // travels as its own ordinary patch beside it.
+        else if (ev.op === "prompt_version") this._notePromptVersion(ev);
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
@@ -3393,9 +3539,8 @@ class AgentChat {
   // An `agentY add tag` node is an annotation ON a wire, not a node anyone means
   // to anchor: it names the reference it carries and says what it is FOR. Resolve
   // past it to the node the user thinks they wired, keeping the tag and the text.
-  // Doing it here rather than per-consumer is what keeps the QA references, the
-  // iterate feedback node and the hook block all seeing the LoadImage instead of
-  // the annotation.
+  // Doing it here rather than per-consumer is what keeps the QA references and the
+  // hook block all seeing the LoadImage instead of the annotation.
   _throughRefNotes(node, slot) {
     const graph = app.graph;
     const isNote = (n) =>
