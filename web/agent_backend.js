@@ -48,7 +48,7 @@ const TOKEN_HEADER = "X-AgentY-Token";
 // heartbeat, a fraction of a second after raising it.
 const PUBLIC_PATHS = [
   "/agentY/health", "/agentY/log_viewer", "/agentY/memory_viewer",
-  "/agentY/project_memory_viewer",
+  "/agentY/project_memory_viewer", "/agentY/rate",
 ];
 
 function needsToken(url) {

@@ -213,6 +213,8 @@ const VIEWER_COMMANDS = [
     label: "project-memory editor", done: "📌 Opened the project-memory editor in a new tab." },
   { names: ["costs", "cost", "usage", "token_usage"], opener: "agentYOpenTokenUsage",
     label: "cost overview", done: "📊 Opened the cost overview." },
+  { names: ["rate", "rating", "ratings"], opener: "agentYOpenRating",
+    label: "rating page", done: "⭐ Opened the rating page — pick the best of each set." },
 ];
 
 function viewerCommand(text) {
@@ -235,6 +237,7 @@ const SLASH_FALLBACK = [
   { name: "/memory", description: "Open the long-term memory viewer" },
   { name: "/project_memory", description: "Inspect and forget what is remembered for THIS project" },
   { name: "/costs", description: "Open the cost overview (token usage per model)" },
+  { name: "/rate", description: "Open the rating page: pick the best of sibling renders" },
   { name: "/clearhistory", description: "Delete all conversation history" },
   { name: "/switch_model", description: "Switch an agent's LLM" },
   { name: "/add_workflow", description: "Add a workflow (JSON path, or 'canvas <name>' for the open graph)" },
