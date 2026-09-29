@@ -589,6 +589,12 @@ class AgentChat {
     this._setPromptLoopUI(loop);
   }
 
+  // Clicking a version writes it to the canvas HERE, from the host's answer —
+  // not through the canvas-patch bus the agent's own edits travel on. That bus is
+  // drained only while a turn is streaming, so a patch pushed by a button sat in
+  // it until the next message and then landed in the middle of that turn: the
+  // click looked like it had done nothing, and the canvas changed minutes later.
+  // This page is holding app.graph and is the one that asked, so it does the write.
   async _restoreVersion(v) {
     if (!this.threadId) return;
     try {
@@ -600,8 +606,12 @@ class AgentChat {
       const j = await r.json();
       if (!j || !j.ok) throw new Error((j && j.error) || "could not restore that version");
       this._setPromptLoopUI(j);
-      this._sys(`✍ Put v${v} back on the canvas (recorded as v${
-        (j.versions || []).length ? j.versions[j.versions.length - 1].v : "?"}).`);
+      const w = j.write;
+      if (w && w.node_id) {
+        // _applyCanvasPatch says what it did in the log, which is the feedback.
+        this._applyCanvasPatch({ node_id: w.node_id, params: { [w.input]: w.text } });
+        this._sys(`✍ That was v${v}, back on the canvas as v${w.v}.`);
+      }
     } catch (e) {
       this._sys("❌ " + e);
     }
