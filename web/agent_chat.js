@@ -519,14 +519,18 @@ class AgentChat {
     }
     bar.style.display = "flex";
     bar.append(el("span", { className: "ay-vlabel", textContent: "prompt" }));
-    versions.forEach((entry, i) => {
-      const last = i === versions.length - 1;
+    // The ACTIVE version is the one on the canvas: the newest, or the one picked
+    // here. Picking never adds a version — only the agent's prompts are versions.
+    const active = Number(loop.active) || (versions[versions.length - 1] || {}).v;
+    versions.forEach((entry) => {
+      const now = entry.v === active;
       const chip = el("button", {
-        className: "ay-vchip" + (last ? " ay-vnow" : "") + (entry.rendered ? "" : " ay-vdry"),
+        className: "ay-vchip" + (now ? " ay-vnow" : "") + (entry.rendered ? "" : " ay-vdry"),
         textContent: "v" + entry.v,
         title: (entry.text || "")
-          + (entry.rendered ? "\n\n(rendered)" : "\n\n(not queued yet)")
-          + (last ? "" : "\n\nClick to put this prompt back on the canvas."),
+          + (entry.rendered ? "\n\n(rendered)" : "\n\n(no render yet)")
+          + (now ? "\n\nActive — this is the prompt on the canvas."
+                 : "\n\nClick to make this the active prompt and put it back on the canvas."),
       });
       chip.addEventListener("click", () => this._restoreVersion(entry.v));
       bar.append(chip);
@@ -550,23 +554,28 @@ class AgentChat {
     // selected the agent resolves the node on its first write (and asks when the
     // graph has several text nodes).
     const on = !(this._loop && this._loop.on);
-    if (!this.threadId) {
-      this._sys("Start a conversation first — the prompt loop belongs to one.");
-      return;
-    }
+    // In an empty conversation there is no thread yet (the first message makes
+    // one). Switching the loop on is reason enough: the host makes the thread and
+    // answers with its id, and the conversation starts from here.
+    if (!this.threadId && !on) return;
     const node_id = on ? String((this._selOrder || [])[0] || "") : "";
     try {
       const r = await fetch(backendBase() + "/agentY/prompt_loop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: this.threadId, on, node_id }),
+        body: JSON.stringify({ thread_id: this.threadId || "", on, node_id }),
       });
       const j = await r.json();
       if (!j || !j.ok) throw new Error((j && j.error) || "could not switch the prompt loop");
+      if (!this.threadId && j.thread_id) {
+        this.threadId = j.thread_id;
+        this._saveActive(j.thread_id);
+        this._loadThreads();
+      }
       this._setPromptLoopUI(j);
       this._sys(on
         ? "✍ Prompt loop ON" + (node_id ? ` — prompts go into node ${node_id}.` : ".")
-          + " Ask for a prompt; it lands on the canvas and you queue it yourself."
+          + " Ask for a prompt; it lands on the canvas and is queued."
           + (node_id ? "" : " Select your prompt node, or say which node it is.")
         : "✍ Prompt loop off. The versions are kept — switch it back on to carry on.");
     } catch (e) {
@@ -574,9 +583,14 @@ class AgentChat {
     }
   }
 
-  // The agent just wrote a prompt version. Append it locally so the strip moves
-  // with the turn instead of after it; the host is still the record, and the next
-  // load reconciles (a version this missed appears then).
+  // The agent just put a prompt version on the canvas — a new one, or an earlier
+  // one made active again. Mirror it locally so the strip moves with the turn
+  // instead of after it; the host is still the record, and the next load
+  // reconciles (a version this missed appears then).
+  //
+  // ev.queue: press ComfyUI's Queue now. The widget write was pushed on the bus
+  // just before this op and events are handled in order, so the text is already
+  // in the node. This page holds the graph, so it is the one that can queue it.
   _notePromptVersion(ev) {
     const loop = this._loop || { on: true, versions: [] };
     loop.on = true;
@@ -586,7 +600,18 @@ class AgentChat {
     if (!loop.versions.some((e) => e.v === ev.v)) {
       loop.versions.push({ v: ev.v, text: String(ev.text || ""), rendered: false });
     }
+    loop.active = ev.v;
     this._setPromptLoopUI(loop);
+    if (ev.queue) this._queuePromptVersion(ev.v);
+  }
+
+  async _queuePromptVersion(v) {
+    try {
+      await app.queuePrompt(0, 1);
+      this._sys(`✍ v${v} queued.`);
+    } catch (e) {
+      this._sys(`❌ v${v} is on the canvas but could not be queued: ${e}`);
+    }
   }
 
   // Clicking a version writes it to the canvas HERE, from the host's answer —
@@ -610,7 +635,7 @@ class AgentChat {
       if (w && w.node_id) {
         // _applyCanvasPatch says what it did in the log, which is the feedback.
         this._applyCanvasPatch({ node_id: w.node_id, params: { [w.input]: w.text } });
-        this._sys(`✍ That was v${v}, back on the canvas as v${w.v}.`);
+        this._sys(`✍ v${w.v} is active — back on the canvas.`);
       }
     } catch (e) {
       this._sys("❌ " + e);
