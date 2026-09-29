@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
@@ -605,12 +606,57 @@ class AgentChat {
     if (ev.queue) this._queuePromptVersion(ev.v);
   }
 
+  // app.queuePrompt does not hand back the job id, and api.queuePrompt (which
+  // it calls) does — so listen in on that one call. The id is what lets the
+  // finish event below be THIS job's, not some other run in the queue.
   async _queuePromptVersion(v) {
+    const orig = api.queuePrompt;
+    let promptId = "";
+    api.queuePrompt = async function (...args) {
+      const res = await orig.apply(this, args);
+      if (res && res.prompt_id) promptId = String(res.prompt_id);
+      return res;
+    };
     try {
       await app.queuePrompt(0, 1);
       this._sys(`✍ v${v} queued.`);
     } catch (e) {
       this._sys(`❌ v${v} is on the canvas but could not be queued: ${e}`);
+      return;
+    } finally {
+      api.queuePrompt = orig;
+    }
+    if (promptId) this._awaitPromptRender(v, promptId, this.threadId);
+  }
+
+  // The panel queued the run, so agentY never sees it finish; tell it, so it
+  // pairs the render with v and runs the canvas's QA node on it right away.
+  // The answer comes back HERE — the host's status bus only reaches the panel
+  // during a turn.
+  _awaitPromptRender(v, promptId, threadId) {
+    const done = async (ev) => {
+      if (String(ev?.detail?.prompt_id || "") !== promptId) return;
+      for (const name of ["execution_success", "execution_error", "execution_interrupted"]) {
+        api.removeEventListener(name, done);
+      }
+      if (ev.type !== "execution_success" || !threadId) return;
+      try {
+        const r = await fetch(backendBase() + "/agentY/prompt_loop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, rendered: v, prompt_id: promptId,
+                                 canvas_hooks: this._collectCanvasHooks() }),
+        });
+        const j = await r.json();
+        if (!j || !j.ok) return;
+        if (threadId === this.threadId) this._setPromptLoopUI(j);
+        if (j.qa && j.qa.line) this._sys(j.qa.line);
+      } catch (_) {
+        // The next turn pairs and judges it instead.
+      }
+    };
+    for (const name of ["execution_success", "execution_error", "execution_interrupted"]) {
+      api.addEventListener(name, done);
     }
   }
 
