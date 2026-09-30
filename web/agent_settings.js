@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
+import { searchableSelect } from "./agent_combo.js";
 
 // agentY Application Settings — adds an entry to the ComfyUI Settings panel that
 // opens a modal for editing the agent's auth keys (.env) and everything in
@@ -173,7 +174,7 @@ function injectStyles() {
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#c3c8d0;word-break:break-word;font-family:ui-monospace,monospace;}
   .ays-input{flex:1;min-width:0;background:#161a20;color:#e6e8ec;border:1px solid #2c313b;
     border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;}
-  .ays-input:focus{border-color:#6f97ff;}
+  .ays-input:focus,.ays-input.ay-combo:focus-within{border-color:#6f97ff;}
   input.ays-input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#6f97ff;}
   .ays-group{background:#1e2128;border:1px solid #2c313b;border-left:4px solid #6f97ff;border-radius:9px;margin:8px 0;overflow:hidden;}
   /* One edge colour per subject (see GROUP_FAMILY), so sections that belong
@@ -404,8 +405,9 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
     refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
   } else if (underPipeline && modelGroups && Object.keys(modelGroups).length) {
-    input = buildModelSelect(modelGroups, val == null ? "" : String(val), isOverride);
-    refs.push({ path, get: () => input.value });
+    const sel = buildModelSelect(modelGroups, val == null ? "" : String(val), isOverride);
+    refs.push({ path, get: () => sel.value });
+    input = searchableSelect(sel, { placeholder: "Type a model name…" });
   } else {
     input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
     refs.push({ path, get: () => input.value });
@@ -620,7 +622,8 @@ function buildPricingCard(data) {
     sel.addEventListener("change", hint);
     hint();
     const del = el("button", { className: "ays-btn ays-x", textContent: "✕", title: "Remove this price" });
-    const row = el("div", { className: "ays-prow" }, [sel, inp, outp, del]);
+    const row = el("div", { className: "ays-prow" },
+      [searchableSelect(sel, { placeholder: "Type a model name…" }), inp, outp, del]);
     const entry = { sel, inp, outp };
     del.addEventListener("click", (e) => { e.preventDefault(); row.remove(); rows.splice(rows.indexOf(entry), 1); });
     rows.push(entry);

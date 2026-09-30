@@ -5,6 +5,7 @@ import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
+import { searchableSelect } from "./agent_combo.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -1009,6 +1010,8 @@ class AgentChat {
     .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
     .ay-modelbar select:hover{border-color:rgba(111,151,255,.45);}
     .ay-modelbar select:disabled{opacity:.45;cursor:not-allowed;}
+    .ay-modelbar .ay-combo{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;transition:border-color .12s;}
+    .ay-modelbar .ay-combo:hover,.ay-modelbar .ay-combo:focus-within{border-color:rgba(111,151,255,.45);}
     .ay-mmodel{flex:1;min-width:0;}
     .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
     .ay-pop-item{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;}
@@ -1179,7 +1182,8 @@ class AgentChat {
     this.modelSel.addEventListener("change", () => this._applyModel());
     return el("div", { className: "ay-modelbar" }, [
       el("span", { className: "ay-mlabel", textContent: "Model" }),
-      this.modelSel,
+      // Typeable: click it and type part of a model's name (agent_combo.js).
+      searchableSelect(this.modelSel, { placeholder: "Type a model name…" }),
       this.targetSel,
     ]);
   }
