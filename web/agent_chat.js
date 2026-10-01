@@ -2495,6 +2495,7 @@ class AgentChat {
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
+        else if (ev.op === "edit_graph") this._editGraph(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
         else this._applyCanvasPatch(ev);
         break;
@@ -3525,6 +3526,68 @@ class AgentChat {
     graph.setDirtyCanvas(true, true);
     this._sys("🐍 Placed an **agentY python** node with the snippet on the canvas"
       + (missed.length ? ` — could not wire ${missed.join(", ")}; connect those by hand.` : "."));
+  }
+
+  // edit_canvas_graph: add nodes and change wires on the open graph. The server
+  // has already checked every op against /object_info and given each new node an
+  // id one past the graph's highest; the node is created under that id so the
+  // ops that wire it (and the agent's next read of the canvas) agree with what is
+  // here. If the id is taken after all, LiteGraph assigns another and the map
+  // below carries the difference through the rest of this patch.
+  _editGraph(ev) {
+    const LG = window.LiteGraph;
+    const graph = this._targetGraph();
+    if (!graph || !LG) return;
+    const byId = (id) => (graph.getNodeById && graph.getNodeById(Number(id)))
+      || (graph._nodes || []).find((n) => n && String(n.id) === String(id));
+    const made = {};
+    const node = (id) => made[String(id)] || byId(id);
+    const added = [], wired = [], missed = [];
+    const changed = typeof graph.beforeChange === "function"
+      && typeof graph.afterChange === "function";
+    if (changed) { try { graph.beforeChange(); } catch (_) {} }
+    try {
+      for (const op of ev.ops || []) {
+        if (op.op === "add") {
+          let n = null;
+          try { n = LG.createNode(op.class_type); } catch (_) {}
+          if (!n) { missed.push(`add ${op.class_type} (not registered here)`); continue; }
+          if (!byId(op.node_id)) n.id = Number(op.node_id);
+          graph.add(n);
+          made[String(op.node_id)] = n;
+          for (const [name, value] of Object.entries(op.params || {})) {
+            const w = (n.widgets || []).find((x) => x && x.name === name);
+            if (!w) continue;
+            w.value = value;
+            try { if (w.callback) w.callback(value, app.canvas, n); } catch (_) {}
+          }
+          markAgentDrop(n);
+          n.pos = this._dropPos(op.near != null ? node(op.near) : null, n);
+          added.push(`#${n.id} ${n.type}`);
+        } else if (op.op === "connect") {
+          const from = node(op.from), to = node(op.to);
+          const slot = to ? (to.inputs || []).findIndex((i) => i && i.name === op.input) : -1;
+          let ok = false;
+          try { ok = !!(from && slot >= 0 && from.connect(Number(op.output) || 0, to, slot)); } catch (_) {}
+          if (ok) wired.push(`#${from.id} → #${to.id}.${op.input}`);
+          else missed.push(`#${op.from} → #${op.to}.${op.input}`);
+        } else if (op.op === "disconnect") {
+          const n = node(op.node);
+          const slot = n ? (n.inputs || []).findIndex((i) => i && i.name === op.input) : -1;
+          try { if (slot >= 0) n.disconnectInput(slot); } catch (_) {}
+        }
+      }
+    } finally {
+      if (changed) { try { graph.afterChange(); } catch (_) {} }
+    }
+    graph.setDirtyCanvas(true, true);
+    const why = ev.reason ? ` — ${ev.reason}` : "";
+    this._sys("🔧 Edited the graph" + why + ": "
+      + [added.length ? `added ${added.join(", ")}` : "",
+         wired.length ? `wired ${wired.length} input${wired.length === 1 ? "" : "s"}` : ""]
+        .filter(Boolean).join("; ")
+      + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
+      + " **Ctrl+Z** undoes it.");
   }
 
   _deleteNodes(ev) {
