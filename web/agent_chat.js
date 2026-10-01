@@ -558,12 +558,21 @@ class AgentChat {
     // gesture: click the prompt node, click ✍, ask for a prompt. With nothing
     // selected the agent resolves the node on its first write (and asks when the
     // graph has several text nodes).
+    if (this._loopSwitching) return;     // one switch at a time: answers could cross
     const on = !(this._loop && this._loop.on);
     // In an empty conversation there is no thread yet (the first message makes
     // one). Switching the loop on is reason enough: the host makes the thread and
     // answers with its id, and the conversation starts from here.
     if (!this.threadId && !on) return;
     const node_id = on ? String((this._selOrder || [])[0] || "") : "";
+    // Show the switch at once, like the auto-graph toggle; the host's answer
+    // confirms it (or puts it back). Waiting for the round trip made any delay on
+    // the way — a busy host, a browser short of connections to it — look like a
+    // button that did nothing.
+    const before = this._loop;
+    this._setPromptLoopUI(Object.assign({}, before || { versions: [] }, { on }));
+    this._loopSwitching = true;
+    const t0 = performance.now();
     try {
       const r = await fetch(backendBase() + "/agentY/prompt_loop", {
         method: "POST",
@@ -571,6 +580,13 @@ class AgentChat {
         body: JSON.stringify({ thread_id: this.threadId || "", on, node_id }),
       });
       const j = await r.json();
+      const took = performance.now() - t0;
+      if (took > 1000) {
+        // Evidence for the next "the toggle is slow": the host logs when the
+        // request ARRIVED (.logs/turn_trace.log, HTTP lines); this is when it left.
+        console.warn(`[agentY] prompt loop switch took ${Math.round(took)} ms `
+                     + `(sent ${new Date(Date.now() - took).toLocaleTimeString()})`);
+      }
       if (!j || !j.ok) throw new Error((j && j.error) || "could not switch the prompt loop");
       if (!this.threadId && j.thread_id) {
         this.threadId = j.thread_id;
@@ -584,7 +600,10 @@ class AgentChat {
           + (node_id ? "" : " Select your prompt node, or say which node it is.")
         : "✍ Prompt loop off. The versions are kept — switch it back on to carry on.");
     } catch (e) {
+      this._setPromptLoopUI(before);
       this._sys("❌ " + e);
+    } finally {
+      this._loopSwitching = false;
     }
   }
 
