@@ -1194,25 +1194,48 @@ function buildMcpCard(mcpData, envSet) {
 async function openAgentYSettingsModal() {
   injectStyles();
   let data;
+  // Set when the host did not answer and the settings were read from its files
+  // instead (ComfyUI's /agent/offline_settings runs the checkout's own reader).
+  // A host that will not start because of a setting has to be fixable from here.
+  let offline = null;
   try {
     const r = await fetch(backendBase() + "/agentY/settings");
     if (!r.ok) throw new Error("HTTP " + r.status);
     data = await r.json();
   } catch (e) {
-    alert("Could not load agentY settings — is the chat host running?\n\n" + e);
-    return;
+    try {
+      const ro = await fetch("/agent/offline_settings");
+      const jo = await ro.json();
+      if (!jo.ok || !jo.settings) throw new Error(jo.error || ("HTTP " + ro.status));
+      data = jo.settings;
+      offline = { root: jo.root || "", mcp: jo.mcp || null };
+    } catch (e2) {
+      alert("Could not load agentY settings.\n\nThe chat host does not answer (" + e + "),\n"
+        + "and its settings could not be read from disk either:\n" + (e2.message || e2));
+      return;
+    }
   }
 
   // MCP servers (config/mcp.json + per-server status). Best-effort — the section
   // is simply omitted if the host predates the /agentY/mcp route.
   let mcpData = null;
-  try {
-    const rm = await fetch(backendBase() + "/agentY/mcp");
-    if (rm.ok) mcpData = await rm.json();
-  } catch (_) { /* no MCP route on this host — skip the section */ }
+  if (offline) {
+    mcpData = offline.mcp;
+  } else {
+    try {
+      const rm = await fetch(backendBase() + "/agentY/mcp");
+      if (rm.ok) mcpData = await rm.json();
+    } catch (_) { /* no MCP route on this host — skip the section */ }
+  }
 
   const overlay = el("div", { className: "ays-overlay" });
   const body = el("div", { className: "ays-body" });
+  if (offline) {
+    body.append(el("div", { className: "ays-note ays-warn ays-offline", textContent:
+      "agentY is not running. These are its settings as they are on disk; saving writes "
+      + "the files, and they apply when agentY next starts. Viewers, and testing or adding "
+      + "MCP servers, need it running." }));
+  }
 
   // ── viewers (moved here from the side-panel top bar) ──
   const toolsSec = el("div", { className: "ays-sec" });
@@ -1348,6 +1371,14 @@ async function openAgentYSettingsModal() {
   if (mcp) intSec.append(mcp.group);
   body.append(intSec);
 
+  // What only a running host can do is switched off rather than left to fail.
+  if (offline) {
+    const needsHost = new Set(["Test", "Authorize…", "+ Add MCP server", "Install bundle (.mcpb)…"]);
+    const off = (b) => { b.disabled = true; b.title = "Needs agentY running."; };
+    toolsSec.querySelectorAll("button").forEach(off);
+    if (mcp) mcp.group.querySelectorAll("button").forEach((b) => { if (needsHost.has(b.textContent.trim())) off(b); });
+  }
+
   // ── footer ──
   const msg = el("div", { className: "ays-msg" });
   const saveBtn = el("button", { className: "ays-btn primary", textContent: "Save" });
@@ -1379,7 +1410,11 @@ async function openAgentYSettingsModal() {
     const payload = { env: envChanges, settings: collectSettings(refs) };
     if (priceOut.payload && priceOut.changed) payload.pricing = priceOut.payload;
     try {
-      const r = await fetch(backendBase() + "/agentY/settings", {
+      // Offline, the MCP config rides in the same save: one process writes all
+      // the files, instead of a second round trip to a host that is not there.
+      const mcpChanged = !!(mcpOut && !mcpOut.error && mcpOut.changed);
+      if (offline && mcpChanged) payload.mcp_config = mcpOut.config;
+      const r = await fetch(offline ? "/agent/offline_settings" : backendBase() + "/agentY/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1388,7 +1423,10 @@ async function openAgentYSettingsModal() {
       if (!j.ok) throw new Error(j.error || "save failed");
       if (j.pricing_updated) pricing.markSaved();
       let mcpSaved = false;
-      if (mcpOut && !mcpOut.error && mcpOut.changed) {
+      if (offline) {
+        mcpSaved = !!j.mcp_saved;
+        if (mcpSaved) mcp.markSaved();
+      } else if (mcpChanged) {
         try {
           const jm = await postJson("/agentY/mcp", { config: mcpOut.config });
           mcpSaved = !!jm.ok;
@@ -1401,7 +1439,9 @@ async function openAgentYSettingsModal() {
       if (j.settings_updated && j.settings_updated.length) parts.push(`${j.settings_updated.length} setting(s)`);
       if (j.pricing_updated) parts.push("pricing");
       if (mcpSaved) parts.push("MCP servers");
-      msg.textContent = parts.length ? "✅ Saved " + parts.join(", ") + ". Model & MCP changes apply on the next agent start." : "No changes to save.";
+      msg.textContent = !parts.length ? "No changes to save."
+        : offline ? "✅ Saved " + parts.join(", ") + " to agentY's files. They apply when it starts."
+        : "✅ Saved " + parts.join(", ") + ". Model & MCP changes apply on the next agent start.";
       // Refresh originals so a second save doesn't re-send unchanged keys.
       for (const [key, o] of Object.entries(envInputs)) o.original = o.input.value;
     } catch (e) {
@@ -1418,7 +1458,9 @@ async function openAgentYSettingsModal() {
   const host = data.host || {};
   const hostLine = el("div", {
     className: "ays-hostline",
-    textContent: host.root
+    textContent: offline
+      ? `not running · ${offline.root || host.root || ""}${host.commit ? " · " + host.commit : ""}`
+      : host.root
       ? `${backendBase()} · ${host.root}${host.commit ? " · " + host.commit : ""}`
       : `${backendBase()} · this host is older than the panel: update and restart it`,
     title: "The agentY host these settings come from. If this is not the checkout you "

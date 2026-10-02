@@ -162,9 +162,109 @@ def _read_host_token(root: str) -> str:
         return ""
 
 
+# ── Settings while the host is down ────────────────────────────────────────────
+# Everything the settings page shows is in files in the agentY checkout, but the
+# page could only be opened while the host answered — which is exactly when a
+# setting that stops it starting (a dead key, a model that is gone) cannot be
+# fixed. So when the host is silent, the page asks here, and this runs the
+# checkout's own `python -m src.utils.settings_offline`: the same code the host's
+# routes call, in the Python that has its dependencies. Nothing is reimplemented
+# on this side, so the two cannot drift and keys stay masked the same way.
+_OFFLINE_SETTINGS_TIMEOUT = 90.0
+
+
+def _host_python(root: str) -> str:
+    """The Python of the agentY checkout's own environment, or "" if there is none."""
+    if not root:
+        return ""
+    for rel in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python"),
+                ("venv", "Scripts", "python.exe"), ("venv", "bin", "python")):
+        cand = _os.path.join(root, *rel)
+        if _os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _offline_result(stdout: bytes) -> dict:
+    """The JSON object on the last non-empty line the helper printed."""
+    lines = [ln for ln in (stdout or b"").decode("utf-8", "replace").splitlines() if ln.strip()]
+    if not lines:
+        return {"ok": False, "error": "the settings helper printed nothing"}
+    try:
+        out = _json.loads(lines[-1])
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": f"the settings helper returned unparseable output: {lines[-1][:200]!r}"}
+    return out if isinstance(out, dict) else {"ok": False, "error": "the settings helper returned no object"}
+
+
+async def _run_offline_settings(action: str, payload=None) -> tuple:
+    """Run the checkout's offline-settings helper. Returns (result, http_status)."""
+    root, script, _port = _read_host_cfg()
+    if not root or not _os.path.isdir(root):
+        return ({"ok": False, "error": f"agentY location unknown — run {_DEFAULT_RUN_SCRIPT} once, "
+                                       "or set the AGENTY_ROOT environment variable."}, 409)
+    python = _host_python(root)
+    if not python:
+        return ({"ok": False, "error": f"no Python environment (.venv) under {root} — "
+                                       f"run {script} once to create it."}, 409)
+    if not _os.path.isfile(_os.path.join(root, "src", "utils", "settings_offline.py")):
+        return ({"ok": False, "error": f"the agentY checkout at {root} is older than this panel "
+                                       "and cannot show its settings while stopped: update it."}, 409)
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            python, "-m", "src.utils.settings_offline", action,
+            stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE, cwd=root,
+            env={**_os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+        )
+        body = _json.dumps(payload).encode("utf-8") if payload is not None else b""
+        try:
+            out, err = await _asyncio.wait_for(proc.communicate(body), _OFFLINE_SETTINGS_TIMEOUT)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            return ({"ok": False, "error": "reading the settings took too long and was stopped."}, 504)
+    except Exception as _exc:  # noqa: BLE001
+        return ({"ok": False, "error": str(_exc)}, 500)
+    result = _offline_result(out)
+    if not result.get("ok") and not result.get("error"):
+        result["error"] = (err or b"").decode("utf-8", "replace").strip()[-400:] or "the settings helper failed"
+    result.setdefault("root", root)
+    return (result, 200 if result.get("ok") else 500)
+
+
+def _same_origin(request) -> bool:
+    """A write that puts API keys in .env only from this ComfyUI's own page."""
+    origin = (request.headers.get("Origin") or "").strip()
+    if not origin:
+        return True
+    return origin.split("://", 1)[-1].rstrip("/").lower() == (request.headers.get("Host") or "").lower()
+
+
 try:
     from server import PromptServer
     _routes = PromptServer.instance.routes
+
+    @_routes.get("/agent/offline_settings")
+    async def _agent_offline_settings(request):  # noqa: ANN001
+        """The settings page's data, read from the agentY checkout's files — for
+        when the host does not answer. Keys come back masked, as over the host."""
+        result, status = await _run_offline_settings("get")
+        return web.json_response(result, status=status)
+
+    @_routes.post("/agent/offline_settings")
+    async def _agent_offline_settings_save(request):  # noqa: ANN001
+        """Write a Settings save to the checkout's files (.env, settings.local.json,
+        pricing, mcp.json). It takes effect when the host next starts."""
+        if not _same_origin(request):
+            return web.json_response({"ok": False, "error": "cross-origin request refused"}, status=403)
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"ok": False, "error": "expected a JSON object"}, status=400)
+        result, status = await _run_offline_settings("save", data)
+        return web.json_response(result, status=status)
 
     @_routes.post("/agent/load_workflow")
     async def _agent_load_workflow(request):  # noqa: ANN001
