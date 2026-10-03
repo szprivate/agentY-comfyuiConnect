@@ -46,7 +46,7 @@ const SECTIONS = [
   // Models first and OPEN. It is the setting people come here to change, and it
   // used to be two collapsed levels down ("Models & providers" -> "Model tiers").
   { title: "Models", open: true, inline: ["llm", "tiers"],
-    objects: [["llm", "pipeline"]] },
+    objects: [["llm", "pipeline"]], extra: "memoryEmbedder" },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas",
@@ -293,6 +293,42 @@ const INHERIT_LABEL = "— inherit from tier —";
 // lives in one place (src/agent.py) rather than being duplicated here.
 let TIER_LABELS = {};
 
+// Long-term memory's embedder (memory.embedder.preset), from /agentY/settings:
+// [{id, label, available, why}]. Shown with the models rather than under the
+// advanced Memory section: a machine without Ollama has to choose one, and an
+// embedder is a model choice like the others — just not a chat model.
+let EMBEDDERS = [];
+const EMBEDDER_NOTE = "Turns memories into vectors so they can be found by meaning. "
+  + "Not a chat model — each provider has its own embedding model, reached with the "
+  + "same key. Switching re-embeds every stored memory with the new one (the old "
+  + "index is kept as a backup), so nothing is lost.";
+
+function memoryEmbedderRow(container, settings, refs) {
+  const emb = ((settings || {}).memory || {}).embedder;
+  if (!emb || !EMBEDDERS.length) return false;
+  const current = String(emb.preset || "");
+  const sel = el("select", { className: "ays-input" });
+  const custom = el("option", { value: "", textContent:
+    `Set by hand (${emb.provider || "?"} · ${emb.model || "?"}) — advanced › Memory` });
+  if (!current) custom.selected = true;
+  sel.append(custom);
+  for (const c of EMBEDDERS) {
+    const o = el("option", { value: c.id,
+      textContent: c.label + (c.available ? "" : `  — ${c.why}`) });
+    o.disabled = !c.available && c.id !== current;
+    if (c.id === current) o.selected = true;
+    sel.append(o);
+  }
+  refs.push({ path: ["memory", "embedder", "preset"], get: () => sel.value });
+  const field = el("div", { className: "ays-field ays-hasnote" });
+  const row = el("div", { className: "ays-row" });
+  row.append(el("label", { className: "ays-label", textContent: "Memory embedder",
+                           title: "memory.embedder.preset" }), sel);
+  field.append(row, el("div", { className: "ays-note ays-keynote", textContent: EMBEDDER_NOTE }));
+  container.append(field);
+  return true;
+}
+
 // Reasoning per agent: llm.thinking (per tier, on/off) and llm.thinking_roles (per
 // role, "" = as its tier). Not shown as groups of their own — each is a switch on
 // the model row it belongs to, where the choice is actually made.
@@ -356,8 +392,9 @@ const GROUP_NOTES = {
     + "write text, and a chat model cannot embed), while the LLM rewrites memories "
     + "in its own words and is only used for `infer` writes. Leave the llm model "
     + "blank and it follows the Fast utility tier, endpoint and key included.",
-  embedder: "Blank api_key_env falls back to the provider's usual variable. "
-    + "Changing the model or embedding_dims invalidates the FAISS index on disk.",
+  embedder: "Used when \"Memory embedder\" under Models is set by hand. Blank "
+    + "api_key_env falls back to the provider's usual variable. A change re-embeds "
+    + "every stored memory (the old index is kept as a backup).",
   slack: "A SECOND way in, alongside this panel — never instead of it. Every turn "
     + "is mirrored to your Slack DM as it runs, INCLUDING the ones you start here, "
     + "so you can queue a render at the desk and watch it finish from a phone; a DM "
@@ -410,6 +447,7 @@ function makeCollapsibleGroup(key, suffix, open) {
 // Render one leaf setting (scalar / array / model-select) as a labelled row and
 // register its ref for save-time collection.
 function renderLeafRow(container, key, val, path, modelGroups, refs) {
+  if (path.join(".") === "memory.embedder.preset" && EMBEDDERS.length) return;
   // A switch whose name does not carry its trade-off gets the trade-off written
   // out. Hovering is not discovery: nobody hovers a setting they have not already
   // decided to think about. The note goes UNDER its own row, inside one block with
@@ -564,6 +602,8 @@ function buildTopLevelSettings(container, settings, modelGroups, refs) {
       claimedObjects.add(objPath.join("."));
       wrote = true;
     }
+
+    if (section.extra === "memoryEmbedder" && memoryEmbedderRow(body, settings, refs)) wrote = true;
 
     if (!wrote) continue;                       // nothing to show; no empty heading
     if (section.advanced) group.dataset.advanced = "1";
@@ -1383,6 +1423,7 @@ async function openAgentYSettingsModal() {
   }
   const setForm = el("div");
   TIER_LABELS = data.tier_labels || {};
+  EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
   buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
 
   // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)
