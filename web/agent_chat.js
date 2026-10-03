@@ -1101,6 +1101,7 @@ class AgentChat {
     .ay-shotbar[hidden]{display:none;}
     .ay-shotchip{background:transparent;color:var(--ay-text);border:1px solid var(--ay-border);border-radius:999px;padding:2px 9px;font-size:11.5px;cursor:pointer;white-space:nowrap;}
     .ay-shotchip:hover{border-color:var(--ay-accent,#6f97ff);}
+    .ay-shotchip.ay-shotstop{border-color:#a5484e;color:#ffb3b8;}
     .ay-shotchip.ay-on{border-color:var(--ay-accent,#6f97ff);background:rgba(111,151,255,.15);}
     .ay-rundock[hidden],.ay-run-anchor,.ay-run [hidden]{display:none !important;}
     .ay-step.ay-run{border-left-color:var(--ay-accent);}
@@ -1901,6 +1902,24 @@ class AgentChat {
     for (const sh of data.shots) {
       chips.push(chip(sh.thread_id, (icon[sh.status] || "·") + " " + sh.shot,
         sh.status + (sh.report ? " — " + sh.report.slice(0, 160) : "")));
+    }
+    // Stop them all from here: the lead's own Stop only exists while ITS turn
+    // runs, and shots keep working long after it has handed them their briefs.
+    if (data.shots.some((sh) => sh.status === "running" || sh.status === "queued")) {
+      const stop = el("button", { className: "ay-shotchip ay-shotstop", textContent: "⏹ Stop shots",
+        title: "Stop every running shot of this sequence (their conversations stay)" });
+      stop.addEventListener("click", async () => {
+        stop.disabled = true;
+        let names = [];
+        try {
+          const r = await fetch(backendBase() + "/agentY/threads/" + encodeURIComponent(lead)
+            + "/shots/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+          if (r.ok) names = ((await r.json()) || {}).stopped || [];
+        } catch (_) {}
+        this._sys(names.length ? "⏹ Stopped shots: " + names.join(", ") + "." : "⏹ No shot was running.");
+        setTimeout(() => this._refreshShotBar(), 1500);
+      });
+      chips.push(stop);
     }
     this.shotBar.replaceChildren(...chips);
     this.shotBar.hidden = false;
