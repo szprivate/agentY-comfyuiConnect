@@ -104,4 +104,7 @@ class NoOtherPathLeavesItSet(unittest.TestCase):
                 "null",                                             # done / stop / sync / reply sent
                 "ev.request_id",                                    # the ask arrives (twice)
                 "mine.awaiting_reply ? mine.request_id : null",     # adopting a running turn
+                # following a running turn (_watchRun): the watch stream always
+                # ends with `done`, which retires it like any other
+                "run_.awaiting_reply ? run_.request_id : null",
             }))
