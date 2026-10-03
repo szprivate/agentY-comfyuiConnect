@@ -50,9 +50,11 @@ class SilenceIsMeasured(unittest.TestCase):
         """Including keep-alive comments: this measures liveness, not activity.
         Reading only data frames would make a long quiet render look dead."""
         loop = block(self.src, "const reader = resp.body.getReader();", "} catch (e) {")
-        self.assertIn("this._lastStreamAt = Date.now();", loop)
+        # On the stream's own conversation (`ctx`): with several running, the
+        # panel may be showing another one while this byte arrives.
+        self.assertIn("ctx._lastStreamAt = Date.now();", loop)
         # Before the EOF check, or a stream that ends is never timestamped.
-        self.assertLess(loop.index("this._lastStreamAt = Date.now();"),
+        self.assertLess(loop.index("ctx._lastStreamAt = Date.now();"),
                         loop.index("if (done) break;"))
 
     def test_the_clock_starts_when_the_stream_does(self):
@@ -64,8 +66,12 @@ class SilenceIsMeasured(unittest.TestCase):
     def test_a_quiet_stream_no_longer_short_circuits_the_heartbeat(self):
         """The one line that made every lost `done` permanent."""
         beat = block(self.src, "_startHeartbeat()", "}, 5000);")
-        self.assertIn("if (this.streaming && !this._adoptedRun && !this._streamGoneQuiet()) return;",
+        # A live stream of our own still skips the recovery — but only after the
+        # tick has asked the host, whose list of running conversations keeps the
+        # green dots right for turns this panel does not stream.
+        self.assertIn("const ownStreamAlive = this.streaming && !this._adoptedRun && !this._streamGoneQuiet();",
                       beat)
+        self.assertLess(beat.index("await this._hostReachable()"), beat.index("if (ownStreamAlive) return;"))
         # …and having stopped short-circuiting, the tick must actually go and ask.
         self.assertIn("this._adoptedRun || this.activeAsk || this._streamGoneQuiet()", beat)
 

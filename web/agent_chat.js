@@ -282,6 +282,19 @@ class AgentChat {
     // re-parents this same DOM into each fresh mount point via mount(), so an
     // in-flight turn keeps streaming into the same log instead of being orphaned
     // in a discarded instance (which is what "swallowed" messages).
+    //
+    // One context per conversation (_makeCtx). Several conversations can run at
+    // once, so the per-turn fields below — the stream, the question it asked, the
+    // reply bubble being written, the run card, the queue — and the log itself
+    // belong to a conversation, not to the panel. They are reached through
+    // accessors (CTX_FIELDS, installed after the class) that resolve to the
+    // conversation whose event is being handled, else the one on screen. So the
+    // render code reads exactly as it always did, and a conversation running
+    // off-screen keeps rendering into its own log, which is swapped in when it is
+    // opened again.
+    this._ctxs = new Map();   // threadId -> context
+    this._evCtx = null;       // set while one conversation's event is handled
+    this._viewCtx = this._makeCtx(null);
     this.threadId = null;
     this.streaming = false;
     this.activeAsk = null; // request_id awaiting a reply
@@ -324,6 +337,115 @@ class AgentChat {
     this._build();
     this._hookVisibility();
     this._bootstrap();
+  }
+
+  // ── conversations ──────────────────────────────────────────────────────────
+  // A context holds one conversation's log (a live DOM element, kept while it is
+  // off-screen) and everything a running turn of it writes to.
+  _makeCtx(threadId) {
+    const ctx = {
+      threadId: threadId || null, loaded: false,
+      logEl: el("div", { className: "ay-log" }),
+      dockEl: el("div", { className: "ay-rundock-slot" }),
+      streaming: false, activeAsk: null, streamThreadId: null, curRequestId: null,
+      abortController: null, _adoptedRun: false, _streamToken: 0, _stopping: false,
+      _lastStreamAt: 0, curAssistant: null, curStep: null, _thinkStep: null,
+      _toolBlocks: {}, _consoleEl: null, _runEl: null, _workingEl: null, _dotsEl: null,
+      _workingTimer: null, _stick: true, _freshAssistant: false, _queue: [],
+      _turnGraph: null, _saidOffscreen: false, _saveTimer: null,
+    };
+    // Does the log follow new content? Yes while the user is parked at the bottom,
+    // no once they have scrolled up to read something — being yanked back down
+    // every time a step line lands makes the history unreadable during a long run.
+    // Read off the scroll event because an append does not move scrollTop: the flag
+    // therefore still carries what the user's own last scroll said.
+    ctx.logEl.addEventListener("scroll", () => {
+      const gap = ctx.logEl.scrollHeight - ctx.logEl.scrollTop - ctx.logEl.clientHeight;
+      ctx._stick = gap < 24;
+    }, { passive: true });
+    // An image that decodes after it was appended changes the log's height, and a
+    // scroll pinned before that lands short. `load` does not bubble, hence capture.
+    ctx.logEl.addEventListener("load", () => {
+      if (ctx._stick) ctx.logEl.scrollTop = ctx.logEl.scrollHeight;
+    }, true);
+    if (threadId) this._ctxs.set(threadId, ctx);
+    return ctx;
+  }
+
+  // The conversation the code running now is about: the one whose event is being
+  // handled, else the one on screen.
+  _ctx() { return this._evCtx || this._viewCtx; }
+
+  // Run fn as conversation ctx — for the parts of a stream that run after an
+  // await, when the panel may be showing another conversation.
+  _as(ctx, fn) {
+    const prev = this._evCtx;
+    this._evCtx = ctx;
+    try { return fn(); } finally { this._evCtx = prev; }
+  }
+
+  // Put conversation ctx on screen: its log, its run card, its queue, and the
+  // Send/Stop button for ITS turn.
+  _show(ctx) {
+    const prev = this._viewCtx;
+    if (prev !== ctx) {
+      if (prev.logEl.parentNode) prev.logEl.replaceWith(ctx.logEl);
+      this.runDock.replaceChildren(ctx.dockEl);
+      this._viewCtx = ctx;
+      // A log brought back keeps where its reader was; one that was following
+      // new content catches up with what arrived while it was off-screen.
+      if (ctx._stick) ctx.logEl.scrollTop = ctx.logEl.scrollHeight;
+    }
+    this._as(ctx, () => this._setBusy(ctx.streaming));
+    this._refreshDock();
+    this._renderQueue();
+  }
+
+  // The server named this conversation (its first message): file the context under it.
+  _bindCtx(ctx, id) {
+    if (!id) return;
+    if (ctx.threadId !== id) {
+      if (ctx.threadId && this._ctxs.get(ctx.threadId) === ctx) this._ctxs.delete(ctx.threadId);
+      ctx.threadId = id;
+    }
+    this._ctxs.set(id, ctx);
+    if (!ctx.streamThreadId) ctx.streamThreadId = id;
+    if (ctx === this._viewCtx) { this._saveActive(id); this._loadThreads(); }
+  }
+
+  // Forget an idle conversation's live log, so opening it again rebuilds from the
+  // host. One that is running, or on screen, keeps its log.
+  _forgetCtx(id) {
+    const ctx = id && this._ctxs.get(id);
+    if (!ctx || ctx === this._viewCtx || ctx.streaming) return;
+    this._ctxs.delete(id);
+  }
+
+  _refreshDock() {
+    this.runDock.hidden = !this._viewCtx.dockEl.children.length;
+  }
+
+  // The conversations with a turn running: what the host says (which includes a
+  // turn started from Slack or another browser tab) and what this panel streams.
+  _runningThreads() {
+    const ids = new Set(((this._lastHealth && this._lastHealth.running_threads) || []).map(String));
+    for (const [id, ctx] of this._ctxs) if (ctx.streaming) ids.add(String(id));
+    return ids;
+  }
+
+  // A green dot in the conversation list beside every conversation an agent is
+  // working on right now.
+  _refreshThreadDots() {
+    if (!this.threadSel) return;
+    const running = this._runningThreads();
+    for (const opt of this.threadSel.options) {
+      if (!opt.value) continue;
+      const title = opt.dataset.title || opt.textContent.replace(/^🟢\s*/u, "");
+      opt.dataset.title = title;
+      const on = running.has(opt.value);
+      opt.textContent = (on ? "🟢 " : "") + title;
+      opt.title = on ? "An agent is working on this conversation" : "";
+    }
   }
 
   // Attach the persistent panel DOM to the current mount point. Called on every
@@ -588,11 +710,7 @@ class AgentChat {
                      + `(sent ${new Date(Date.now() - took).toLocaleTimeString()})`);
       }
       if (!j || !j.ok) throw new Error((j && j.error) || "could not switch the prompt loop");
-      if (!this.threadId && j.thread_id) {
-        this.threadId = j.thread_id;
-        this._saveActive(j.thread_id);
-        this._loadThreads();
-      }
+      if (!this.threadId && j.thread_id) this._bindCtx(this._ctx(), j.thread_id);
       this._setPromptLoopUI(j);
       this._sys(on
         ? "✍ Prompt loop ON" + (node_id ? ` — prompts go into node ${node_id}.` : ".")
@@ -788,8 +906,13 @@ class AgentChat {
       // it is busy, refusing to send, with nothing running that could notice.
       // Trusting the stream unconditionally is what made every one of those
       // permanent. Now the trust expires, and _syncRunState asks the host.
-      if (this.streaming && !this._adoptedRun && !this._streamGoneQuiet()) return;
-      if (await this._hostReachable()) {
+      const ownStreamAlive = this.streaming && !this._adoptedRun && !this._streamGoneQuiet();
+      // Asked even then: the host's list of running conversations is what keeps
+      // the green dots right for turns this panel does not stream.
+      const up = await this._hostReachable();
+      if (up) this._refreshThreadDots();
+      if (ownStreamAlive) return;
+      if (up) {
         // Up — but is it the same process? A restart short enough to fall between
         // two ticks leaves us holding a stale command/model/thread list, so treat
         // a changed boot_id exactly like a reconnect.
@@ -966,6 +1089,7 @@ class AgentChat {
        runs and filed into the conversation when it ends: after the turn's last
        step, ahead of the agent's closing words. */
     .ay-rundock{display:flex;flex-direction:column;}
+    .ay-rundock-slot{display:flex;flex-direction:column;}
     .ay-rundock[hidden],.ay-run-anchor,.ay-run [hidden]{display:none !important;}
     .ay-step.ay-run{border-left-color:var(--ay-accent);}
     .ay-step.ay-run.ay-done{border-left-color:var(--ay-ok);}
@@ -1113,23 +1237,7 @@ class AgentChat {
     wrap.append(el("div", { className: "ay-bar" },
       [this.threadSel, newBtn, delBtn, this.undoBtn, this.autographBtn, this.loopBtn]));
 
-    // message log
-    this.logEl = el("div", { className: "ay-log" });
-    // Does the log follow new content? Yes while the user is parked at the bottom,
-    // no once they have scrolled up to read something — being yanked back down
-    // every time a step line lands makes the history unreadable during a long run.
-    // Read off the scroll event because an append does not move scrollTop: the flag
-    // therefore still carries what the user's own last scroll said.
-    this._stick = true;
-    this.logEl.addEventListener("scroll", () => {
-      const gap = this.logEl.scrollHeight - this.logEl.scrollTop - this.logEl.clientHeight;
-      this._stick = gap < 24;
-    }, { passive: true });
-    // An image that decodes after it was appended changes the log's height, and a
-    // scroll pinned before that lands short. `load` does not bubble, hence capture.
-    this.logEl.addEventListener("load", () => {
-      if (this._stick) this.logEl.scrollTop = this.logEl.scrollHeight;
-    }, true);
+    // message log — the on-screen conversation's (see _makeCtx; _show swaps it).
     wrap.append(this.logEl);
 
     // input area
@@ -1138,6 +1246,7 @@ class AgentChat {
     this.vBarEl = el("div", { className: "ay-vbar" });
     this.queueEl = el("div", { className: "ay-queue" });
     this.runDock = el("div", { className: "ay-rundock", hidden: true });
+    this.runDock.append(this._viewCtx.dockEl);  // each conversation docks its own run card
     this.pop = el("div", { className: "ay-pop" });
     this.input = el("textarea", { className: "ay-input", placeholder: "Message agentY…  (type / for commands)" });
     this.input.addEventListener("input", () => this._onInput());
@@ -1507,6 +1616,8 @@ class AgentChat {
     this._renderQueue();
   }
   _renderQueue() {
+    // The chips under the composer are the on-screen conversation's queue.
+    if (this._ctx() !== this._viewCtx) return;
     this.queueEl.innerHTML = "";
     this._queue.forEach((q, i) => {
       const label = (q.text || "(image only)") + (q.attachments.length ? `  📎${q.attachments.length}` : "");
@@ -1608,12 +1719,8 @@ class AgentChat {
     if (!this._queue.length) return;
     const item = this._queue.shift();
     this._renderQueue();
-    this.input.value = item.text || "";
-    this.attachments = item.attachments || [];
-    this._renderAttachments();
-    this._skipEcho = !!item.echoed;
-    this._dryRunOnce = !!item.dryRun;
-    this.send(); // re-captures canvas state at dispatch time; clears input/attachments
+    // re-captures canvas state at dispatch time; leaves the composer alone
+    this.send({ item });
   }
 
   // Rebuild the model dropdown from a { "<vendor>": [[spec,label],…] } map,
@@ -1710,9 +1817,16 @@ class AgentChat {
       const list = r.ok ? await r.json() : [];
       this.threadSel.innerHTML = "";
       for (const t of list) {
-        this.threadSel.append(el("option", { value: t.id, textContent: t.title || "New chat" }));
+        const opt = el("option", { value: t.id, textContent: t.title || "New chat" });
+        opt.dataset.title = t.title || "New chat";
+        this.threadSel.append(opt);
+      }
+      // `running` as the host saw it when it listed them; the heartbeat keeps it fresh.
+      if (this._lastHealth && list.some((t) => t && t.running !== undefined)) {
+        this._lastHealth.running_threads = list.filter((t) => t && t.running).map((t) => t.id);
       }
       this._syncThreadSel();
+      this._refreshThreadDots();
     } catch (_) {}
   }
 
@@ -1734,9 +1848,7 @@ class AgentChat {
   // Snapshot the current thread's live-rendered panel (thinking/step blocks and
   // all) so returning to it later this session restores exactly what was shown.
   _saveCurrentDom() {
-    if (this.threadId) {
-      this.domCache.set(this.threadId, { html: this._logHtml(), scroll: this.logEl.scrollTop });
-    }
+    // Nothing to snapshot: each conversation keeps its live log (see _show).
   }
 
   // Persist the rendered panel (collapsible think/step blocks and all) to the
@@ -1752,11 +1864,12 @@ class AgentChat {
   }
 
   newThread() {
-    this._saveCurrentDom();
-    this.threadId = null;
+    // A fresh context: the conversation on screen until now keeps running, if it is.
+    const ctx = this._makeCtx(null);
+    ctx.loaded = true;
+    this._show(ctx);
     this._clearActive(); // no persisted thread until the first message assigns one
     this._syncThreadSel(); // dropdown shows "--" until the first message assigns a thread
-    this.logEl.innerHTML = "";
     this._sys("New conversation. Ask me to generate or edit an image/video — results drop onto the graph as nodes.");
   }
 
@@ -1766,8 +1879,7 @@ class AgentChat {
     try {
       await fetch(backendBase() + "/agentY/threads/" + tid, { method: "DELETE" });
     } catch (_) {}
-    this.domCache.delete(tid);
-    this.threadId = null; // so newThread() doesn't re-cache the just-deleted thread
+    this._ctxs.delete(tid);
     this.newThread();
     this._loadThreads();
   }
@@ -1785,50 +1897,42 @@ class AgentChat {
   // mid-turn snapshot, and _saveCurrentDom below would otherwise re-cache it and
   // hand it straight back as if it were the finished conversation.
   async _renderThread(id, fresh = false) {
-    this._saveCurrentDom();
-    if (fresh) this.domCache.delete(id);
-    // The DOM is about to be replaced, which orphans every node the live stream
-    // is writing into. Drop those references so that if we come back mid-turn the
-    // next event builds fresh ones in the current panel instead of appending to
-    // detached nodes nobody will ever see.
-    this.curAssistant = null;
-    this.curStep = null;
-    this._thinkStep = null;
-    this._toolBlocks = {};
-    this._consoleEl = null;
-    this._clearStatus();
-    this.threadId = id;
+    let ctx = this._ctxs.get(id);
+    // `fresh`: rebuild from what the host holds — but never under a turn that is
+    // still writing into this log.
+    if (ctx && fresh && !ctx.streaming) {
+      ctx.logEl.replaceChildren();
+      ctx.loaded = false;
+    }
+    if (!ctx) ctx = this._makeCtx(id);
+    this._show(ctx);
     this._saveActive(id);
     this._syncThreadSel(); // drop the "--" placeholder and select the opened thread
     this._loadPromptLoop(); // this conversation's prompt loop, if it has one
-    // Restore the live-rendered panel if we've shown this thread already this
-    // session (keeps the thinking/step blocks); otherwise rebuild from the
-    // persisted messages, which store only the final user/assistant text.
-    const cached = this.domCache.get(id);
-    if (cached) {
-      this.logEl.innerHTML = cached.html;
-      this.logEl.scrollTop = cached.scroll;
-      return;
-    }
-    this.logEl.innerHTML = "";
+    // Shown already this session: its live log is still there, thinking/step
+    // blocks and all, and still being written if a turn of it is running.
+    if (ctx.loaded) return;
+    ctx.loaded = true;
     try {
       const r = await fetch(backendBase() + "/agentY/threads/" + id, { cache: "no-store" });
       if (!r.ok) return;
       const t = await r.json();
-      // Prefer the persisted rendered panel — collapsible think/step blocks
-      // intact, survives page reloads — and only fall back to the text-only
-      // message log for threads that were never rendered (e.g. pre-dating this).
-      if (t.panel_html) {
-        this.logEl.innerHTML = t.panel_html;
-        this.logEl.scrollTop = this.logEl.scrollHeight;
-        return;
-      }
-      for (const m of t.messages || []) {
-        if (m.role === "user") this._userMsg(m.content);
-        else if (m.role === "assistant") this._assistantMsg(m.content);
-        else this._sys(m.content);
-      }
-    } catch (_) {}
+      this._as(ctx, () => {
+        // Prefer the persisted rendered panel — collapsible think/step blocks
+        // intact, survives page reloads — and only fall back to the text-only
+        // message log for threads that were never rendered (e.g. pre-dating this).
+        if (t.panel_html) {
+          this.logEl.innerHTML = t.panel_html;
+          this.logEl.scrollTop = this.logEl.scrollHeight;
+          return;
+        }
+        for (const m of t.messages || []) {
+          if (m.role === "user") this._userMsg(m.content);
+          else if (m.role === "assistant") this._assistantMsg(m.content);
+          else this._sys(m.content);
+        }
+      });
+    } catch (_) { ctx.loaded = false; }
   }
 
   // ── rendering ────────────────────────────────────────────────────────────────
@@ -1865,10 +1969,11 @@ class AgentChat {
       this.logEl.appendChild(this._workingEl); // (re)pin to the end of the log
       if (!this._workingTimer) {
         let n = 1;
-        this._dotsEl.textContent = ".";
+        const dots = this._dotsEl;   // this conversation's: the timer outlives the context switch
+        dots.textContent = ".";
         this._workingTimer = setInterval(() => {
           n = (n % 3) + 1; // 1 → 2 → 3 → 1 …
-          this._dotsEl.textContent = ".".repeat(n);
+          dots.textContent = ".".repeat(n);
         }, 350);
       }
       this._scroll();
@@ -2004,8 +2109,8 @@ class AgentChat {
     const con = el("details", { className: "ay-run-console", hidden: true }, [conSum, conBody]);
     const body = el("div", { className: "ay-run-body" }, [steps, outs, con]);
     const details = el("details", { className: "ay-step ay-run ay-live", open: false }, [summary, body]);
-    this.runDock.append(details);
-    this.runDock.hidden = false;
+    this._ctx().dockEl.append(details);
+    this._refreshDock();
     this._runEl = { details, anchor, text, count, bar, fill, steps, outs, con, conSum, conBody, body,
       conLines: 0, outputs: 0, total: 0, finished: 0, failed: false,
       bars: new Map(), queued: new Map(), queueRow: null };
@@ -2159,7 +2264,7 @@ class AgentChat {
     } else {
       r.details.remove();
     }
-    this.runDock.hidden = !this.runDock.children.length;
+    this._refreshDock();
   }
 
   // The visible graph rect ([x, y, w, h] in graph coordinates), or null when the
@@ -2408,7 +2513,9 @@ class AgentChat {
   // Stop button (streaming had cleared). While detached we therefore render
   // nothing and let the backend's own message log be the record.
   _isRendering() {
-    return !this.streamThreadId || this.streamThreadId === this.threadId;
+    // Always: a conversation off-screen renders into its own log (see _show), so
+    // nothing has to be dropped and nothing is missing when it is opened again.
+    return true;
   }
 
   // Events that must be handled no matter which conversation is on screen: run
@@ -2427,9 +2534,7 @@ class AgentChat {
     }
     switch (ev.type) {
       case "thread":
-        if (ev.id && ev.id !== this.threadId) { this.threadId = ev.id; this._loadThreads(); }
-        if (ev.id) this._saveActive(ev.id);
-        if (ev.id && !this.streamThreadId) this.streamThreadId = ev.id;  // server-assigned
+        if (ev.id) this._bindCtx(this._ctx(), ev.id);  // server-assigned on a first message
         break;
       case "request":
         this.curRequestId = ev.request_id;
@@ -2525,6 +2630,8 @@ class AgentChat {
       case "status_line":
         // A CLI-side notice (memory init, model pull, …) surfaced live during a
         // turn. Render it and advance the seq so the on-done drain won't repeat it.
+        // The host sends it to every running turn: the first stream shows it.
+        if (typeof ev.seq === "number" && ev.seq <= this._lastStatusSeq) break;
         this.curAssistant = null;
         this._sys(ev.data);
         this._noteStatusSeq(ev.seq);
@@ -2541,7 +2648,7 @@ class AgentChat {
         this._setBusy(true); // awaiting a reply → button reverts to Send
         this.logEl.append(el("div", { className: "ay-msg ay-ask", innerHTML: mdToHtml("⏸️ " + ev.prompt) }));
         this._scroll(true);
-        this.input.focus();
+        if (this._ctx() === this._viewCtx) this.input.focus();
         break;
       case "error":
         this.curAssistant = null;
@@ -2602,7 +2709,11 @@ class AgentChat {
     // a stream runs off-screen this would otherwise keep writing the *displayed*
     // thread's DOM, and never the running one's.
     if (this._saveTimer || !this.threadId || !this._isRendering()) return;
-    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._savePanel(); }, 1500);
+    const ctx = this._ctx();   // the timer fires outside this event: save THIS conversation's log
+    this._saveTimer = setTimeout(() => {
+      ctx._saveTimer = null;
+      this._as(ctx, () => this._savePanel());
+    }, 1500);
   }
 
   // Has a stream we own delivered nothing for longer than the host's keep-alive
@@ -2818,7 +2929,7 @@ class AgentChat {
       if (ev.message) this._sys(ev.message);
       this._savePanel();
     } else {
-      this.domCache.delete(tid);
+      this._forgetCtx(tid);
     }
     await this._undoCanvas(ev);
     this._loadThreads();
@@ -2874,7 +2985,7 @@ class AgentChat {
 
   _forgetStalePanel(threadId) {
     if (!threadId) return Promise.resolve();
-    this.domCache.delete(threadId);
+    this._forgetCtx(threadId);
     return fetch(backendBase() + "/agentY/threads/" + threadId + "/panel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2889,6 +3000,10 @@ class AgentChat {
     // `finally` would clear state — and null the abortController — now belonging
     // to the turn that replaced it, leaving a live turn that looks idle and can't
     // be stopped. Only the stream still holding the token may clear it.
+    // Captured before the first await: from here on the panel may be showing
+    // another conversation, and everything this stream does is done as this one.
+    const ctx = this._ctx();
+    const run = (fn) => this._as(ctx, fn);
     const token = ++this._streamToken;
     this.streaming = true;
     this._lastStreamAt = Date.now();   // see STREAM_SILENCE_MS
@@ -2914,13 +3029,14 @@ class AgentChat {
       }
     }
     this.abortController = new AbortController();
+    const signal = this.abortController.signal;
     this._setBusy(true);
     try {
       const resp = await fetch(backendBase() + "/agentY/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: this.abortController.signal,
+        signal,
       });
       if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
       const reader = resp.body.getReader();
@@ -2930,7 +3046,7 @@ class AgentChat {
         const { done, value } = await reader.read();
         // Any byte at all, keep-alive comments included — this is a liveness
         // clock, not an activity one.
-        this._lastStreamAt = Date.now();
+        ctx._lastStreamAt = Date.now();
         if (done) break;
         buf += dec.decode(value, { stream: true });
         let idx;
@@ -2939,23 +3055,29 @@ class AgentChat {
           buf = buf.slice(idx + 2);
           const line = frame.split("\n").find((l) => l.startsWith("data:"));
           if (line) {
-            try { this._onEvent(JSON.parse(line.slice(line.indexOf(":") + 1).trim())); }
-            catch (e) { console.error("[agentY] bad SSE frame", e); }
+            run(() => {
+              try { this._onEvent(JSON.parse(line.slice(line.indexOf(":") + 1).trim())); }
+              catch (e) { console.error("[agentY] bad SSE frame", e); }
+            });
           }
         }
       }
     } catch (e) {
-      // A user-initiated Stop aborts the fetch → don't show it as an error.
-      if (!this._stopping && e.name !== "AbortError") {
-        this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`${HOST_INFO.run_script || "run_agent.ps1"}\`, ${backendBase()})`);
-        this._startReconnect(false); // auto-recover the panel when the host is back
-      }
+      run(() => {
+        // A user-initiated Stop aborts the fetch → don't show it as an error.
+        if (!this._stopping && e.name !== "AbortError") {
+          this._sys("❌ Connection error: " + e + `\n\nIs the agentY chat host running? (\`${HOST_INFO.run_script || "run_agent.ps1"}\`, ${backendBase()})`);
+          this._startReconnect(false); // auto-recover the panel when the host is back
+        }
+      });
     } finally {
-      if (this._streamToken === token) {
-        this.streaming = false;
-        this.abortController = null;
-        this._setBusy(false);
-      }
+      run(() => {
+        if (this._streamToken === token) {
+          this.streaming = false;
+          this.abortController = null;
+          this._setBusy(false);
+        }
+      });
     }
   }
 
@@ -2969,6 +3091,7 @@ class AgentChat {
     // Deliberately no `if (!this.streaming) return`. Stop is also the escape
     // hatch for a panel that only *looks* busy — a turn whose stream we lost —
     // and bailing out early there left no way to get the input back.
+    const ctx = this._ctx();
     this._stopping = true;
     this._status("⏹ Stopping…");
     // Ask the backend to cancel the run (halts the agent loop + interrupts
@@ -2984,18 +3107,20 @@ class AgentChat {
         }),
       });
     } catch (_) {}
-    // Stop consuming the SSE stream client-side.
-    try { if (this.abortController) this.abortController.abort(); } catch (_) {}
-    this._clearStatus();
-    this._sys("⏹ Stopped.");
-    this.curAssistant = null;
-    this.curStep = null;
-    this.streaming = false;
-    this._adoptedRun = false;
-    this.streamThreadId = null;
-    this.activeAsk = null;   // a pending question dies with the run
-    this._setBusy(false);
-    this._savePanel();
+    this._as(ctx, () => {
+      // Stop consuming the SSE stream client-side.
+      try { if (this.abortController) this.abortController.abort(); } catch (_) {}
+      this._clearStatus();
+      this._sys("⏹ Stopped.");
+      this.curAssistant = null;
+      this.curStep = null;
+      this.streaming = false;
+      this._adoptedRun = false;
+      this.streamThreadId = null;
+      this.activeAsk = null;   // a pending question dies with the run
+      this._setBusy(false);
+      this._savePanel();
+    });
   }
 
   _setBusy(b) {
@@ -3003,6 +3128,10 @@ class AgentChat {
     // Stop button; otherwise it's the Send/reply button. Always clickable.
     const stopMode = b && !this.activeAsk;
     this._setWorking(stopMode); // blinking caret while the agent is actively working
+    this._refreshThreadDots();
+    // The composer belongs to the conversation on screen; one running off-screen
+    // has its caret and its dot, and leaves the button alone.
+    if (this._ctx() !== this._viewCtx) return;
     this.sendBtn.disabled = false;
     setButtonIcon(this.sendBtn, stopMode ? "stop" : "send", stopMode ? "⏹ Stop" : "Send");
     this.sendBtn.classList.toggle("ay-stop", stopMode);
@@ -3019,16 +3148,21 @@ class AgentChat {
   }
 
   // ── sending ──────────────────────────────────────────────────────────────────
-  async send() {
-    const text = this.input.value.trim();
+  // `item`: a message queued in this conversation while its turn ran, sent now —
+  // possibly while another conversation is on screen, so it must not read or
+  // clear the composer, which holds whatever is being typed there.
+  async send({ item = null } = {}) {
+    const text = item ? String(item.text || "").trim() : this.input.value.trim();
+    const atts = item ? (item.attachments || []) : this.attachments;
     // One-shot: set by the "Dry run" entry on the hooks button, consumed here so
     // the next message is an ordinary run again. Read before every early return —
     // a /help or an ask-reply must not leave it armed for something unrelated.
-    const dryRun = !!this._dryRunOnce;
-    this._dryRunOnce = false;
+    const dryRun = item ? !!item.dryRun : !!this._dryRunOnce;
+    if (!item) this._dryRunOnce = false;
     // One-shot, like dryRun: Ctrl/⌘+Enter during a turn sends this urgently.
-    const urgent = !!this._urgentOnce;
-    this._urgentOnce = false;
+    const urgent = item ? false : !!this._urgentOnce;
+    if (!item) this._urgentOnce = false;
+    const ctx = this._ctx();
 
     // First send is a user gesture — a good moment to ask (once) for browser-
     // notification permission so background auto-drops (e.g. Magnific finishing
@@ -3077,7 +3211,7 @@ class AgentChat {
     const canvasInputs = this._collectCanvasInputs();
     const canvasHooks = this._collectCanvasHooks();
     const canvasSelection = this._collectCanvasSelection();
-    if (!text && this.attachments.length === 0 && canvasInputs.length === 0 &&
+    if (!text && atts.length === 0 && canvasInputs.length === 0 &&
         canvasHooks.length === 0) return;
 
     // Answering an interactive ask → side-channel reply; the SSE stream continues.
@@ -3117,17 +3251,18 @@ class AgentChat {
     // ComfyUI renders. Slash commands and dry runs are not things to say to a
     // running turn; those, and a message the turn can no longer take, queue.
     if (this.streaming) {
-      if (!text && !this.attachments.length) return;
+      if (!text && !atts.length) return;
+      if (item) { this._queue.unshift(item); this._renderQueue(); return; }
       if (dryRun || text.startsWith("/") || !this.curRequestId) {
         this._queueMessage(text, { dryRun });
         return;
       }
-      await this._sendIntoTurn(text, this.attachments.slice(), urgent);
+      await this._sendIntoTurn(text, atts.slice(), urgent);
       return;
     }
-    const imgs = this.attachments.map((a) => a.path);
+    const imgs = atts.map((a) => a.path);
     const noteParts = [];
-    if (this.attachments.length) noteParts.push(`${this.attachments.length} image(s) attached`);
+    if (atts.length) noteParts.push(`${atts.length} image(s) attached`);
     if (canvasInputs.length) {
       const ni = canvasInputs.filter((c) => c.kind === "image").length;
       const nv = canvasInputs.length - ni;
@@ -3141,15 +3276,18 @@ class AgentChat {
     const selNote = this._describeSelection(canvasSelection);
     // Already in the log if this came back from a mid-run send that arrived too
     // late; echoing it again would show the same message twice.
-    if (this._skipEcho) this._skipEcho = false;
-    else this._userMsg(text
+    const skipEcho = item ? !!item.echoed : this._skipEcho;
+    if (!item) this._skipEcho = false;
+    if (!skipEcho) this._userMsg(text
       + (noteParts.length ? `  \n_(${noteParts.join(", ")})_` : "")
       + (selNote ? `  \n${selNote}` : ""));
-    this.input.value = "";
-    this._autosize();
-    this.attachments = [];
-    this._renderAttachments();
-    this._hidePop();
+    if (!item) {
+      this.input.value = "";
+      this._autosize();
+      this.attachments = [];
+      this._renderAttachments();
+      this._hidePop();
+    }
     // Mark these canvas files as consumed so an unchanged, still-selected node
     // isn't re-sent on the next message.
     for (const ci of canvasInputs) if (ci._nodeId != null) this._consumed[ci._nodeId] = ci.value;
@@ -3163,7 +3301,9 @@ class AgentChat {
     // other workflow" would otherwise be answered about this one, confidently.
     let openTabs = [];
     try { openTabs = openWorkflows(); } catch (_) {}
-    await this._stream({
+    // As the conversation that sent it: the awaits above may have let the panel
+    // switch to another one.
+    await this._as(ctx, () => this._stream({
       thread_id: this.threadId,
       message: text,
       image_paths: imgs,
@@ -3173,7 +3313,7 @@ class AgentChat {
       canvas_prompt: canvasPrompt,
       open_workflows: openTabs,
       dry_run: dryRun,
-    });
+    }));
   }
 
   // Open the usage guide in a new browser tab (backs the /help command).
@@ -4161,6 +4301,23 @@ class AgentChat {
       this.send();
     }
   }
+}
+
+// The per-conversation state of AgentChat (see _makeCtx). Each name reads and
+// writes the context of the conversation being handled — the one whose event is
+// running, else the one on screen — so the render code above can say
+// `this.logEl` / `this.streaming` and mean the right conversation.
+const CTX_FIELDS = ["threadId", "logEl", "streaming", "activeAsk", "streamThreadId",
+  "curRequestId", "abortController", "_adoptedRun", "_streamToken", "_stopping",
+  "_lastStreamAt", "curAssistant", "curStep", "_thinkStep", "_toolBlocks", "_consoleEl",
+  "_runEl", "_workingEl", "_dotsEl", "_workingTimer", "_stick", "_freshAssistant",
+  "_queue", "_turnGraph", "_saidOffscreen", "_saveTimer"];
+for (const name of CTX_FIELDS) {
+  Object.defineProperty(AgentChat.prototype, name, {
+    configurable: true,
+    get() { return this._ctx()[name]; },
+    set(v) { this._ctx()[name] = v; },
+  });
 }
 
 // ── register the sidebar tab ────────────────────────────────────────────────────

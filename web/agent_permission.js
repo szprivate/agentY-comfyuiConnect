@@ -132,6 +132,10 @@ function show(req) {
   ]));
 
   const body = el("div", { className: "ayp-body" });
+  // Several conversations can run at once: say which one is asking.
+  if (req.conversation) {
+    body.append(el("div", { className: "ayp-note", textContent: `Asked by the conversation "${req.conversation}".` }));
+  }
   body.append(el("div", { className: "ayp-cmd", textContent: req.summary || "(no details)" }));
   if (NOTES[req.tool]) body.append(el("div", { className: "ayp-note", textContent: NOTES[req.tool] }));
   card.append(body);
