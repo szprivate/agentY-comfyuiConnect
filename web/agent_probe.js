@@ -78,9 +78,27 @@ export function openWorkflows() {
   });
 }
 
-/** Bounding box over *nodes*, in graph units, padded. */
-function boundsOf(nodes) {
+/** A group's rectangle in graph units: [x, y, w, h], title bar included. */
+function groupRect(g) {
+  const b = g && (g._bounding || g.bounding);
+  if (b && b.length >= 4) return [b[0], b[1], b[2], b[3]];
+  if (g && g.pos && g.size) return [g.pos[0], g.pos[1], g.size[0], g.size[1]];
+  return null;
+}
+
+/** Bounding box over *nodes* (and *groups*), in graph units, padded. */
+function boundsOf(nodes, groups = []) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  // A group reaches past its nodes on every side, and its title sits above
+  // them: framed on the nodes alone, its edges were cut off.
+  for (const g of groups) {
+    const r = groupRect(g);
+    if (!r) continue;
+    x0 = Math.min(x0, r[0]);
+    y0 = Math.min(y0, r[1]);
+    x1 = Math.max(x1, r[0] + r[2]);
+    y1 = Math.max(y1, r[1] + r[3]);
+  }
   for (const n of nodes) {
     const [x, y] = n.pos;
     const w = n.size[0];
@@ -201,6 +219,14 @@ function paintTextWidgets(ctx, canvas, nodes, scale) {
  *    and the user does not see their canvas jump.
  * 4. Multiline text is not on the canvas at all — see `paintTextWidgets`, which
  *    puts it there.
+ * 5. LiteGraph draws the background and the GROUPS on a second, offscreen canvas
+ *    (`bgcanvas`) and copies it in at `width / devicePixelRatio`, assuming both
+ *    contexts carry the devicePixelRatio transform its resize handler installs.
+ *    So the capture sets things up the way ComfyUI does on that screen: both
+ *    canvases resized, both scaled by the ratio, and the zoom divided by it —
+ *    one picture pixel per graph unit at scale 1, as before. Without that, on a
+ *    2x screen the groups and the background covered a quarter of the picture
+ *    and the rest came out transparent: groups cut short.
  */
 export function captureGraph(opts = {}) {
   const canvas = app && app.canvas;
@@ -221,17 +247,28 @@ export function captureGraph(opts = {}) {
   }
   if (!nodes.length) return { error: "the canvas is empty — there is nothing to show" };
 
-  // Everything that must go back exactly as it was.
+  // Everything that must go back exactly as it was. Each canvas's transform is
+  // kept as it IS rather than rebuilt from devicePixelRatio: whatever ComfyUI
+  // set up is what goes back.
+  const bg = canvas.bgcanvas || null;
+  const transformOf = (c) => {
+    try { return c.getContext("2d").getTransform(); } catch (_) { return null; }
+  };
   const was = {
     scale: canvas.ds.scale,
     x: canvas.ds.offset[0],
     y: canvas.ds.offset[1],
     w: el.width,
     h: el.height,
+    t: transformOf(el),
+    bgW: bg ? bg.width : 0,
+    bgH: bg ? bg.height : 0,
+    bgT: bg ? transformOf(bg) : null,
     info: canvas.show_info,
   };
   try {
-    const box = boundsOf(nodes);
+    // The whole graph is framed with its groups; a selection is just its nodes.
+    const box = boundsOf(nodes, scoped ? [] : (graph._groups || graph.groups || []));
 
     // Zoom first: 1:1 unless the budget cannot pay for it. Never magnify — a
     // two-node graph blown up to fill a frame looks broken, and 1:1 is the size
@@ -247,13 +284,20 @@ export function captureGraph(opts = {}) {
     const outW = Math.max(1, Math.round(box.w * scale));
     const outH = Math.max(1, Math.round(box.h * scale));
 
+    const dpr = window.devicePixelRatio || 1;
     el.width = outW;
     el.height = outH;
+    el.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (bg) {
+      bg.width = outW;
+      bg.height = outH;
+      bg.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
     // LiteGraph's own render-stats overlay (node count, FPS) is drawn over the
     // graph and belongs on a developer's screen, not in a picture someone is
     // being sent.
     canvas.show_info = false;
-    canvas.ds.scale = scale;
+    canvas.ds.scale = scale / dpr;
     canvas.ds.offset[0] = -box.x;
     canvas.ds.offset[1] = -box.y;
     canvas.setDirty(true, true);
@@ -262,8 +306,13 @@ export function captureGraph(opts = {}) {
     // Only when the rest of the text is being drawn too. Below that zoom
     // LiteGraph draws no labels, and prompts alone in an otherwise wordless
     // picture would be a strange half-measure — and unreadable at that size.
-    const readable = scale >= TEXT_RENDERS_ABOVE;
-    if (readable) paintTextWidgets(el.getContext("2d"), canvas, nodes, scale);
+    // LiteGraph's own verdict counts too: below its threshold it drew no text.
+    const readable = scale >= TEXT_RENDERS_ABOVE && !canvas.low_quality;
+    if (readable) {
+      const ctx = el.getContext("2d");
+      ctx.setTransform(1, 0, 0, 1, 0, 0);       // paintTextWidgets works in pixels
+      paintTextWidgets(ctx, canvas, nodes, scale);
+    }
 
     const url = el.toDataURL("image/png");
     const out = {
@@ -296,10 +345,18 @@ export function captureGraph(opts = {}) {
     // here too, exactly as its own resize handler sets it up.
     el.width = was.w;
     el.height = was.h;
-    try {
-      const dpr = window.devicePixelRatio || 1;
-      if (dpr !== 1) el.getContext("2d").scale(dpr, dpr);
-    } catch (_) { /* nothing better to do; the next window resize fixes it */ }
+    if (bg) { bg.width = was.bgW; bg.height = was.bgH; }
+    const putBack = (c, t) => {
+      try {
+        if (t) c.getContext("2d").setTransform(t);
+        else {
+          const dpr = window.devicePixelRatio || 1;
+          if (dpr !== 1) c.getContext("2d").scale(dpr, dpr);
+        }
+      } catch (_) { /* nothing better to do; the next window resize fixes it */ }
+    };
+    putBack(el, was.t);
+    if (bg) putBack(bg, was.bgT);
     canvas.show_info = was.info;
     canvas.ds.scale = was.scale;
     canvas.ds.offset[0] = was.x;
