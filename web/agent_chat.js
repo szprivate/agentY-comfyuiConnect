@@ -1657,6 +1657,22 @@ class AgentChat {
     });
   }
 
+  // When a message sent into a running turn will be read: at the end of the step
+  // the agent is in. Said with the message, because a long step (a 26 GB download,
+  // a render) used to make the agent look as if it had not heard.
+  static whenRead(step, urgent) {
+    if (urgent || !step || !step.name) return "";
+    const mins = (s) => (s >= 90 ? Math.round(s / 60) + " min" : Math.round(s) + " s");
+    const d = step.download;
+    if (d) {
+      const of = d.total_gb ? ` — ${d.done_gb} / ${d.total_gb} GB` : ` — ${d.done_gb} GB`;
+      const eta = d.eta_min != null ? `, ~${Math.max(1, Math.round(d.eta_min))} min left` : "";
+      return `it is downloading ${d.file}${of}${eta}; it reads this at its next check, within a minute`;
+    }
+    if ((step.seconds || 0) < 20) return "";   // a short step: it is read in a moment anyway
+    return `it reads this when its current step (${step.name}, running ${mins(step.seconds || 0)}) ends`;
+  }
+
   // Deliver queued message #i into the RUNNING turn. The agent reads it at its
   // next tool boundary (urgent cancels the pending call so it reads it instead).
   // A 409 means the turn finished in the meantime — leave it queued, where it
@@ -1682,9 +1698,13 @@ class AgentChat {
       this._renderQueue();
       return;
     }
+    let step = null;
+    try { step = ((await res.json()) || {}).current_step || null; } catch (_) {}
+    const when = AgentChat.whenRead(step, urgent);
     this._queue.splice(i, 1);
     this._renderQueue();
-    this._userMsg(item.text + (urgent ? "  \n_(sent mid-run — urgent)_" : "  \n_(sent mid-run)_"));
+    this._userMsg(item.text + (urgent ? "  \n_(sent mid-run — urgent)_"
+      : `  \n_(sent mid-run${when ? " — " + when : ""})_`));
   }
 
   // Send a message into the RUNNING turn. Images go in as file paths: a message
@@ -1711,9 +1731,13 @@ class AgentChat {
       res = null;
     }
     if (res && res.ok) {
+      let step = null;
+      try { step = ((await res.json()) || {}).current_step || null; } catch (_) {}
+      const when = AgentChat.whenRead(step, urgent);
       const notes = [];
       if (paths.length) notes.push(`${paths.length} image(s) attached`);
-      notes.push(urgent ? "sent into the running turn — urgent" : "sent into the running turn");
+      notes.push(urgent ? "sent into the running turn — urgent"
+        : "sent into the running turn" + (when ? " — " + when : ""));
       this._userMsg(text + `  \n_(${notes.join(", ")})_`);
       return;
     }
