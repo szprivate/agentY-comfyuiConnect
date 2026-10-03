@@ -169,6 +169,8 @@ function injectStyles() {
   /* A setting and its explanation are one block: the note sits right under the
      control it explains, lined up with it, and the space goes BETWEEN settings. */
   .ays-field .ays-row{padding:3px 0;}
+  .ays-think{display:inline-flex;align-items:center;gap:3px;flex:none;cursor:pointer;font-size:13px;white-space:nowrap;}
+  .ays-row .ays-think-sel{flex:none;width:auto;}
   .ays-field .ays-keynote{margin:0 0 0 calc(42% + 10px);}
   .ays-field.ays-hasnote{margin:12px 0;}
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#c3c8d0;word-break:break-word;font-family:ui-monospace,monospace;}
@@ -291,6 +293,35 @@ const INHERIT_LABEL = "— inherit from tier —";
 // lives in one place (src/agent.py) rather than being duplicated here.
 let TIER_LABELS = {};
 
+// Reasoning per agent: llm.thinking (per tier, on/off) and llm.thinking_roles (per
+// role, "" = as its tier). Not shown as groups of their own — each is a switch on
+// the model row it belongs to, where the choice is actually made.
+let THINKING = { tiers: {}, roles: {} };
+const THINK_TITLE = "Reasoning: the model thinks before it answers. Better decisions, "
+  + "slower and more tokens — worth it where few calls decide a lot (the lead), "
+  + "rarely for agents that make many quick tool calls. The model must support it.";
+
+function thinkingControl(path, key, refs) {
+  if (path[0] !== "llm") return null;
+  if (path[1] === "tiers" && key in THINKING.tiers) {
+    const box = el("input", { type: "checkbox" });
+    box.checked = THINKING.tiers[key] === true || String(THINKING.tiers[key]).toLowerCase() === "true";
+    refs.push({ path: ["llm", "thinking", key], get: () => box.checked });
+    return el("label", { className: "ays-think", title: THINK_TITLE }, [box, document.createTextNode("💭")]);
+  }
+  if (path[1] === "pipeline" && key in THINKING.roles) {
+    const sel = el("select", { className: "ays-input ays-think-sel", title: THINK_TITLE });
+    for (const [v, t] of [["", "💭 as tier"], ["on", "💭 on"], ["off", "💭 off"]]) {
+      const o = el("option", { value: v, textContent: t });
+      if (String(THINKING.roles[key] || "").toLowerCase() === v) o.selected = true;
+      sel.append(o);
+    }
+    refs.push({ path: ["llm", "thinking_roles", key], get: () => sel.value });
+    return sel;
+  }
+  return null;
+}
+
 // One-line explanations for groups whose keys don't speak for themselves. The form
 // is generated from the settings file, so there is nowhere else to say what a
 // section is FOR — the TOML comments never reach the browser.
@@ -313,8 +344,10 @@ const GROUP_NOTES = {
     + "reference”. Every run is a real generation, so max_runs is a spend "
     + "ceiling: the agent may ask for fewer runs, never more. It judges with the "
     + "“QA judge” tier under Models.",
-  tiers: "Every role takes its model from one of these six. Set them and you are "
-    + "done — per-role overrides below are for the exceptions.",
+  tiers: "Every role takes its model from one of these tiers. Set them and you are "
+    + "done — per-role overrides below are for the exceptions. 💭 turns reasoning on "
+    + "for a tier: better decisions, slower and more tokens. Worth it for the Lead; "
+    + "rarely for agents that make many quick tool calls.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
     + "that single job wants a different model from the rest of its tier.",
   memory: "Long-term memory. The store is always local FAISS. The two models here "
@@ -405,7 +438,12 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
     refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
   } else if (underPipeline && modelGroups && Object.keys(modelGroups).length) {
-    const sel = buildModelSelect(modelGroups, val == null ? "" : String(val), isOverride);
+    // The Lead tier may be left blank too: it then runs on the orchestrator's model.
+    const leadTier = path[1] === "tiers" && key === "lead";
+    const sel = buildModelSelect(modelGroups, val == null ? "" : String(val), isOverride || leadTier);
+    if (leadTier && sel.options[0] && sel.options[0].value === "") {
+      sel.options[0].textContent = "— same as Orchestrator —";
+    }
     refs.push({ path, get: () => sel.value });
     input = searchableSelect(sel, { placeholder: "Type a model name…" });
   } else {
@@ -413,6 +451,8 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     refs.push({ path, get: () => input.value });
   }
   row.append(input);
+  const think = thinkingControl(path, key, refs);
+  if (think) row.append(think);
   field.append(row);
   if (KEY_NOTES[key]) {
     field.classList.add("ays-hasnote");
@@ -457,6 +497,11 @@ function pathValue(settings, path) {
 function buildTopLevelSettings(container, settings, modelGroups, refs) {
   const claimedScalars = new Set();
   const claimedObjects = new Set();      // joined settings paths, e.g. "llm.tiers"
+  // Drawn as switches on the model rows (thinkingControl), not as groups.
+  const llm = (settings && settings.llm) || {};
+  THINKING = { tiers: llm.thinking || {}, roles: llm.thinking_roles || {} };
+  claimedObjects.add("llm.thinking");
+  claimedObjects.add("llm.thinking_roles");
 
   for (const section of SECTIONS) {
     const { group, body } = makeCollapsibleGroup(section.title, "", !!section.open);
