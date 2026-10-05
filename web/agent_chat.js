@@ -233,6 +233,7 @@ const SLASH_FALLBACK = [
   { name: "/clear_vram", description: "Clear ComfyUI GPU VRAM" },
   { name: "/images", description: "List images generated in this thread" },
   { name: "/undo", description: "Undo the agent's last step in this conversation" },
+  { name: "/compact", description: "Shrink this conversation's history now (old tool output trimmed, older turns summarised)" },
   { name: "/qa", description: "Show / set / clear the QA briefing outputs are checked against" },
   { name: "/history", description: "Open the message-history log viewer" },
   { name: "/memory", description: "Open the long-term memory viewer" },
