@@ -6,6 +6,7 @@ import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 import { searchableSelect } from "./agent_combo.js";
+import { formatUsage } from "./agent_usage.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -395,6 +396,7 @@ class AgentChat {
       if (prev.logEl.parentNode) prev.logEl.replaceWith(ctx.logEl);
       this.runDock.replaceChildren(ctx.dockEl);
       this._viewCtx = ctx;
+      this._renderUsage();          // each conversation shows its own turn's usage
       // A log brought back keeps where its reader was; one that was following
       // new content catches up with what arrived while it was off-screen.
       if (ctx._stick) ctx.logEl.scrollTop = ctx.logEl.scrollHeight;
@@ -1130,6 +1132,8 @@ class AgentChat {
     .ay-run-console>summary{cursor:pointer;font-size:11.5px;color:#a9bddb;list-style:none;}
     .ay-run-console>summary::-webkit-details-marker{display:none;}
     .ay-con-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:160px;overflow:auto;}
+    .ay-usage{font-size:11px;color:var(--ay-muted);padding:4px 2px 0;font-family:ui-monospace,monospace;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
     .ay-status{font-size:11px;color:var(--ay-muted);padding:2px 12px;font-family:ui-monospace,monospace;align-self:center;}
     .ay-inwrap{border-top:1px solid var(--ay-border);padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;position:relative;background:var(--ay-bg);}
     .ay-attach{display:flex;flex-wrap:wrap;gap:5px;}
@@ -1280,9 +1284,13 @@ class AgentChat {
     this.sendBtn.addEventListener("click", () => this._onSendBtn());
 
     const inrow = el("div", { className: "ay-inrow" }, [attachBtn, this.input, this.sendBtn]);
+    // What the turn has spent so far - filled by "usage" events while it runs,
+    // and left showing the turn's total until the next one starts.
+    this.usageEl = el("div", { className: "ay-usage", hidden: true,
+      title: "Tokens used by this turn so far, all agents together" });
     const inwrap = el("div", { className: "ay-inwrap" },
       [this.pop, this.runDock, this.queueEl, this.vBarEl, this.selBarEl, this.attachEl,
-       inrow, this.fileInput]);
+       inrow, this.usageEl, this.fileInput]);
     wrap.append(inwrap);
     this._startSelectionIndicator();
 
@@ -2369,6 +2377,17 @@ class AgentChat {
   }
   // File the run into the conversation where it began. Called wherever the old
   // status line was cleared: the turn ending, a stop, a stream that went quiet.
+  // "12.4k in · 1.2k out · 68% cached · $0.03 · 9 calls", for the conversation
+  // on screen. Hidden until its turn has reported something.
+  _renderUsage() {
+    const box = this.usageEl;
+    if (!box) return;
+    const u = this._viewCtx && this._viewCtx.usage;
+    if (!u) { box.hidden = true; box.textContent = ""; return; }
+    box.textContent = formatUsage(u);
+    box.hidden = false;
+  }
+
   _clearStatus() {
     const r = this._runEl;
     this._runEl = null;
@@ -2667,7 +2686,15 @@ class AgentChat {
       case "thread":
         if (ev.id) this._bindCtx(this._ctx(), ev.id);  // server-assigned on a first message
         break;
+      case "usage":
+        // The turn's running total. Kept on its conversation, shown when that
+        // conversation is the one on screen.
+        this._ctx().usage = ev;
+        this._renderUsage();
+        break;
       case "request":
+        this._ctx().usage = null;      // a new turn counts from zero
+        this._renderUsage();
         this.curRequestId = ev.request_id;
         this._seenRuns.add(ev.request_id);
         // Following a turn someone else started (a lead woken by its shots, a
