@@ -172,6 +172,13 @@ function splitToolName(ev) {
   if (m) { agent = agent || m[1]; name = m[2]; }
   return { agent, name };
 }
+// { agent: "vision", model: "qwen3-vl-flash" } -> "vision · qwen3-vl-flash".
+function viaLabel(via) {
+  const agent = String(via?.agent || "").trim();
+  if (!agent) return null;
+  const model = String(via.model || "").trim();
+  return { agent, text: model ? `${agent} · ${model}` : agent };
+}
 // Minimal markdown: **bold**, `code`, newlines. Enough for the agent's messages.
 function mdToHtml(s) {
   let h = escapeHtml(s);
@@ -2221,7 +2228,16 @@ class AgentChat {
     if (agent) {
       summary.append(el("span", { className: "ay-agent" }, [el("span", { className: "ay-dot" }), agent]));
     }
-    summary.append(el("span", { className: "ay-tname", textContent: name, title: name }), state);
+    summary.append(el("span", { className: "ay-tname", textContent: name, title: name }));
+    // A call another agent answers (analyze_image -> the vision agent) says so.
+    const via = viaLabel(ev.via);
+    if (via) {
+      const chip = el("span", { className: "ay-agent ay-via", title: `answered by the ${via.agent} agent` },
+        ["→", el("span", { className: "ay-dot" }), via.text]);
+      chip.style.setProperty("--ay-agent", agentColor(via.agent));
+      summary.append(chip);
+    }
+    summary.append(state);
     const row = (key) => {
       const val = el("pre", { className: "ay-kv-val" });
       const kv = el("div", { className: "ay-kv", hidden: true },
