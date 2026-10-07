@@ -101,6 +101,17 @@ export function groupBox(rects, gaps = GAPS) {
   return [b[0] - g.pad, b[1] - g.pad - g.group_title, b[2] + 2 * g.pad, b[3] + 2 * g.pad + g.group_title];
 }
 
+/** The area in which a result still belongs to the outputs group: the group as
+ *  it is drawn, widened to the full grid and deepened by one more row. A result
+ *  is placed into its cell BEFORE the group is resized around it, so "inside the
+ *  box as drawn" would miss exactly the one that makes the box grow. */
+export function outputsReach(groupRect, cell = OUTPUT_CELL, columns = OUTPUT_COLUMNS, gaps = GAPS) {
+  const g = { ...GAPS, ...(gaps || {}) };
+  const gridW = 2 * g.pad + columns * cell[0] + (columns - 1) * g.column;
+  const rowH = cell[1] + g.title_bar + g.node;
+  return [groupRect[0], groupRect[1], Math.max(groupRect[2], gridW), groupRect[3] + rowH];
+}
+
 /** Where a new "agent outputs" group starts: right of everything, level with
  *  its top. */
 export function outputsOrigin(existing, fallback = [80, 80]) {

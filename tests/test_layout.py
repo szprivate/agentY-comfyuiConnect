@@ -70,6 +70,13 @@ const box = L.groupBox(taken);
 out.boxHoldsAll = taken.every((r) => r[0] >= box[0] && r[1] >= box[1]
   && r[0] + r[2] <= box[0] + box[2] && r[1] + r[3] <= box[1] + box[3]);
 out.nothing = [L.boundsOf([]), L.groupBox([]), L.layoutBlock([], [0, 0]).bounds];
+// the group as first drawn holds one cell; the second result sits beside it
+const drawn = [gpos[0], gpos[1], L.OUTPUT_CELL[0] + 2 * L.GAPS.pad, 300];
+const reach = L.outputsReach(drawn);
+out.reachHoldsWholeFirstRow = taken.slice(0, L.OUTPUT_COLUMNS).every((r) => L.overlaps(r, reach));
+out.reachHoldsNextRow = L.overlaps(taken[L.OUTPUT_COLUMNS], L.outputsReach(L.groupBox(taken.slice(0, L.OUTPUT_COLUMNS))));
+out.secondIsOutsideTheDrawnBox = !L.overlaps(taken[1], drawn);
+out.farAwayIsNotReached = !L.overlaps([gpos[0] + 5000, gpos[1], 300, 300], reach);
 console.log(JSON.stringify(out));
 """
 
@@ -123,6 +130,14 @@ class Geometry(unittest.TestCase):
     def test_a_freed_slot_is_used_again_and_the_group_holds_everything(self):
         self.assertEqual(self.got["reusesGap"], self.got["spots"][1])
         self.assertTrue(self.got["boxHoldsAll"])
+
+    def test_a_result_placed_beside_the_box_still_belongs_to_the_group(self):
+        """The group is resized AFTER a result is placed. Counting only what the
+        box as drawn already holds left the second result outside it for good."""
+        self.assertTrue(self.got["secondIsOutsideTheDrawnBox"])
+        self.assertTrue(self.got["reachHoldsWholeFirstRow"])
+        self.assertTrue(self.got["reachHoldsNextRow"])
+        self.assertTrue(self.got["farAwayIsNotReached"])
 
     def test_nothing_in_is_nothing_out(self):
         self.assertEqual(self.got["nothing"], [None, None, None])

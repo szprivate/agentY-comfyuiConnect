@@ -9,7 +9,8 @@ import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
 import { standardSize } from "./agent_canvas.js";
 import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
-         layoutBlock, nextAgentName, outputSlot, outputsOrigin, overlaps } from "./agent_layout.js";
+         layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
+         overlaps } from "./agent_layout.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -4112,7 +4113,9 @@ class AgentChat {
   // The results sitting in the outputs group now. A result the user dragged out
   // of it is theirs to place and no longer counts.
   _outputNodes(graph, group) {
-    const box = this._groupRect(group);
+    // Its grid, not just the box as drawn: the newest result sits in a cell the
+    // box has not been stretched over yet.
+    const box = outputsReach(this._groupRect(group));
     return ((graph && graph._nodes) || []).filter((n) => n && n.properties
       && n.properties.agentY_output && isXY(n.pos) && isXY(n.size) && overlaps(this._rectOf(n), box));
   }
