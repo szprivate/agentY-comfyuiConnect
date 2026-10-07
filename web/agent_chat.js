@@ -4151,7 +4151,14 @@ class AgentChat {
       const nodes = this._outputNodes(graph, group);
       if (!nodes.length) return;
       const now = this._groupRect(group);
-      const need = groupBox(nodes.map((n) => this._rectOf(n)));
+      // Each result counts as at least its whole grid cell. A loader draws its
+      // preview below what node.size reports (the preview is a widget that is
+      // laid out after the node is), so a box fitted to node.size ends halfway
+      // down the pictures it is supposed to hold.
+      const need = groupBox(nodes.map((n) => {
+        const r = this._rectOf(n);
+        return [r[0], r[1], Math.max(r[2], OUTPUT_CELL[0]), Math.max(r[3], OUTPUT_CELL[1] + GAPS.title_bar)];
+      }));
       const right = Math.max(need[0] + need[2], now[0] + OUTPUT_CELL[0] + 2 * GAPS.pad);
       const bottom = need[1] + need[3];
       this._setGroupBox(group, [now[0], now[1], right - now[0], bottom - now[1]]);

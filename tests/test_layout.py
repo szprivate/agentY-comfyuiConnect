@@ -166,6 +166,12 @@ class Wiring(unittest.TestCase):
         self.assertIn("grouped = this._placeOutput(node)", inject)
         self.assertIn("if (!grouped) node.pos = this._dropPos(null, node);", inject)
 
+    def test_the_group_is_sized_by_whole_cells_not_by_what_a_loader_reports(self):
+        """A loader's preview is drawn below node.size; the box must hold it."""
+        fit = self.chat.split("  _fitOutputsGroup(graph) {", 1)[1].split("\n  // Bypass", 1)[0]
+        self.assertIn("Math.max(r[2], OUTPUT_CELL[0])", fit)
+        self.assertIn("Math.max(r[3], OUTPUT_CELL[1] + GAPS.title_bar)", fit)
+
     def test_the_outputs_group_is_found_by_its_title_and_refitted_as_previews_load(self):
         place = self.chat.split("  _placeOutput(node) {", 1)[1].split("\n  _fitOutputsGroup", 1)[0]
         self.assertIn("this._outputsGroup(graph)", place)
