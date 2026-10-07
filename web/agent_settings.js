@@ -54,7 +54,7 @@ const SECTIONS = [
                             "comfyui_console_lines"] },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
   { title: "Slack", inline: ["slack"] },
-  { title: "Updates", keys: ["auto_update"] },
+  { title: "Updates", keys: ["auto_update", "update_channel"] },
   // Not advanced. These decide who can reach the host, and someone who has just
   // read the startup warning should find them without checking a box first.
   { title: "Security", inline: ["security"] },
