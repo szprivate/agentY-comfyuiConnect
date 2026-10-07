@@ -194,7 +194,7 @@ function applyNodeParams(node_id, params) {
 // rows and group boxes out again around those sizes. graph.extra.agentY_layout
 // carries the arrangement: band, column and row per node, and each group's
 // members. This is agenty_core's graph_groups.arrange; keep the two alike.
-function standardSize(node) {
+export function standardSize(node) {
   const size = node.computeSize();
   let padded = true;
   try {

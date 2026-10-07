@@ -7,6 +7,9 @@ import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
+import { standardSize } from "./agent_canvas.js";
+import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
+         layoutBlock, nextAgentName, outputSlot, outputsOrigin, overlaps } from "./agent_layout.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -2624,7 +2627,14 @@ class AgentChat {
     // clear of them — a run's worth of drops stacks into a block next to the
     // workflow instead of each one starting where the last ended.
     markAgentDrop(node);
-    node.pos = this._dropPos(null, node);
+    // Results get a place of their own: one group, "agent outputs", in a grid
+    // that grows. Failing that (a graph that will not take a group), beside the
+    // user's nodes as before.
+    let grouped = false;
+    try { grouped = this._placeOutput(node); } catch (err) {
+      console.warn("[agentY] could not place the result in the outputs group:", err);
+    }
+    if (!grouped) node.pos = this._dropPos(null, node);
     if (this.streaming) this._runOutput(ev, true);
     const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
     const w = (node.widgets || []).find((x) => wnames.includes(x.name));
@@ -4021,14 +4031,129 @@ class AgentChat {
     } finally {
       if (changed) { try { graph.afterChange(); } catch (_) {} }
     }
+    // A whole workflow put into the graph: lay it out as the agent's own
+    // workflows are, below what is there, in a group of its own.
+    let blockName = null;
+    if (ev.block && ev.block.slots) {
+      try { blockName = this._layoutBlock(ev.block, made); } catch (err) {
+        console.warn("[agentY] could not lay out the inserted workflow:", err);
+      }
+    }
     graph.setDirtyCanvas(true, true);
     const why = ev.reason ? ` — ${ev.reason}` : "";
     this._sys("🔧 Edited the graph" + why + ": "
       + [added.length ? `added ${added.join(", ")}` : "",
-         wired.length ? `wired ${wired.length} input${wired.length === 1 ? "" : "s"}` : ""]
+         wired.length ? `wired ${wired.length} input${wired.length === 1 ? "" : "s"}` : "",
+         blockName ? `in group **${blockName}**` : ""]
         .filter(Boolean).join("; ")
       + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
       + " **Ctrl+Z** undoes it.");
+  }
+
+  // ── where the agent's additions go (geometry in agent_layout.js) ──────────
+  // A node's rectangle including its title bar, which LiteGraph draws above pos.
+  _rectOf(n) { return [n.pos[0], n.pos[1] - GAPS.title_bar, n.size[0], n.size[1] + GAPS.title_bar]; }
+  _groupsOf(graph) { return (graph && (graph._groups || graph.groups)) || []; }
+  _groupRect(g) {
+    const b = g._bounding || g.bounding;
+    if (b && b.length >= 4) return [b[0], b[1], b[2], b[3]];
+    return [g.pos[0], g.pos[1], g.size[0], g.size[1]];
+  }
+  // Everything on the graph as rectangles, except the nodes in `skip`.
+  _contentRects(graph, skip) {
+    const nodes = ((graph && graph._nodes) || [])
+      .filter((n) => n && !(skip && skip.has(n)) && isXY(n.pos) && isXY(n.size))
+      .map((n) => this._rectOf(n));
+    return nodes.concat(this._groupsOf(graph).map((g) => this._groupRect(g)));
+  }
+  _addGroup(graph, title, box, color) {
+    const LG = window.LiteGraph;
+    const group = new LG.LGraphGroup(title);
+    graph.add(group);
+    const data = typeof group.serialize === "function" ? group.serialize() : {};
+    group.configure({ ...data, title, bounding: [box[0], box[1], box[2], box[3]], color, font_size: 24 });
+    return group;
+  }
+  _setGroupBox(group, box) {
+    const data = typeof group.serialize === "function" ? group.serialize() : {};
+    group.configure({ ...data, bounding: [box[0], box[1], box[2], box[3]] });
+  }
+
+  // An inserted workflow: its nodes at the canvas's own sizes, in the columns
+  // and rows the host worked out, below everything else, with a group around
+  // them. Returns the group's name.
+  _layoutBlock(block, made) {
+    const graph = this._targetGraph();
+    const items = [], mine = new Set();
+    for (const [id, slot] of Object.entries(block.slots || {})) {
+      const node = made[String(id)];
+      if (!node || !Array.isArray(slot)) continue;
+      try { node.setSize(standardSize(node)); } catch (_) {}
+      mine.add(node);
+      items.push({ id: String(id), size: [node.size[0], node.size[1]],
+                   band: slot[0], col: slot[1], row: slot[2] });
+    }
+    if (!items.length) return null;
+    const origin = blockOrigin(this._contentRects(graph, mine), this._viewCorner());
+    const { positions, bounds } = layoutBlock(items, origin, block.gaps);
+    for (const item of items) {
+      const p = positions[item.id];
+      if (p) made[item.id].pos = [p[0], p[1]];
+    }
+    if (!bounds) return null;
+    const name = nextAgentName(this._groupsOf(graph).map((g) => g.title), block.prefix || "agent");
+    this._addGroup(graph, name, bounds, GROUP_COLOR);
+    return name;
+  }
+
+  _outputsGroup(graph) {
+    return this._groupsOf(graph).find((g) => String(g.title || "").trim() === OUTPUTS_TITLE) || null;
+  }
+  // The results sitting in the outputs group now. A result the user dragged out
+  // of it is theirs to place and no longer counts.
+  _outputNodes(graph, group) {
+    const box = this._groupRect(group);
+    return ((graph && graph._nodes) || []).filter((n) => n && n.properties
+      && n.properties.agentY_output && isXY(n.pos) && isXY(n.size) && overlaps(this._rectOf(n), box));
+  }
+  // Put a result node into the "agent outputs" group, making the group on first
+  // use (right of everything, level with its top), and grow the group to hold it.
+  _placeOutput(node) {
+    const graph = this._targetGraph();
+    if (!graph || !window.LiteGraph || !window.LiteGraph.LGraphGroup) return false;
+    let group = this._outputsGroup(graph);
+    if (!group) {
+      const at = outputsOrigin(this._contentRects(graph, new Set([node])), this._viewCorner());
+      group = this._addGroup(graph, OUTPUTS_TITLE,
+        [at[0], at[1], OUTPUT_CELL[0] + 2 * GAPS.pad,
+         OUTPUT_CELL[1] + GAPS.title_bar + 2 * GAPS.pad + GAPS.group_title], OUTPUTS_COLOR);
+    }
+    const box = this._groupRect(group);
+    const taken = this._outputNodes(graph, group).filter((n) => n !== node).map((n) => this._rectOf(n));
+    const pos = outputSlot([box[0], box[1]], taken);
+    node.properties = node.properties || {};
+    node.properties.agentY_output = true;
+    node.pos = [pos[0], pos[1]];
+    this._fitOutputsGroup(graph);
+    // A loader grows once its preview has loaded; fit the group again then.
+    for (const wait of [1500, 5000]) setTimeout(() => this._fitOutputsGroup(graph), wait);
+    return true;
+  }
+  // Resize the outputs group to hold what is in it. It only ever grows from its
+  // own top-left corner, so it does not creep over what is beside it.
+  _fitOutputsGroup(graph) {
+    try {
+      const group = this._outputsGroup(graph);
+      if (!group) return;
+      const nodes = this._outputNodes(graph, group);
+      if (!nodes.length) return;
+      const now = this._groupRect(group);
+      const need = groupBox(nodes.map((n) => this._rectOf(n)));
+      const right = Math.max(need[0] + need[2], now[0] + OUTPUT_CELL[0] + 2 * GAPS.pad);
+      const bottom = need[1] + need[3];
+      this._setGroupBox(group, [now[0], now[1], right - now[0], bottom - now[1]]);
+      graph.setDirtyCanvas(true, true);
+    } catch (_) {}
   }
 
   // Bypass, mute or re-enable nodes (set_canvas_node_mode). LiteGraph's own
