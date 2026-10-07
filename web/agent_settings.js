@@ -48,7 +48,7 @@ const SECTIONS = [
   { title: "Models", open: true, inline: ["llm", "tiers"],
     objects: [["llm", "pipeline"]], extra: "memoryEmbedder" },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
-  { title: "Canvas", keys: ["drop_outputs_into_canvas", "place_text_nodes_on_canvas",
+  { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
@@ -96,6 +96,11 @@ const KEY_NOTES = {
     + "identically either way. Turn it off on a canvas with many text hooks, "
     + "where a node per answer buries the chain that produced them — the answer "
     + "is still in the chat.",
+  show_outputs_in_panel:
+    "Show each finished image or video in the chat as well, with its number in "
+    + "the conversation on it. That number is how the agent knows the file, so "
+    + "\"upscale 3\" means the picture marked #3. Off, results still land on the "
+    + "canvas and the chat names each file.",
   autoload_workflows_into_canvas:
     "Open the workflow the agent actually ran on the canvas, every run, so you "
     + "can see what it built rather than take its word for it. Off by default "

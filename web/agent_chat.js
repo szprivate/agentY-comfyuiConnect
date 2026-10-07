@@ -1132,6 +1132,12 @@ class AgentChat {
     .ay-run-console>summary{cursor:pointer;font-size:11.5px;color:#a9bddb;list-style:none;}
     .ay-run-console>summary::-webkit-details-marker{display:none;}
     .ay-con-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--ay-muted);max-height:160px;overflow:auto;}
+    .ay-out{align-self:flex-start;max-width:min(100%,340px);padding:6px;background:var(--ay-surface);
+      border:1px solid var(--ay-border, rgba(255,255,255,.08));border-radius:8px;}
+    .ay-out-media{display:block;max-width:100%;max-height:300px;border-radius:5px;background:#000;}
+    img.ay-out-media{cursor:zoom-in;}
+    .ay-out-label{font-size:11px;color:var(--ay-muted);padding:5px 2px 0;font-family:ui-monospace,monospace;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .ay-usage{font-size:11px;color:var(--ay-muted);padding:4px 2px 0;font-family:ui-monospace,monospace;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
     .ay-status{font-size:11px;color:var(--ay-muted);padding:2px 12px;font-family:ui-monospace,monospace;align-self:center;}
@@ -2541,7 +2547,40 @@ class AgentChat {
   }
 
   // ── graph node injection (the whole point) ───────────────────────────────────
+  // A finished image or video, shown in the chat with its number in the
+  // conversation - the number the agent knows it by, so "upscale 3" is the
+  // picture with #3 on it. The host decides whether to (Settings > Canvas >
+  // "Show results in the chat"); only an explicit false switches it off.
+  _showOutput(ev) {
+    if (!ev || ev.show === false) return;
+    if (ev.kind !== "image" && ev.kind !== "video") return;
+    if (!ev.filename) return;                 // not staged: nothing this page can load
+    // A turn re-read from its start (the panel re-attaching to a running turn)
+    // sends its outputs again: the picture is already in this log.
+    for (const have of this.logEl.querySelectorAll(".ay-out")) {
+      if (have.dataset.file === ev.filename) return;
+    }
+    const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename);
+    const media = ev.kind === "video"
+      ? el("video", { className: "ay-out-media", src, controls: true, muted: true, loop: true,
+                      preload: "metadata" })
+      : el("img", { className: "ay-out-media", src, loading: "lazy", alt: ev.name || "" });
+    if (ev.kind === "image") {
+      media.title = "Open full size";
+      media.addEventListener("click", () => window.open(src, "_blank", "noopener"));
+    }
+    const label = [ev.index ? "#" + ev.index : "", ev.role || ev.caption || "", ev.name || ""]
+      .filter(Boolean).join(" · ");
+    const card = el("div", { className: "ay-msg ay-out" },
+      [media, el("div", { className: "ay-out-label", textContent: label })]);
+    if (ev.index) card.dataset.index = String(ev.index);
+    card.dataset.file = ev.filename;
+    this.logEl.append(card);
+    this._scroll(true);
+  }
+
   injectNode(ev) {
+    this._showOutput(ev);
     // Dropping results onto the canvas can be switched off (Settings ▸ Canvas ▸
     // "Put results on the canvas"). The HOST decides — one answer covers a turn's
     // own stream, a background Magnific completion and a Slack-driven run alike,

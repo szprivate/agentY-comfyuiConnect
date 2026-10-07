@@ -85,5 +85,35 @@ class Wording(unittest.TestCase):
         self.assertEqual(self.got["costs"], ["$0.00", "<$0.01", "$0.03", "$12.50", "", ""])
 
 
+class ResultsInTheChat(unittest.TestCase):
+    """A finished image or video is shown in the chat with its number."""
+
+    def setUp(self):
+        self.chat = (WEB / "agent_chat.js").read_text(encoding="utf-8")
+        self.show = self.chat.split("  _showOutput(ev) {", 1)[1].split("
+  injectNode(ev) {", 1)[0]
+
+    def test_it_is_shown_before_anything_decides_about_the_canvas(self):
+        inject = self.chat.split("
+  injectNode(ev) {", 1)[1][:200]
+        self.assertIn("this._showOutput(ev);", inject)
+        self.assertLess(inject.index("this._showOutput(ev);"), inject.index("//"))
+
+    def test_only_an_explicit_false_switches_it_off(self):
+        self.assertIn("if (!ev || ev.show === false) return;", self.show)
+
+    def test_it_carries_the_conversations_number(self):
+        self.assertIn('ev.index ? "#" + ev.index : ""', self.show)
+
+    def test_the_picture_comes_from_comfyui_and_a_repeat_is_not_shown_twice(self):
+        self.assertIn('"/view?type=input&filename=" + encodeURIComponent(ev.filename)', self.show)
+        self.assertIn("have.dataset.file === ev.filename", self.show)
+
+    def test_the_setting_is_in_the_dialog_with_its_explanation(self):
+        settings = (WEB / "agent_settings.js").read_text(encoding="utf-8")
+        self.assertIn('"show_outputs_in_panel"', settings)
+        self.assertIn("show_outputs_in_panel:", settings)
+
+
 if __name__ == "__main__":
     unittest.main()
