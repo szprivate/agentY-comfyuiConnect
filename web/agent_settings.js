@@ -49,7 +49,7 @@ const SECTIONS = [
     objects: [["llm", "pipeline"]], extra: "memoryEmbedder" },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
-                            "autoload_workflows_into_canvas",
+                            "autoload_workflows_into_canvas", "work_in_open_graph",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
@@ -101,6 +101,12 @@ const KEY_NOTES = {
     + "the conversation on it. That number is how the agent knows the file, so "
     + "\"upscale 3\" means the picture marked #3. Off, results still land on the "
     + "canvas and the chat names each file.",
+  work_in_open_graph:
+    "How a conversation starts. Off: the agent builds each workflow separately, "
+    + "and switches to working in your open graph once you ask it to put "
+    + "something there. On: it works in the graph you have open from the first "
+    + "message — new workflows are added to it, and changes are made on the "
+    + "canvas. A conversation keeps its mode until you ask it to change.",
   autoload_workflows_into_canvas:
     "Open the workflow the agent actually ran on the canvas, every run, so you "
     + "can see what it built rather than take its word for it. Off by default "

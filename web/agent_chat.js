@@ -2824,6 +2824,7 @@ class AgentChat {
         else if (ev.op === "review_collector") this._reviewCollector(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
+        else if (ev.op === "set_mode") this._setNodeMode(ev);
         else if (ev.op === "edit_graph") this._editGraph(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
         else this._applyCanvasPatch(ev);
@@ -4027,6 +4028,36 @@ class AgentChat {
          wired.length ? `wired ${wired.length} input${wired.length === 1 ? "" : "s"}` : ""]
         .filter(Boolean).join("; ")
       + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
+      + " **Ctrl+Z** undoes it.");
+  }
+
+  // Bypass, mute or re-enable nodes (set_canvas_node_mode). LiteGraph's own
+  // modes: 0 runs, 2 never runs (mute), 4 is bypassed.
+  _setNodeMode(ev) {
+    const graph = this._targetGraph();
+    if (!graph) return;
+    const value = { active: 0, mute: 2, bypass: 4 }[ev.mode];
+    if (value === undefined) return;
+    const done = [], missing = [];
+    const changed = typeof graph.beforeChange === "function"
+      && typeof graph.afterChange === "function";
+    if (changed) { try { graph.beforeChange(); } catch (_) {} }
+    try {
+      for (const id of (ev.node_ids || []).map(String)) {
+        const node = (graph.getNodeById && graph.getNodeById(Number(id)))
+          || (graph._nodes || []).find((n) => n && String(n.id) === id);
+        if (!node) { missing.push("#" + id); continue; }
+        node.mode = value;
+        done.push(`#${id} ${node.title || node.type || ""}`.trim());
+      }
+    } finally {
+      if (changed) { try { graph.afterChange(); } catch (_) {} }
+    }
+    graph.setDirtyCanvas(true, true);
+    const word = { active: "Re-enabled", mute: "Muted", bypass: "Bypassed" }[ev.mode];
+    const why = ev.reason ? ` — ${ev.reason}` : "";
+    this._sys("🔧 " + word + why + ": " + (done.join(", ") || "nothing")
+      + (missing.length ? `. ⚠️ Not on this graph: ${missing.join(", ")}` : ".")
       + " **Ctrl+Z** undoes it.");
   }
 
