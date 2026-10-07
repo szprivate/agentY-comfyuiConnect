@@ -89,13 +89,11 @@ class ResultsInTheChat(unittest.TestCase):
     """A finished image or video is shown in the chat with its number."""
 
     def setUp(self):
-        self.chat = (WEB / "agent_chat.js").read_text(encoding="utf-8")
-        self.show = self.chat.split("  _showOutput(ev) {", 1)[1].split("
-  injectNode(ev) {", 1)[0]
+        self.chat = (WEB / "agent_chat.js").read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.show = self.chat.split("  _showOutput(ev) {", 1)[1].split("\n  injectNode(ev) {", 1)[0]
 
     def test_it_is_shown_before_anything_decides_about_the_canvas(self):
-        inject = self.chat.split("
-  injectNode(ev) {", 1)[1][:200]
+        inject = self.chat.split("\n  injectNode(ev) {", 1)[1][:200]
         self.assertIn("this._showOutput(ev);", inject)
         self.assertLess(inject.index("this._showOutput(ev);"), inject.index("//"))
 
