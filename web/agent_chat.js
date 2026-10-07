@@ -9,7 +9,7 @@ import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
 import { standardSize } from "./agent_canvas.js";
 import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
-         layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
+         isAgentGroupTitle, layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
          overlaps } from "./agent_layout.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
@@ -4107,6 +4107,27 @@ class AgentChat {
     return name;
   }
 
+  // After nodes were removed: delete the agent's groups that are now empty, and
+  // draw the others round what they still hold. Returns the titles removed. Only
+  // groups the agent made (agent_N, "agent outputs") - never one the user drew.
+  _tidyAgentGroups(graph) {
+    const removed = [];
+    const nodes = ((graph && graph._nodes) || []).filter((n) => n && isXY(n.pos) && isXY(n.size));
+    for (const group of [...this._groupsOf(graph)]) {
+      if (!isAgentGroupTitle(group.title)) continue;
+      const box = this._groupRect(group);
+      const inside = nodes.filter((n) => overlaps(this._rectOf(n), box));
+      if (!inside.length) {
+        try { graph.remove(group); removed.push(String(group.title).trim()); } catch (_) {}
+        continue;
+      }
+      if (String(group.title).trim() === OUTPUTS_TITLE) { this._fitOutputsGroup(graph); continue; }
+      const fit = groupBox(inside.map((n) => this._rectOf(n)));
+      if (fit) this._setGroupBox(group, fit);
+    }
+    return removed;
+  }
+
   _outputsGroup(graph) {
     return this._groupsOf(graph).find((g) => String(g.title || "").trim() === OUTPUTS_TITLE) || null;
   }
@@ -4218,6 +4239,10 @@ class AgentChat {
     } finally {
       if (changed) { try { graph.afterChange(); } catch (_) {} }
     }
+    // The agent's own groups go with their nodes: a box named agent_2 around
+    // nothing is litter. One that still holds something is drawn round what is left.
+    let emptied = [];
+    try { emptied = this._tidyAgentGroups(graph); } catch (_) {}
     graph.setDirtyCanvas(true, true);   // the dispatch already said where this landed
     if (!gone.length) {
       this._sys("⚠️ Nothing to delete — those nodes are no longer on the graph.");
@@ -4225,7 +4250,9 @@ class AgentChat {
     }
     const why = ev.reason ? ` — ${ev.reason}` : "";
     this._sys(`🗑️ Removed ${gone.length} node${gone.length === 1 ? "" : "s"}: `
-      + `${gone.join(", ")}${why}. **Ctrl+Z** puts them back.`);
+      + `${gone.join(", ")}${why}`
+      + (emptied.length ? `, and the empty group${emptied.length === 1 ? "" : "s"} ${emptied.join(", ")}` : "")
+      + ". **Ctrl+Z** puts them back.");
   }
 
   // The halt is over — the user continued or stopped. The collector node stays

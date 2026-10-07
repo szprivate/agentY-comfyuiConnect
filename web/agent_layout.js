@@ -50,6 +50,13 @@ export function nextAgentName(titles, prefix = "agent") {
   return prefix + "_" + (top + 1);
 }
 
+/** Is this a group the agent made - "agent_3", or the outputs group? Only those
+ *  are ever removed or resized by the panel; a group the user drew is theirs. */
+export function isAgentGroupTitle(title) {
+  const t = String(title || "").trim();
+  return t === OUTPUTS_TITLE || /^agent_\d+$/.test(t);
+}
+
 /** Top-left corner for a new block: below everything, at the content's left
  *  edge. `fallback` when the graph is empty. */
 export function blockOrigin(existing, fallback = [80, 80]) {

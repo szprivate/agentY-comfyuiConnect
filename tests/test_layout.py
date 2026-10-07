@@ -70,6 +70,8 @@ const box = L.groupBox(taken);
 out.boxHoldsAll = taken.every((r) => r[0] >= box[0] && r[1] >= box[1]
   && r[0] + r[2] <= box[0] + box[2] && r[1] + r[3] <= box[1] + box[3]);
 out.nothing = [L.boundsOf([]), L.groupBox([]), L.layoutBlock([], [0, 0]).bounds];
+out.agentTitles = ["agent_1", " agent_12 ", "agent outputs", "agent_x", "Agent_1", "my group", "agent_", ""]
+  .map(L.isAgentGroupTitle);
 // the group as first drawn holds one cell; the second result sits beside it
 const drawn = [gpos[0], gpos[1], L.OUTPUT_CELL[0] + 2 * L.GAPS.pad, 300];
 const reach = L.outputsReach(drawn);
@@ -139,6 +141,9 @@ class Geometry(unittest.TestCase):
         self.assertTrue(self.got["reachHoldsNextRow"])
         self.assertTrue(self.got["farAwayIsNotReached"])
 
+    def test_only_the_agents_own_groups_count_as_its_own(self):
+        self.assertEqual(self.got["agentTitles"], [True, True, True, False, False, False, False, False])
+
     def test_nothing_in_is_nothing_out(self):
         self.assertEqual(self.got["nothing"], [None, None, None])
 
@@ -160,6 +165,23 @@ class Wiring(unittest.TestCase):
         """edit_canvas_graph adding one node must not get a group around it."""
         edit = self.chat.split("  _editGraph(ev) {", 1)[1].split("\n  _", 1)[0]
         self.assertIn("let blockName = null;", edit)
+
+    def test_deleting_nodes_takes_the_agents_empty_groups_with_them(self):
+        """A cleanup removed the nodes of agent_2 and left its box on the canvas."""
+        delete = self.chat.split("  _deleteNodes(ev) {", 1)[1].split("\n  // The halt is over", 1)[0]
+        self.assertIn("emptied = this._tidyAgentGroups(graph)", delete)
+        self.assertIn("and the empty group", delete)
+        tidy = self.chat.split("  _tidyAgentGroups(graph) {", 1)[1].split("\n  _outputsGroup", 1)[0]
+        self.assertIn("if (!isAgentGroupTitle(group.title)) continue;", tidy)
+        self.assertIn("graph.remove(group)", tidy)
+        self.assertLess(tidy.index("isAgentGroupTitle"), tidy.index("graph.remove(group)"),
+                        "a group the user drew is never removed")
+
+    def test_a_group_that_still_holds_nodes_is_kept_and_refitted(self):
+        tidy = self.chat.split("  _tidyAgentGroups(graph) {", 1)[1].split("\n  _outputsGroup", 1)[0]
+        self.assertIn("if (!inside.length) {", tidy)
+        self.assertIn("this._setGroupBox(group, fit)", tidy)
+        self.assertIn("this._fitOutputsGroup(graph)", tidy)
 
     def test_results_go_to_the_outputs_group_and_fall_back_if_that_fails(self):
         inject = self.chat.split("\n  injectNode(ev) {", 1)[1].split("\n  _attachRefNote", 1)[0]
