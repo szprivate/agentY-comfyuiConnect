@@ -947,6 +947,95 @@ class AgentYHook(io.ComfyNode):
         return io.NodeOutput(first)
 
 
+def _first_anchor(anchors) -> io.NodeOutput:
+    """What a flow node passes on if it is ever executed: its first wired input."""
+    anchors = anchors or {}
+    return io.NodeOutput(next((v for v in anchors.values() if v is not None), None))
+
+
+def _flow_anchors():
+    return io.Autogrow.Input("anchors", template=io.Autogrow.TemplatePrefix(
+        input=io.AnyType.Input("anchor"), prefix="anchor", min=0, max=_MAX_ANCHORS))
+
+
+class AgentYLoopStart(io.ComfyNode):
+    """Where a loop begins. Every agentY hook wired between this node and an
+    ``agentY loop break`` is the loop's body: the agent runs those stages, has the
+    result judged, and runs them again with what was missed until the break's
+    condition is met.
+
+    Wire what the loop works on into ``anchor`` and ``out`` into the first stage
+    of the body. The node holds no settings — the condition and the limit are on
+    the break, where the loop is decided. Inert on a normal Queue.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYLoopStart",
+            display_name="agentY loop start",
+            category="agentY/flow",
+            description=("Start of a loop. The agentY hooks wired between this node and an "
+                         "'agentY loop break' repeat until the break's condition is met."),
+            inputs=[_flow_anchors()],
+            outputs=[io.AnyType.Output(display_name="out")],
+        )
+
+    @classmethod
+    def execute(cls, anchors=None, **_ignored) -> io.NodeOutput:  # noqa: ANN001
+        return _first_anchor(anchors)
+
+
+class AgentYLoopBreak(io.ComfyNode):
+    """Where a loop ends, and what "finished" means.
+
+    Wire the last stage of the loop's body into ``anchor`` and ``out`` into
+    whatever comes after the loop.
+
+    * ``finished when`` — the condition, in your own words: *"the dancer's pose
+      matches the reference"*, *"no text anywhere in the frame"*. One statement
+      per line. A separate QA agent judges every round against it, together with
+      any ``agentY qa`` node that covers the loop's stages. Empty: the loop ends
+      when those QA nodes pass.
+    * ``max rounds`` — the loop stops here even if the condition was never met.
+    * ``forward`` — what leaves the loop: the **best** result (default), **all
+      that pass**, or **all** of the last round. If the rounds run out, the best
+      attempt of any round goes on.
+
+    Inert on a normal Queue.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYLoopBreak",
+            display_name="agentY loop break",
+            category="agentY/flow",
+            description=("End of a loop: the condition that finishes it, the most rounds it may "
+                         "take, and which result goes on to the next stage."),
+            inputs=[
+                io.String.Input(
+                    "condition", display_name="finished when", multiline=True, default="",
+                    placeholder="e.g. the dancer's pose matches the reference • no text in the frame",
+                    tooltip=("When is the loop done? Plain language, one statement per line. "
+                             "It must be something visible in the result.")),
+                io.Int.Input("max_rounds", display_name="max rounds", default=3, min=1, max=10,
+                             tooltip="The loop ends after this many rounds whatever the result."),
+                io.Combo.Input("forward", options=["best", "all that pass", "all"], default="best",
+                               tooltip=("What goes on to the next stage: the best result, every "
+                                        "result that met the condition, or everything from the "
+                                        "last round.")),
+                _flow_anchors(),
+            ],
+            outputs=[io.AnyType.Output(display_name="out")],
+        )
+
+    @classmethod
+    def execute(cls, condition="", max_rounds=3, forward="best", anchors=None,
+                **_ignored) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        return _first_anchor(anchors)
+
+
 # Number of (fixed) output slots on the Python node. Executable nodes can't
 # auto-grow outputs (the count is fixed at registration), so we declare a small
 # set of any-type outs; a snippet typically fills just out0.
@@ -2338,7 +2427,7 @@ class _AgentYExtension(ComfyExtension):
         return [AgentYHook, AgentYQa, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
-                AgentYLoadItem]
+                AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

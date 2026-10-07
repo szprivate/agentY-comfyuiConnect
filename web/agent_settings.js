@@ -50,6 +50,7 @@ const SECTIONS = [
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
+                            "hooks_into_canvas", "hook_subgraph_min_nodes",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
@@ -101,6 +102,12 @@ const KEY_NOTES = {
     + "the conversation on it. That number is how the agent knows the file, so "
     + "\"upscale 3\" means the picture marked #3. Off, results still land on the "
     + "canvas and the chat names each file.",
+  hooks_into_canvas:
+    "When you run a hook pipeline, put every workflow it builds into the graph "
+    + "you have open, in a group of its own, instead of opening a tab for each.",
+  hook_subgraph_min_nodes:
+    "A workflow built for a hook stage with at least this many nodes is folded "
+    + "into one subgraph node, so the pipeline stays readable. 0 never folds.",
   work_in_open_graph:
     "How a conversation starts. Off: the agent builds each workflow separately, "
     + "and switches to working in your open graph once you ask it to put "

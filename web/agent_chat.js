@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
+import { flowPurpose } from "./agent_flow.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -2842,7 +2843,7 @@ class AgentChat {
         // Only the ops that actually put something on a graph say where it went;
         // a review being released places nothing and must not claim otherwise,
         // and neither does a text answer whose node placement is switched off.
-        if (ev.op !== "review_released" && ev.op !== "prompt_version"
+        if (ev.op !== "review_released" && ev.op !== "prompt_version" && ev.op !== "flow_state"
             && !(ev.op === "place_text" && ev.place === false)) this._noteOffscreenDrop();
         if (ev.op === "place_text") this._placeCanvasText(ev);
         // A prompt version is a strip entry, not a node placement: the widget write
@@ -2852,6 +2853,7 @@ class AgentChat {
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
         else if (ev.op === "set_mode") this._setNodeMode(ev);
+        else if (ev.op === "flow_state") this._flowState(ev);
         else if (ev.op === "edit_graph") this._editGraph(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
         else this._applyCanvasPatch(ev);
@@ -2888,6 +2890,9 @@ class AgentChat {
         this._sys("❌ " + ev.message);
         break;
       case "done":
+        // Stages marked for folding are folded now, once nothing in this turn
+        // still addresses their nodes one by one.
+        this._foldPending();
         // Unpin: outside a turn, "the graph in front of you" is the right answer
         // again, and holding a reference to a closed workflow keeps it alive.
         this._reportCheckpointCanvas();
@@ -4119,8 +4124,59 @@ class AgentChat {
     }
     if (!bounds) return null;
     const name = nextAgentName(this._groupsOf(graph).map((g) => g.title), block.prefix || "agent");
-    this._addGroup(graph, name, bounds, GROUP_COLOR);
+    const group = this._addGroup(graph, name, bounds, GROUP_COLOR);
+    // A large workflow built for a hook stage is folded into one subgraph node,
+    // so the pipeline stays readable. Not yet: a loop round or a retry changes
+    // values on these nodes by id for the rest of the turn (see _foldPending).
+    if (block.stage && block.stage.collapse) {
+      (this._pendingFolds = this._pendingFolds || []).push(
+        { graph, nodes: [...mine], name: block.stage.name, origin, group });
+      return `${name} (folded into a subgraph when the run ends)`;
+    }
     return name;
+  }
+
+  _foldPending() {
+    const pending = this._pendingFolds || [];
+    this._pendingFolds = [];
+    for (const f of pending) {
+      const alive = f.nodes.filter((n) => n && n.graph === f.graph);
+      const node = this._foldIntoSubgraph(f.graph, alive, f.name, f.origin);
+      if (!node) continue;
+      const box = groupBox([this._rectOf(node)]);
+      if (box && f.group) { try { this._setGroupBox(f.group, box); } catch (_) {} }
+      f.graph.setDirtyCanvas(true, true);
+    }
+  }
+
+  // Turn `nodes` into one subgraph node titled `title`. Returns that node, or
+  // null when this ComfyUI cannot do it (the nodes then simply stay as they are).
+  _foldIntoSubgraph(graph, nodes, title, origin) {
+    try {
+      if (typeof graph.convertToSubgraph !== "function" || nodes.length < 2) return null;
+      const made = graph.convertToSubgraph(new Set(nodes));
+      const node = made && made.node;
+      if (!node) return null;
+      if (title) {
+        node.title = String(title);
+        if (made.subgraph) made.subgraph.name = String(title);
+      }
+      if (isXY(origin)) node.pos = [origin[0], origin[1] + GAPS.title_bar];
+      return node;
+    } catch (err) {
+      console.warn("[agentY] could not fold the workflow into a subgraph:", err);
+      return null;
+    }
+  }
+
+  // Where a running loop stands, shown on its break node (agent_flow.js draws it).
+  _flowState(ev) {
+    const graph = this._targetGraph();
+    const node = graph && graph.getNodeById ? graph.getNodeById(Number(ev.node_id)) : null;
+    if (!node) return;
+    node.agentYFlowState = { state: ev.state, round: ev.round, max_rounds: ev.max_rounds,
+                             forward: ev.forward || [] };
+    graph.setDirtyCanvas(true, true);
   }
 
   // After nodes were removed: delete the agent's groups that are now empty, and
@@ -4355,8 +4411,10 @@ class AgentChat {
   _hookNodes() {
     const graph = app.graph;
     if (!graph || !graph._nodes) return [];
+    // The flow nodes (agentY loop start / loop break) travel with the hooks:
+    // they are wired into the same chains and the host reads them together.
     return graph._nodes.filter(
-      (n) => n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook")
+      (n) => n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook" || flowPurpose(n))
     );
   }
 
@@ -4497,15 +4555,16 @@ class AgentChat {
       if (hn.mode === 4 || hn.mode === 2) continue;
       const w = this._widgetSnapshot(hn);
       const directive = String(w.directive || "").trim();
-      const purpose = String(w.purpose || "inline_parameter");
+      const flow = flowPurpose(hn);
+      const purpose = flow || String(w.purpose || "inline_parameter");
       // An empty hook is a no-op — every purpose but one IS its directive. A
       // review hook is the exception: it says everything it has to say by being
       // a review hook wired where it is, so its prompt box is hidden on the node
       // and there is nothing to type. See hookReaches in agent_hook.js.
-      if (!hookReaches(purpose, directive)) continue;
+      if (!flow && !hookReaches(purpose, directive)) continue;
       const links = this._anchorsFor(hn);
       const isHook = (n) =>
-        !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
+        !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook" || !!flowPurpose(n));
       // A hook wired FROM another hook is a downstream stage in a chain: its
       // input is the predecessor's output (resolved at run time), so record it in
       // prev_hook_id(s)/prev_links. A hook wired from a real node anchors an
@@ -4532,6 +4591,13 @@ class AgentChat {
         title: String(hn.title || ""),
         directive,
         purpose,
+        // A loop break says when its loop is finished, how long it may take and
+        // what leaves it.
+        ...(flow === "loop_break" ? {
+          condition: String(w.condition || "").trim(),
+          max_rounds: Number(w.max_rounds) || 3,
+          forward: String(w.forward || "best"),
+        } : {}),
         // Keep what this hook produced and put it back next time, for as long as
         // nothing feeding it changes. Off is also the forget gesture: the server
         // drops what it KEPT under this hook's current key (the journal
