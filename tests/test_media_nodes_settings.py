@@ -53,6 +53,33 @@ class TheSection(unittest.TestCase):
         self.assertIn("not available in this ComfyUI", self.options)
 
 
+class VideoOrSequence(unittest.TestCase):
+    """Under the video save node: a video file or an image sequence, and its format."""
+
+    def setUp(self):
+        self.rows = SETTINGS.split("function videoAsRows(container, chosen, refs, saveSel) {", 1)[1].split("\n}\n", 1)[0]
+        self.formats = SETTINGS.split("export function sequenceFormatOptions(byNode, saveNode, current) {", 1)[1].split("\n}\n", 1)[0]
+
+    def test_the_rows_sit_under_the_video_save_node(self):
+        self.assertIn('if (key === "video_save") videoAsRows(container, chosen, refs, sel);', SETTINGS)
+
+    def test_both_choices_are_saved(self):
+        self.assertIn('refs.push({ path: ["media_nodes", "video_as"], get: () => mode.value });', self.rows)
+        self.assertIn('refs.push({ path: ["media_nodes", "sequence_format"], get: () => fmt.value });', self.rows)
+        self.assertIn('["video", "a video file (mp4)"], ["sequence", "an image sequence"]', self.rows)
+
+    def test_the_formats_follow_the_chosen_save_node(self):
+        self.assertIn('saveSel.addEventListener("change", fill);', self.rows)
+        self.assertIn("Array.isArray(all[saveNode]) ? all[saveNode].slice() : []", self.formats)
+
+    def test_the_current_format_is_never_dropped_from_the_list(self):
+        self.assertIn("if (current && !list.includes(current)) list.push(current);", self.formats)
+        self.assertIn('if (!list.length) list = ["png"];', self.formats)
+
+    def test_it_says_which_node_acts_on_it(self):
+        self.assertIn("Send to Image Viewer", SETTINGS.split("const VIDEO_AS_NOTE = ", 1)[1].split(";", 1)[0])
+
+
 class DroppingAResult(unittest.TestCase):
 
     def test_a_chosen_loader_may_keep_its_file_under_another_widget_name(self):

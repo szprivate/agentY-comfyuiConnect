@@ -399,9 +399,59 @@ function mediaNodesRows(container, settings, refs) {
       row.append(el("label", { className: "ays-label", textContent: `${kindLabel} — ${roleLabel}`,
                                title: `media_nodes.${key}` }), sel);
       container.append(el("div", { className: "ays-field" }, [row]));
+      if (key === "video_save") videoAsRows(container, chosen, refs, sel);
     }
   }
   return true;
+}
+
+// A video file or an image sequence, and the sequence's format. Only a save node
+// that can write both acts on it (Send to Image Viewer); the rows say so.
+const VIDEO_AS_NOTE = "Used when the video save node can write both — Send to Image Viewer. "
+  + "A sequence is one image per frame, named prefix.1001.<format>. The agent can still "
+  + "be asked for the other in a single request.";
+
+// The formats to offer: those of the chosen save node, or of every node that can
+// write a sequence when none is chosen yet. The current value always stays.
+export function sequenceFormatOptions(byNode, saveNode, current) {
+  const all = byNode && typeof byNode === "object" ? byNode : {};
+  let list = Array.isArray(all[saveNode]) ? all[saveNode].slice() : [];
+  if (!list.length) list = [...new Set(Object.values(all).flat())];
+  if (!list.length) list = ["png"];
+  if (current && !list.includes(current)) list.push(current);
+  return list;
+}
+
+function videoAsRows(container, chosen, refs, saveSel) {
+  const mode = el("select", { className: "ays-input" });
+  for (const [value, label] of [["video", "a video file (mp4)"], ["sequence", "an image sequence"]]) {
+    const opt = el("option", { value, textContent: label });
+    if (value === String(chosen.video_as || "video")) opt.selected = true;
+    mode.append(opt);
+  }
+  const fmt = el("select", { className: "ays-input" });
+  const fill = () => {
+    const current = fmt.value || String(chosen.sequence_format || "png");
+    fmt.replaceChildren();
+    const byNode = ((MEDIA_NODES || {}).video || {}).sequence_formats;
+    for (const f of sequenceFormatOptions(byNode, saveSel.value, current)) {
+      const opt = el("option", { value: f, textContent: f });
+      if (f === current) opt.selected = true;
+      fmt.append(opt);
+    }
+  };
+  fill();
+  saveSel.addEventListener("change", fill);
+  refs.push({ path: ["media_nodes", "video_as"], get: () => mode.value });
+  refs.push({ path: ["media_nodes", "sequence_format"], get: () => fmt.value });
+  for (const [label, key, sel] of [["Videos — save as", "video_as", mode],
+                                   ["Videos — sequence format", "sequence_format", fmt]]) {
+    const row = el("div", { className: "ays-row" });
+    row.append(el("label", { className: "ays-label", textContent: label,
+                             title: `media_nodes.${key}` }), sel);
+    container.append(el("div", { className: "ays-field" }, [row]));
+  }
+  container.append(el("div", { className: "ays-note ays-keynote", textContent: VIDEO_AS_NOTE }));
 }
 
 // Reasoning per agent: llm.thinking (per tier, on/off) and llm.thinking_roles (per
