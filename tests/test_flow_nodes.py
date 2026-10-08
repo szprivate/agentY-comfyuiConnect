@@ -32,6 +32,22 @@ class TheNodes(unittest.TestCase):
         self.assertIn('prefix="anchor"', NODES.split("def _flow_anchors", 1)[1].split("class ", 1)[0])
 
 
+class TheContextNode(unittest.TestCase):
+    """Sequence / asset and shot: where agentY saves, and under what name."""
+
+    def setUp(self):
+        self.node = NODES.split("class AgentYContext", 1)[1].split("class AgentYLoopStart", 1)[0]
+
+    def test_it_is_registered_under_the_class_the_host_looks_for(self):
+        listed = NODES.split("async def get_node_list", 1)[1].split("async def comfy_entrypoint", 1)[0]
+        self.assertIn("AgentYContext", listed)
+        self.assertIn('node_id="AgentYContext"', self.node)
+
+    def test_it_holds_a_sequence_and_a_shot_as_plain_text(self):
+        self.assertIn('io.String.Input("sequence"', self.node)
+        self.assertIn('io.String.Input("shot"', self.node)
+
+
 class ThePanel(unittest.TestCase):
 
     def test_flow_nodes_are_collected_with_the_hooks(self):

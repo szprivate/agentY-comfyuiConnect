@@ -958,6 +958,49 @@ def _flow_anchors():
         input=io.AnyType.Input("anchor"), prefix="anchor", min=0, max=_MAX_ANCHORS))
 
 
+class AgentYContext(io.ComfyNode):
+    """Which sequence (or asset) and shot this graph works on.
+
+    With this node on the canvas, every file the agentY agent produces is saved
+    under ComfyUI's output folder as
+
+        <sequence>/<shot>_<suffix>_v###.<extension>
+
+    The agent adds the suffix from what the file is ("startframe") and the next
+    free version number. It can write to another shot or asset for part of a run
+    when the request asks for several ("the male lead and the woman").
+
+    An AYON context node in the same graph wins over this one: sequence and shot
+    are then the last two parts of its folder path, as in bEpic's
+    "Get Path (AYON)".
+
+    Nothing to wire. The two outputs carry the names as strings, for your own
+    nodes. Bypass or mute the node to switch the rule off.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYContext",
+            display_name="agentY context",
+            category="agentY",
+            description=("Sequence / asset and shot for this graph. agentY then saves its outputs "
+                         "as <sequence>/<shot>_<suffix>_v###.<ext> in the output folder."),
+            inputs=[
+                io.String.Input("sequence", display_name="sequence / asset", default="",
+                                tooltip="The folder the files go into, e.g. 'spec' or 'characters'."),
+                io.String.Input("shot", display_name="shot", default="",
+                                tooltip="What every file name starts with, e.g. 'spec_0210'."),
+            ],
+            outputs=[io.String.Output(display_name="sequence"),
+                     io.String.Output(display_name="shot")],
+        )
+
+    @classmethod
+    def execute(cls, sequence="", shot="", **_ignored) -> io.NodeOutput:  # noqa: ANN001
+        return io.NodeOutput(str(sequence or ""), str(shot or ""))
+
+
 class AgentYLoopStart(io.ComfyNode):
     """Where a loop begins. Every agentY hook wired between this node and an
     ``agentY loop break`` is the loop's body: the agent runs those stages, has the
@@ -2427,7 +2470,7 @@ class _AgentYExtension(ComfyExtension):
         return [AgentYHook, AgentYQa, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
-                AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak]
+                AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYContext]
 
 
 async def comfy_entrypoint() -> ComfyExtension:
