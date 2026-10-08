@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
-import { flowPurpose } from "./agent_flow.js";
+import { flowPurpose, flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -4169,13 +4169,14 @@ class AgentChat {
     }
   }
 
-  // Where a running loop stands, shown on its break node (agent_flow.js draws it).
+  // Where a running loop stands, shown in its break node's title.
   _flowState(ev) {
     const graph = this._targetGraph();
     const node = graph && graph.getNodeById ? graph.getNodeById(Number(ev.node_id)) : null;
     if (!node) return;
     node.agentYFlowState = { state: ev.state, round: ev.round, max_rounds: ev.max_rounds,
                              forward: ev.forward || [] };
+    node.title = flowTitle(node.title, node.agentYFlowState);
     graph.setDirtyCanvas(true, true);
   }
 
@@ -4588,7 +4589,8 @@ class AgentChat {
         // something the user cannot see; the title is what they can point at.
         // Sent raw, including the default "agentY hook" — deciding whether a title
         // is distinguishing is the server's job, not something to guess here.
-        title: String(hn.title || ""),
+        // Without the loop state a break node shows after its name.
+        title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),
         directive,
         purpose,
         // A loop break says when its loop is finished, how long it may take and

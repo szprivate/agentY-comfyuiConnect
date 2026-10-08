@@ -23,6 +23,16 @@ export function flowStateLine(s) {
   return "";
 }
 
+// The node's title with the loop's state after it: "agentY loop break · round 2 of 4".
+// The title is what both node renderers show, which a line drawn under the node
+// is not (the Vue renderer never calls onDrawForeground).
+export const FLOW_TITLE_SEP = " · ";
+export function flowTitle(title, state) {
+  const base = String(title || "").split(FLOW_TITLE_SEP)[0].trim() || "agentY loop break";
+  const line = flowStateLine(state);
+  return line ? base + FLOW_TITLE_SEP + line : base;
+}
+
 const COLOR = "#2f4858";
 const BGCOLOR = "#243642";
 
@@ -32,17 +42,5 @@ app.registerExtension({
     if (!flowPurpose(node)) return;
     node.color = node.color || COLOR;
     node.bgcolor = node.bgcolor || BGCOLOR;
-    const drawn = node.onDrawForeground;
-    node.onDrawForeground = function (ctx) {
-      if (drawn) drawn.apply(this, arguments);
-      const line = flowStateLine(this.agentYFlowState);
-      if (!line || this.flags?.collapsed) return;
-      ctx.save();
-      ctx.font = "12px sans-serif";
-      ctx.fillStyle = this.agentYFlowState.state === "met" ? "#7ad18a"
-        : this.agentYFlowState.state === "out_of_rounds" ? "#e0a05a" : "#9fb7c9";
-      ctx.fillText(line, 10, this.size[1] + 16);
-      ctx.restore();
-    };
   },
 });

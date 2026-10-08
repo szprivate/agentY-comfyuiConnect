@@ -84,8 +84,14 @@ class ThePanel(unittest.TestCase):
     def test_the_break_node_shows_where_its_loop_stands(self):
         self.assertIn('else if (ev.op === "flow_state") this._flowState(ev);', CHAT)
         self.assertIn("node.agentYFlowState = {", CHAT)
+        self.assertIn("node.title = flowTitle(node.title, node.agentYFlowState);", CHAT)
+        self.assertNotIn("node.onDrawForeground", FLOW, "the Vue node renderer never calls it")
         for text in ("not there yet", "met in round", "best attempt"):
             self.assertIn(text, FLOW)
+
+    def test_the_state_in_the_title_is_not_sent_as_the_nodes_name(self):
+        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  _isQaNode", 1)[0]
+        self.assertIn('title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),', collect)
 
 
 if __name__ == "__main__":
