@@ -1,8 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
-import { hookReaches, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
-import { flowPurpose, flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
+import { hookReaches, hostPurpose, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
+import { flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
+import { flowPurpose, isHookNode, isReviewNode, isExecNode, isExecSlot, execSource,
+         execPredecessors } from "./agent_exec.js";
+import { isAgentReviewer } from "./agent_review.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -19,6 +22,10 @@ import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrig
 // video is dropped onto the ComfyUI graph as an image / video loader node
 // (see onOutput → injectNode). Conversations, slash commands, and thread history
 // mirror what the old Chainlit UI offered.
+
+// The node classes the execution wire runs through; their `exec` input is taken
+// out of a captured graph (see _captureCanvasGraph).
+const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak"];
 
 // Where /help opens: the GitHub-rendered usage guide (images render inline).
 const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agentY.md";
@@ -4428,15 +4435,13 @@ class AgentChat {
     );
   }
 
-  // ── canvas hooks (AgentYHook nodes) ──────────────────────────────────────────
+  // ── the stages of a hook pipeline ────────────────────────────────────────────
+  // Hooks, loop nodes and review nodes: everything the execution wire runs
+  // through. The host reads them together.
   _hookNodes() {
     const graph = app.graph;
     if (!graph || !graph._nodes) return [];
-    // The flow nodes (agentY loop start / loop break) travel with the hooks:
-    // they are wired into the same chains and the host reads them together.
-    return graph._nodes.filter(
-      (n) => n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook" || flowPurpose(n))
-    );
+    return graph._nodes.filter((n) => isExecNode(n));
   }
 
   // Follow every "anchor" input link back to the node(s) feeding this hook. The
@@ -4497,11 +4502,6 @@ class AgentChat {
       const origin = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
       if (!origin) continue;
       const { node, slot, role, tag } = this._throughRefNotes(origin, link.origin_slot | 0);
-      // An `agentY qa briefing` wired in here is saying "I judge this stage", not
-      // "here is an input". Reporting it as an anchor would put a node carrying no
-      // file in front of the agent as context, and — worse — make it a candidate
-      // when splicing looks for the anchor matching a target's type.
-      if (this._isQaNode(node)) continue;
       // Prefer the link's own resolved type: a reroute (or any wildcard slot)
       // declares "*" on the node but the link carries the concrete type.
       //
@@ -4535,7 +4535,8 @@ class AgentChat {
     const outputs = hookNode.outputs || [];
     for (let slot = 0; slot < outputs.length; slot++) {
       const o = outputs[slot];
-      if (!o || !Array.isArray(o.links)) continue;
+      // The exec output is where the NEXT stage is, not where a value goes.
+      if (!o || !Array.isArray(o.links) || isExecSlot(o)) continue;
       for (const lid of o.links) {
         const link = graph.links ? graph.links[lid] : null;
         if (!link) continue;
@@ -4565,133 +4566,230 @@ class AgentChat {
     return out;
   }
 
+  // Is this node part of the run? Bypass (Ctrl+B, mode 4) and mute (Ctrl+M,
+  // mode 2) are the standard ComfyUI gestures for "not this one", and both are
+  // honoured for every agentY node.
+  _active(n) {
+    return !!n && n.mode !== 4 && n.mode !== 2;
+  }
+
+  // What an `agentY review` node says, read off its widgets.
+  _reviewSettings(n) {
+    const w = this._widgetSnapshot(n);
+    const technical = {
+      aspect_ratio: String(w.aspect_ratio || "any"),
+      resolution: String(w.resolution || "any"),
+      sharpness: String(w.sharpness || "any"),
+      grain: String(w.grain || "any"),
+      no_clipping: !!w.no_clipping,
+      no_black_frames: !!w.no_black_frames,
+      no_stalled_motion: !!w.no_stalled_motion,
+      likeness: String(w.likeness || "any"),
+    };
+    return {
+      agent: isAgentReviewer(w.reviewer),
+      notes: String(w.notes || "").trim(),
+      retries: Number(w.retries || 0) | 0,
+      technical,
+      asked: Object.entries(technical).some(([, v]) => v !== "any" && v !== false),
+    };
+  }
+
+  // Does this node count as a stage of the run? One that does not is transparent
+  // on the execution wire: the stages either side of it are next to each other.
+  //  • a hook counts when it has a directive - a blank one asks for nothing;
+  //  • a loop node counts when it is active;
+  //  • a human review always counts - it says everything by being there;
+  //  • an agent review counts when it checks something. One with nothing set
+  //    enforces nothing, and sending it would switch QA on for a graph whose
+  //    author had not asked for it.
+  _isStage(n) {
+    if (!this._active(n)) return false;
+    if (flowPurpose(n)) return true;
+    if (isHookNode(n)) {
+      const w = this._widgetSnapshot(n);
+      return hookReaches(hostPurpose(w.purpose), w.directive);
+    }
+    if (isReviewNode(n)) {
+      const s = this._reviewSettings(n);
+      return !s.agent || !!s.notes || s.asked;
+    }
+    return false;
+  }
+
+  // The stages this node runs after, off the execution wire.
+  _execPrev(n) {
+    return execPredecessors(app.graph, n, (x) => this._isStage(x));
+  }
+
+  // The fields every stage carries, whatever kind of node it is: what it is
+  // called, where its data goes and comes from, and where it sits in the order.
+  _stageBase(hn) {
+    const links = this._anchorsFor(hn);
+    const isStageNode = (n) => isExecNode(n);
+    // An anchor wired FROM another stage reads that stage's value (resolved at
+    // run time), so it is recorded in prev_hook_id(s)/prev_links. An anchor from
+    // a real node is material. With auto-grow a stage can carry several of each;
+    // the singular fields keep the first, the plural ones carry them all.
+    const realLinks = links.filter((l) => !isStageNode(l.node));
+    const hookLinks = links.filter((l) => isStageNode(l.node));
+    const first = realLinks[0] ? realLinks[0].node : null;
+    // The data outputs only: the exec output is not something a stage produces.
+    const outs = (hn.outputs || []).filter((o) => o && !isExecSlot(o));
+    const execPrev = this._execPrev(hn);
+    return {
+      hook_node_id: String(hn.id),
+      // What the node is CALLED on the canvas. Node ids are not visible without
+      // going looking for them, so an agent that says "hook 30" is naming
+      // something the user cannot see; the title is what they can point at.
+      // Sent raw - deciding whether a title is distinguishing is the host's job.
+      // Without the loop state a break node shows after its name.
+      title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),
+      output_count: outs.length,
+      outputs_wired: outs.filter((o) => o.links && o.links.length).length,
+      // Where this stage's output is wired - the destination input(s).
+      targets: this._targetsFor(hn),
+      // ORDER. The stages this one runs after, as the execution wire is drawn.
+      // `exec_wired` says whether the node is on the wire at all: with it, the
+      // host takes order from the wire and from nothing else.
+      exec_prev_ids: execPrev,
+      via_hook_ids: execPrev,
+      exec_wired: !!execSource(app.graph, hn)
+        || (hn.outputs || []).some((o) => isExecSlot(o) && o.links && o.links.length),
+      // DATA. The stages whose value this one reads.
+      prev_hook_id: hookLinks.length ? String(hookLinks[0].node.id) : null,
+      prev_hook_ids: hookLinks.map((l) => String(l.node.id)),
+      prev_links: hookLinks.map((l) => ({
+        from_hook_id: String(l.node.id),
+        from_output_slot: l.fromSlot,
+        to_input: l.toName,
+      })),
+      anchor_node_id: first ? String(first.id) : null,
+      anchor_type: first ? String(first.type || first.comfyClass || "") : null,
+      anchor_title: first ? String(first.title || "") : null,
+      anchor_widgets: first ? this._widgetSnapshot(first) : {},
+      anchors: realLinks.map((l) => this._anchorEntry(l)),
+    };
+  }
+
+  _anchorEntry(l) {
+    return {
+      node_id: String(l.node.id),
+      type: String(l.node.type || l.node.comfyClass || ""),
+      title: String(l.node.title || ""),
+      widgets: this._widgetSnapshot(l.node),
+      from_output_slot: l.fromSlot,
+      from_output_type: l.outType,
+      to_input: String(l.toName || ""),
+      // What an `agentY add tag` on this wire says the reference is FOR.
+      role: String(l.role || ""),
+      // And what it is CALLED - the name a directive uses as `#tag`.
+      tag: String(l.tag || ""),
+    };
+  }
+
+  // Every stage on the canvas, as the host reads them. Three kinds of node, one
+  // shape: hooks (the work), loop nodes (what repeats) and review nodes (who
+  // looks). The host calls them all hooks and tells them apart by `purpose`.
   _collectCanvasHooks() {
     const hooks = [];
     for (const hn of this._hookNodes()) {
-      // Disabling a hook is the standard ComfyUI gesture: bypass (Ctrl+B, mode 4)
-      // or mute (Ctrl+M, mode 2). Both mean "this node is not part of the run",
-      // which is exactly what the agent should honour — so a disabled hook is
-      // simply not collected. (This replaced a bespoke `ignore` widget, which
-      // duplicated the concept and was invisible unless you read the node.)
-      if (hn.mode === 4 || hn.mode === 2) continue;
+      if (!this._isStage(hn)) continue;
       const w = this._widgetSnapshot(hn);
-      const directive = String(w.directive || "").trim();
       const flow = flowPurpose(hn);
-      const purpose = flow || String(w.purpose || "inline_parameter");
-      // An empty hook is a no-op — every purpose but one IS its directive. A
-      // review hook is the exception: it says everything it has to say by being
-      // a review hook wired where it is, so its prompt box is hidden on the node
-      // and there is nothing to type. See hookReaches in agent_hook.js.
-      if (!flow && !hookReaches(purpose, directive)) continue;
-      const links = this._anchorsFor(hn);
-      const isHook = (n) =>
-        !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook" || !!flowPurpose(n));
-      // A hook wired FROM another hook is a downstream stage in a chain: its
-      // input is the predecessor's output (resolved at run time), so record it in
-      // prev_hook_id(s)/prev_links. A hook wired from a real node anchors an
-      // inline_parameter/make_workflow. With auto-grow a hook can carry several of each; the
-      // singular fields keep the first of each (unchanged behavior for the common
-      // single-input case) and the plural, slot-aware fields carry every wired
-      // input so the bake step can reproduce the exact wiring.
-      const realLinks = links.filter((l) => !isHook(l.node));
-      const hookLinks = links.filter((l) => isHook(l.node));
-      const first = realLinks[0] ? realLinks[0].node : null;
-      const outs = hn.outputs || [];
-      // One switch on the node ("should what this hook produced outlive the
-      // run?"), one field on the wire. What ON *means* is resolved by purpose on
-      // the agent side — a subgraph for make_workflow, a memorized result for
-      // everything else — so neither side re-derives it from the other's name.
-      // Older saves (two fields, or three) are migrated in agent_hook.js.
-      hooks.push({
-        hook_node_id: String(hn.id),
-        // What the node is CALLED on the canvas. Node ids are not visible without
-        // going looking for them, so an agent that says "hook 30" is naming
-        // something the user cannot see; the title is what they can point at.
-        // Sent raw, including the default "agentY hook" — deciding whether a title
-        // is distinguishing is the server's job, not something to guess here.
-        // Without the loop state a break node shows after its name.
-        title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),
-        directive,
-        purpose,
-        // A loop break says when its loop is finished, how long it may take and
-        // what leaves it.
-        ...(flow === "loop_break" ? {
-          condition: String(w.condition || "").trim(),
-          max_rounds: Number(w.max_rounds) || 3,
-          forward: String(w.forward || "best"),
-        } : {}),
-        // Keep what this hook produced and put it back next time, for as long as
-        // nothing feeding it changes. Off is also the forget gesture: the server
-        // drops what it KEPT under this hook's current key (the journal
-        // underneath survives, which is what lets this be flipped in hindsight).
-        remember: w.remember === true || w.remember === "true",
-        output_count: outs.length,
-        outputs_wired: outs.filter((o) => o && o.links && o.links.length).length,
-        // Where this hook's output is wired — the producer's destination input(s).
-        targets: this._targetsFor(hn),
-        prev_hook_id: hookLinks.length ? String(hookLinks[0].node.id) : null,
-        anchor_node_id: first ? String(first.id) : null,
-        anchor_type: first ? String(first.type || first.comfyClass || "") : null,
-        anchor_title: first ? String(first.title || "") : null,
-        anchor_widgets: first ? this._widgetSnapshot(first) : {},
-        prev_hook_ids: hookLinks.map((l) => String(l.node.id)),
-        prev_links: hookLinks.map((l) => ({
-          from_hook_id: String(l.node.id),
-          from_output_slot: l.fromSlot,
-          to_input: l.toName,
-        })),
-        anchors: realLinks.map((l) => ({
-          node_id: String(l.node.id),
-          type: String(l.node.type || l.node.comfyClass || ""),
-          title: String(l.node.title || ""),
-          widgets: this._widgetSnapshot(l.node),
-          from_output_slot: l.fromSlot,
-          from_output_type: l.outType,
-          to_input: l.toName,
-          // What an `agentY add tag` on this wire says the reference is FOR.
-          role: String(l.role || ""),
-          // And what it is CALLED — the name a directive uses as `#tag`.
-          tag: String(l.tag || ""),
-        })),
-      });
+      const base = this._stageBase(hn);
+      if (flow) {
+        hooks.push({
+          ...base,
+          directive: "",
+          purpose: flow,
+          remember: false,
+          // A loop break says when its loop is finished, how long it may take
+          // and what leaves it.
+          ...(flow === "loop_break" ? {
+            condition: String(w.condition || "").trim(),
+            max_rounds: Number(w.max_rounds) || 3,
+            forward: String(w.forward || "best"),
+          } : {}),
+        });
+      } else if (isReviewNode(hn)) {
+        hooks.push(this._reviewEntry(hn, base));
+      } else {
+        hooks.push({
+          ...base,
+          directive: String(w.directive || "").trim(),
+          purpose: hostPurpose(w.purpose),
+          // Keep what this hook produced and put it back next time, for as long
+          // as nothing feeding it changes. Off is also the forget gesture. What
+          // ON means is resolved by purpose on the host: a subgraph for
+          // make_workflow, a memorized result for the other two.
+          remember: w.remember === true || w.remember === "true",
+        });
+      }
     }
-    for (const b of this._qaBriefingNodes()) hooks.push(b);
     return hooks;
   }
 
-  // ── qa nodes ─────────────────────────────────────────────────────────────────
-  // Sent as `qa` hooks, because that is what they are: the agent side already
-  // merges every qa hook on the canvas into one briefing, and a second path to
-  // the same place would be a second thing to keep in step.
-  //
-  // `judge` names what a node applies to; `reference` names what to compare
-  // against. Both reach the agent as one qa hook — prose in `directive`, the
-  // dropdowns in `technical`, the stages in `applies_to`.
-  _isQaNode(n) {
-    return !!n && (n.type === "AgentYQa" || n.comfyClass === "AgentYQa");
+  // ── review nodes ─────────────────────────────────────────────────────────────
+  // One node, two reviewers, and the host already has a word for each:
+  //  • a person -> `human_review`, the stop. `notes` is the question put to them;
+  //    what the stage produced is gathered into a collector wired into `anchor`.
+  //  • the QA agent -> `qa`: prose in `directive`, the measured checks in
+  //    `technical`, the stages it judges in `applies_to`, what to compare against
+  //    in `anchors` (the `reference` inputs).
+  _reviewEntry(n, base) {
+    const s = this._reviewSettings(n);
+    if (!s.agent) {
+      return { ...base, directive: s.notes, purpose: "human_review", reviewer: "human",
+               remember: false };
+    }
+    const { applies, judged } = this._judgeTargets(n);
+    // On the execution wire it judges the stage before it - which is the whole
+    // reason to put it there - as well as anything wired into `anchor`.
+    for (const stage of this._execStages(n)) {
+      if (!applies.includes(stage)) applies.push(stage);
+    }
+    return {
+      ...base,
+      directive: s.notes,
+      purpose: "qa",
+      reviewer: "agent",
+      remember: false,
+      technical: s.technical,
+      retries: s.retries,
+      // Which stages this judges. Empty = all of them.
+      applies_to: applies,
+      // Nodes wired into `anchor` that name files rather than a stage - a
+      // collector, a loader, a path. Same shape as an anchor, so the host
+      // resolves them to paths through the same code.
+      judged,
+      anchors: this._anchorsFor(n, "reference").map((l) => this._anchorEntry(l)),
+    };
   }
 
-  _isHookNode(n) {
-    return !!n && (n.type === "AgentYHook" || n.comfyClass === "AgentYHook");
+  // The hooks a review on the execution wire judges: the nearest hook(s) up the
+  // wire, through loop nodes and other reviews.
+  _execStages(n) {
+    return execPredecessors(app.graph, n, (x) => isHookNode(x) && this._isStage(x));
   }
 
   // The stage a judged node belongs to: the nearest `agentY hook` reachable from
   // it through the graph, in either direction.
   //
-  // Wiring a hook's `out` into `judge` is the exact case and needs no search. The
-  // rest is what makes the other wirings work: an IMAGE straight off a sampler, a
-  // collector, a LoadImage. None of those IS a stage, but each sits in one, and
-  // the hook nearest to it is the stage that produces it.
+  // Wiring a hook's `out` into a review is the exact case and needs no search.
+  // The rest is what makes the other wirings work: an IMAGE straight off a
+  // sampler, a collector, a LoadImage. None of those IS a stage, but each sits
+  // in one, and the hook nearest to it is the stage that produces it.
   //
   // Breadth-first so "nearest" means nearest, bounded because this runs on every
-  // canvas capture and a graph can be large. Finding nothing is not a failure —
+  // canvas capture and a graph can be large. Finding nothing is not a failure -
   // it is a graph with no hooks, where there is one stage and judging everything
   // is exactly right. Guessing wrong here would silently leave outputs unchecked,
   // so the fallback is always to widen rather than narrow.
   _stageFor(node, maxDepth = 12) {
     const graph = app.graph;
     if (!graph || !node) return null;
-    if (this._isHookNode(node)) return String(node.id);
+    if (isHookNode(node)) return String(node.id);
     const seen = new Set([String(node.id)]);
     let frontier = [node];
     for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
@@ -4701,10 +4799,10 @@ class AgentChat {
           const id = String(neighbour.id);
           if (seen.has(id)) continue;
           seen.add(id);
-          if (this._isHookNode(neighbour)) return id;
-          // Do not route a search THROUGH another QA node: two QA nodes on one
+          if (isHookNode(neighbour)) return id;
+          // Do not route a search THROUGH another review: two reviews on one
           // branch would otherwise each adopt the other's stage.
-          if (this._isQaNode(neighbour)) continue;
+          if (isReviewNode(neighbour)) continue;
           next.push(neighbour);
         }
       }
@@ -4718,12 +4816,15 @@ class AgentChat {
     const out = [];
     if (!graph) return out;
     for (const inp of node.inputs || []) {
-      if (!inp || inp.link == null) continue;
+      // Data wires only: the execution wire joins every stage of a chain, and
+      // following it would make "nearest stage" mean "any stage".
+      if (!inp || inp.link == null || isExecSlot(inp)) continue;
       const link = graph.links ? graph.links[inp.link] : null;
       const origin = link && graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
       if (origin) out.push(origin);
     }
     for (const o of node.outputs || []) {
+      if (isExecSlot(o)) continue;
       for (const lid of (o && Array.isArray(o.links) ? o.links : [])) {
         const link = graph.links ? graph.links[lid] : null;
         const target = link && graph.getNodeById ? graph.getNodeById(link.target_id) : null;
@@ -4733,16 +4834,16 @@ class AgentChat {
     return out;
   }
 
-  // What an `agentY qa` node's `judge` slots name: the stages to apply to, and
-  // the judged nodes themselves (a collector or a loader names real files, which
-  // the agent resolves the same way it resolves a reference).
+  // What an agent review's `anchor` slots name: the stages to apply to, and the
+  // judged nodes themselves (a collector or a loader names real files, which the
+  // host resolves the same way it resolves a reference).
   _judgeTargets(node) {
     const applies = [];
     const judged = [];
-    for (const l of this._anchorsFor(node, "judge")) {
+    for (const l of this._anchorsFor(node, "anchor")) {
       const stage = this._stageFor(l.node);
       if (stage && !applies.includes(stage)) applies.push(stage);
-      if (this._isHookNode(l.node)) continue;   // a stage, not a file
+      if (isHookNode(l.node)) continue;   // a stage, not a file
       judged.push({
         node_id: String(l.node.id),
         type: String(l.node.type || l.node.comfyClass || ""),
@@ -4755,65 +4856,25 @@ class AgentChat {
     return { applies, judged };
   }
 
-  _qaBriefingNodes() {
-    const graph = app.graph;
-    if (!graph || !graph._nodes) return [];
-    const out = [];
-    for (const n of graph._nodes) {
-      if (!this._isQaNode(n)) continue;
-      if (n.mode === 4 || n.mode === 2) continue;      // bypassed or muted
-      const w = this._widgetSnapshot(n);
-      const technical = {
-        aspect_ratio: String(w.aspect_ratio || "any"),
-        resolution: String(w.resolution || "any"),
-        sharpness: String(w.sharpness || "any"),
-        grain: String(w.grain || "any"),
-        no_clipping: !!w.no_clipping,
-        no_black_frames: !!w.no_black_frames,
-        no_stalled_motion: !!w.no_stalled_motion,
-        likeness: String(w.likeness || "any"),
-      };
-      const notes = String(w.notes || "").trim();
-      const retries = Number(w.retries || 0) | 0;
-      const { applies, judged } = this._judgeTargets(n);
-      const asked = Object.entries(technical).some(
-        ([, v]) => v !== "any" && v !== false);
-      // A node with nothing set enforces nothing — sending it would turn QA on
-      // for a graph whose author had not asked for it. Wiring something into
-      // `judge` is not "asking" either: it says WHICH outputs, not what for.
-      if (!notes && !asked) continue;
-      out.push({
-        hook_node_id: String(n.id),
-        title: String(n.title || ""),
-        directive: notes,
-        purpose: "qa",
-        technical,
-        retries,
-        // Which stages this judges. Empty = all of them.
-        applies_to: applies,
-        // Nodes wired into `judge` that name files rather than a stage — a
-        // collector, a loader, a path. Same shape as an anchor, so the agent
-        // resolves them to paths through the same code.
-        judged,
-        anchors: this._anchorsFor(n, "reference").map((l) => ({
-          node_id: String(l.node.id),
-          type: String(l.node.type || l.node.comfyClass || ""),
-          widgets: this._widgetSnapshot(l.node),
-          to_input: String(l.toName || ""),
-          role: String(l.role || ""),
-          tag: String(l.tag || ""),
-        })),
-      });
-    }
-    return out;
-  }
-
   // Capture the current graph as an API-format prompt (node-id keyed). Async in
   // recent ComfyUI (returns a promise); awaiting a plain object is also fine.
+  //
+  // The execution wire is taken out on the way: it is order, not data, and the
+  // host works out what a run touches from the graph's data wires. Left in, it
+  // would join every stage of a chain to every other and a run of one stage
+  // would drag the rest of the canvas along.
   async _captureCanvasGraph() {
     try {
       const p = await app.graphToPrompt();
-      return p && p.output ? p.output : null;
+      const graph = p && p.output ? p.output : null;
+      if (graph) {
+        for (const node of Object.values(graph)) {
+          if (node && node.inputs && EXEC_CLASSES.includes(String(node.class_type || ""))) {
+            delete node.inputs.exec;
+          }
+        }
+      }
+      return graph;
     } catch (e) {
       return null;
     }

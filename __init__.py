@@ -731,121 +731,75 @@ def _agent_placed() -> dict:
     return {}
 
 
+# ── the execution wire ───────────────────────────────────────────────────────
+# A socket type of its own, so it can only be wired exec to exec. It carries
+# nothing: the agent reads which node it comes from, which is the ORDER the
+# stages run in. ComfyUI never sees it at work - hook, loop and review nodes are
+# taken out of the graph before a run, and the wire goes with them.
+EXEC_TYPE = "AGENTY_EXEC"
+
+# The hook purpose that produces an input's value: one value sets it, several
+# sweep it (one run each). The purposes are shown under these names; the host
+# knows them as `set_parameter`, `make_workflow` and `text_only`
+# (web/agent_hook.js translates).
+PARAMETER_PURPOSE = "set / sweep parameter"
+WORKFLOW_PURPOSE = "make workflow"
+TEXT_PURPOSE = "text only"
+_Exec = io.Custom(EXEC_TYPE)
+
+
+def _exec_in():
+    return _Exec.Input(
+        "exec", optional=True,
+        tooltip=("Execution wire: this stage runs after the one wired in here. It "
+                 "carries no data - only the order."))
+
+
+def _exec_out():
+    return _Exec.Output(display_name="exec")
+
+
 class AgentYHook(io.ComfyNode):
-    """An agent instruction attached to the canvas. Three purposes:
+    """One stage of work for the agent, placed on the canvas. Three purposes:
 
-    * ``inline_parameter`` (default) — annotate an upstream node's output. Wire an
-      ``anchor`` input from any node's output and type a directive (e.g. "create
-      prompt variations", "sweep the seed 6×", "iterate the files in this
-      folder"). When the agentY agent runs the on-canvas graph, it applies the
-      directive to the anchored node(s) and runs the expanded batch.
-    * ``make_workflow`` — the hook stands in for a workflow or Python script
-      the agent generates from the ``directive`` field (used here as a prompt).
-      The agent generates it, runs it (using the wired ``anchor`` output(s) as
-      input if any are connected, else treating the prompt as text-to-media), and
-      stages the result onto the canvas as loader nodes.
-    * ``text`` — the hook asks the agent for a **written text answer** (no media,
-      no workflow): the ``directive`` is the request (e.g. "write a caption for
-      this image", "summarise the wired prompt"). The agent writes the answer and
-      drops an ``agentY text`` node on the canvas carrying it, wired where this
-      hook's output went — so downstream nodes (or the next hook stage) consume
-      the string on a normal run. Any wired ``anchor`` is context for the answer.
-    * ``general_request`` — a **free-form** instruction: the agent treats the
-      ``directive`` as an ordinary request (with any wired ``anchor`` as the provided
-      input/context and this graph already captured) and decides the right action
-      itself — answer, generate or edit media, run a workflow, compute a value. Use
-      it when the task doesn't fit the more specific purposes; media results stage
-      onto the canvas, a single produced value goes to the wired target, and a plain
-      question is answered in chat.
-    Step-by-step refinement used to be a purpose here (``iterate``): the agent ran
-    this graph one generation per turn and fed each result back in. It is now the
-    panel's **prompt loop** — the ✍ button in the agentY side panel — because the
-    loop people actually run keeps the queueing in their own hands: the agent writes
-    each prompt into your prompt node, you queue it and look at the render, you say
-    what to change. No hook, and nothing to wire. A saved graph whose hook is still
-    set to ``iterate`` is told so and otherwise does nothing.
-    Quality assessment used to be a purpose here. It is now its own node —
-    ``agentY qa`` — because it was never one field: the prose lived on this
-    dropdown and the measured checks (ratio, resolution, sharpness, likeness) on a
-    separate briefing node, and you had to know the two were halves of one
-    statement. A saved graph whose hook is still set to ``qa`` keeps working.
+    * ``set / sweep parameter`` (default) - the hook produces the VALUE of the
+      input its ``out`` is wired to. One value SETS it (a composed prompt);
+      several SWEEP it, running the graph once per value ("three prompts per character", "sweep the seed
+      6 times", "every file in this folder").
+    * ``make workflow`` - the hook stands in for a workflow or Python script the
+      agent builds from the ``directive``, runs (with the wired ``anchor``
+      inputs as its material, else from text alone) and stages onto the canvas.
+    * ``text only`` - the hook asks for a WRITTEN answer: no media, no workflow.
+      The text goes to whatever ``out`` is wired into, and into the chat.
 
-    * ``human_review`` — a deliberate **STOP** in the chain, so you can choose what goes
-      on to the next stage. Place it between the stage that produces candidates
-      (reference frames, start images) and the expensive stage that consumes them
-      (a video). The stage before it runs; what it produced is gathered into an
-      ``agentY image collector`` placed beside this hook and wired into its anchor;
-      the run stops there and asks you.
+    **Three kinds of wire, three meanings.**
 
-      That collector is the ballot. **Edit it** — delete the rows you don't want,
-      add files of your own, reorder them — then say ``continue`` in the panel (or
-      press the action-bar button, which reads *Continue with these* while a run is
-      halted) and the rest of the chain runs with exactly what is in it. ``stop``
-      ends the run instead; nothing produced is deleted either way.
+    * ``exec`` (in and out) - WHEN. The execution wire, as in Unreal's node
+      editor: stages run in the order it is drawn, a wire that splits starts
+      branches that run side by side, and loop / review nodes sit on it. It
+      carries no data, and it is the only thing that decides order.
+    * ``anchor`` (in, auto-growing) - WHAT IT READS. Material and context:
+      another stage's ``out``, an image, a collector, a prompt node.
+    * ``out`` - WHAT IT PRODUCES, wired into the input that receives it. One
+      slot stands for however many values the stage makes.
 
-      Same shape as an ``agentY qa`` node — produces nothing, never executed,
-      sits in the same place in a chain. The difference is who judges: qa asks a
-      model and carries on by itself, ``human_review`` stops and asks you.
+    A stage with no ``exec`` wire at all still runs: stages that read each
+    other's ``out`` are ordered by that. Draw the exec wire as soon as the order
+    is not obvious from the data - a stage that goes through real nodes (hook ->
+    image node -> save node -> review), a loop, a stop.
 
-      This is the one purpose with **no prompt**: a stop has nothing to instruct,
-      so the ``directive`` box is hidden and an empty review hook is complete. If
-      you want a particular question put to you, **title the node** ("pick two
-      for the video") — the title travels with the hook and is what the agent
-      asks. Untitled, it asks which outputs should go on.
+    Reviewing is its own node (``agentY review``): a person, or the QA agent.
+    Step-by-step refinement is the panel's prompt loop (the pencil button).
 
-    The ``anchor`` **input** auto-grows: each time you wire one, a new empty slot
-    appears, so a single hook can gather several inputs (e.g. combine three images
-    in a standin, or apply one directive across two anchor nodes). The single
-    ``out`` **output** carries any type (image, video, string / int / float); a
-    stage that yields several results forwards them all to the next hook via the
-    agent, not via several slots.
+    ``remember`` - should what this stage produced outlive the run? OFF (default)
+    has the agent do the work again next time. ON keeps it: on ``make workflow``
+    it is labelled **bake** (the workflow is nested into a subgraph beside the
+    hook), on the other two **memorize** (the result is written to
+    ``agent/memory/`` and put back until something feeding the hook changes).
+    It can be switched on after a run you liked; off is the forget gesture.
 
-    ``remember`` — one question: *should what this hook produced outlive the run?*
-    OFF (default) means the agent does the work again next time. ON keeps it.
-
-    What "keeping it" means follows the ``purpose``, because the purposes produce
-    different things and there is only one sensible way to keep each. It is not a
-    second decision you make, which is why the switch is *labelled* differently:
-
-    * **make_workflow** — labelled **bake**. What this produced is a workflow, so
-      keeping it means nesting it into a ComfyUI **subgraph** whose inputs/outputs
-      match this hook's slots, dropped onto the same canvas beside the hook and
-      wired to mirror the hook chain. The files that run produced are recorded
-      too, so re-opening the graph re-uses them instead of re-rendering.
-    * **everything else** — labelled **memorize**. What this produced is a result
-      — a written value, a prompt, a script, images, videos — so keeping it means
-      writing it to ``agent/memory/`` beside the outputs and putting it straight
-      back next time, until something feeding this hook changes.
-
-    The hook itself is never rewired either way. ``freeze`` used to bake a text
-    hook's value into its target input and take over the hook's downstream link;
-    it doesn't any more. The hook chain is the graph's readable statement of what
-    happens, and a switch about keeping a *result* has no business rewriting it.
-
-    You can flip it **in hindsight**. What a hook produced is journalled whether
-    or not the switch was on, so turning it on after a run you liked keeps that
-    run's result — you rarely know something was worth keeping until you have
-    looked at it. Turning it off is still the forget gesture: off, send anything,
-    on again.
-
-    This was three switches (``bake_to_canvas``, ``freeze``, ``memorize``), then
-    two. They were always one question asked several ways. Saved graphs migrate on
-    load (see ``web/agent_hook.js``); a hook with whichever of them its purpose
-    read comes back with ``remember`` on.
-
-    It is hidden on ``human_review``, which produces nothing to keep.
-
-    To disable a hook without deleting it, **bypass it** (Ctrl+B) or mute it
-    (Ctrl+M) like any other node — the agent skips hooks in those modes. There is
-    no separate ``ignore`` toggle: one gesture, the standard ComfyUI one, and it
-    reads off the canvas at a glance.
-
-    On a normal ComfyUI Queue the node is always inert: it's an identity
-    passthrough that nothing downstream needs, so it is never executed.
-    Recommended usage: wire only the ``anchor`` inputs and leave the output
-    unwired (the node is then pruned entirely on a normal run). Splicing it inline
-    also works — the agent removes it from the graph before running, and the
-    ``out`` output forwards the first connected anchor.
+    Bypass (Ctrl+B) or mute (Ctrl+M) a hook to take it out of the run; the exec
+    wire passes through it. Inert on a normal Queue: an identity passthrough.
     """
 
     @classmethod
@@ -861,35 +815,34 @@ class AgentYHook(io.ComfyNode):
             display_name="agentY hook",
             category="agentY",
             description=(
-                "Attach an agent instruction to the canvas. As an 'inline_parameter' it annotates a "
-                "node's output; as a 'make_workflow' it stands in for a workflow/script "
-                "the agent generates from the prompt; as 'text' it asks for a written answer "
-                "the agent drops on the canvas as a wireable 'agentY text' node. The 'anchor' "
-                "input auto-grows, so one hook can gather several inputs. Bypass (Ctrl+B) or "
-                "mute it to disable it. Inert on a normal run; acted on by the agentY agent "
-                "when it runs the graph."
+                "One stage of work for the agent. 'set / sweep parameter' produces the value(s) of "
+                "the input its 'out' is wired to; 'make workflow' has the agent build and "
+                "run a workflow from the directive; 'text only' asks for a written answer. "
+                "'exec' is the execution wire: stages run in the order it is drawn. "
+                "'anchor' inputs are what the stage reads and auto-grow. Bypass (Ctrl+B) or "
+                "mute it to take it out of the run. Inert on a normal Queue."
             ),
             inputs=[
+                _exec_in(),
                 io.String.Input(
                     "directive",
                     multiline=True,
                     default="",
                     placeholder=(
-                        "inline_parameter: e.g. sweep the seed, 6 variations  •  "
-                        "make_workflow: e.g. upscale 2x and add film grain  •  "
-                        "text: e.g. write a caption for this image"
+                        "set / sweep parameter: e.g. three prompts per character, one run each  •  "
+                        "make workflow: e.g. upscale 2x and add film grain  •  "
+                        "text only: e.g. write a caption for this image"
                     ),
                 ),
                 io.Combo.Input(
                     "purpose",
-                    options=["inline_parameter", "make_workflow", "text", "general_request",
-                             "human_review"],
-                    default="inline_parameter",
+                    options=[PARAMETER_PURPOSE, WORKFLOW_PURPOSE, TEXT_PURPOSE],
+                    default=PARAMETER_PURPOSE,
                     tooltip=(
-                        "'qa' is no longer here — quality assessment has its own node, "
-                        "'agentY qa', which carries this dropdown's prose AND the measured "
-                        "checks that used to live on a second node. A saved graph whose "
-                        "hook is still set to qa keeps working."
+                        "set / sweep parameter: produce the value(s) of the input 'out' is wired "
+                        "to - several values run the graph once each. make workflow: build "
+                        "and run a workflow from the directive. text only: a written "
+                        "answer. Reviewing is the 'agentY review' node."
                     ),
                 ),
                 io.Boolean.Input(
@@ -908,10 +861,10 @@ class AgentYHook(io.ComfyNode):
                         "switching this OFF releases it too — which is how you force a fresh "
                         "result. You can also turn it on AFTER a run you liked: what the "
                         "hook produced is written down either way, so the switch works in "
-                        "hindsight. On a make_workflow hook this reads 'bake into subgraph' "
+                        "hindsight. On a make workflow hook this reads 'bake into subgraph' "
                         "instead: what that hook produced is a workflow, so keeping it means "
                         "nesting it into a subgraph beside the hook (its outputs are kept "
-                        "too). Hidden on qa and review, which produce nothing to keep."
+                        "too)."
                     ),
                 ),
                 io.Autogrow.Input("anchors", template=anchors),
@@ -924,11 +877,14 @@ class AgentYHook(io.ComfyNode):
                 # run_workflow_now result, and a baked subgraph's output count comes
                 # from the agent's exposed-outputs spec, not from this slot.
                 io.AnyType.Output(display_name="out"),
+                # After `out`, so the data output keeps slot 0: every consumer of a
+                # hook's value addresses it there.
+                _exec_out(),
             ],
         )
 
     @classmethod
-    def execute(cls, directive="", purpose="inline_parameter",
+    def execute(cls, directive="", purpose=PARAMETER_PURPOSE,
                 remember=False, anchors=None, **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
         # ``**_legacy`` swallows `bake` / `memorize` / `freeze` from a graph saved
         # before the merge: the widgets migrate on load, but a prompt submitted
@@ -938,24 +894,13 @@ class AgentYHook(io.ComfyNode):
         # case it must not alter the data flowing through it. With several anchors
         # wired, forward the first connected one (lowest slot index).
         #
-        # Skipping None matters: an `agentY qa briefing` wired in to scope itself
+        # Skipping None matters: a node wired in that carries nothing
         # to this stage occupies an anchor slot and carries nothing. Forwarding
         # that would hand the next node a None on a plain Queue Prompt — the hook
         # breaking the very graph it is supposed to be invisible in.
         anchors = anchors or {}
         first = next((v for v in anchors.values() if v is not None), None)
-        return io.NodeOutput(first)
-
-
-def _first_anchor(anchors) -> io.NodeOutput:
-    """What a flow node passes on if it is ever executed: its first wired input."""
-    anchors = anchors or {}
-    return io.NodeOutput(next((v for v in anchors.values() if v is not None), None))
-
-
-def _flow_anchors():
-    return io.Autogrow.Input("anchors", template=io.Autogrow.TemplatePrefix(
-        input=io.AnyType.Input("anchor"), prefix="anchor", min=0, max=_MAX_ANCHORS))
+        return io.NodeOutput(first, None)
 
 
 class AgentYContext(io.ComfyNode):
@@ -1003,14 +948,14 @@ class AgentYContext(io.ComfyNode):
 
 
 class AgentYLoopStart(io.ComfyNode):
-    """Where a loop begins. Every agentY hook wired between this node and an
-    ``agentY loop break`` is the loop's body: the agent runs those stages, has the
-    result judged, and runs them again with what was missed until the break's
-    condition is met.
+    """Where a loop begins. Every stage on the execution wire between this node
+    and an ``agentY loop break`` is the loop's body: the agent runs those stages,
+    has the result judged, and runs them again with what was missed until the
+    break's condition is met.
 
-    Wire what the loop works on into ``anchor`` and ``out`` into the first stage
-    of the body. The node holds no settings — the condition and the limit are on
-    the break, where the loop is decided. Inert on a normal Queue.
+    Wire ``exec`` from the stage before the loop, and ``exec`` out into the first
+    stage of the body. No settings: the condition and the limit are on the break,
+    where the loop is decided. Inert on a normal Queue.
     """
 
     @classmethod
@@ -1019,32 +964,35 @@ class AgentYLoopStart(io.ComfyNode):
             node_id="AgentYLoopStart",
             display_name="agentY loop start",
             category="agentY/flow",
-            description=("Start of a loop. The agentY hooks wired between this node and an "
-                         "'agentY loop break' repeat until the break's condition is met."),
-            inputs=[_flow_anchors()],
-            outputs=[io.AnyType.Output(display_name="out")],
+            description=("Start of a loop. The stages on the execution wire between this node "
+                         "and an 'agentY loop break' repeat until the break's condition is met."),
+            inputs=[_exec_in()],
+            outputs=[_exec_out()],
         )
 
     @classmethod
-    def execute(cls, anchors=None, **_ignored) -> io.NodeOutput:  # noqa: ANN001
-        return _first_anchor(anchors)
+    def execute(cls, **_ignored) -> io.NodeOutput:  # noqa: ANN001
+        return io.NodeOutput(None)
 
 
 class AgentYLoopBreak(io.ComfyNode):
     """Where a loop ends, and what "finished" means.
 
-    Wire the last stage of the loop's body into ``anchor`` and ``out`` into
+    Wire ``exec`` from the last stage of the loop's body, and ``exec`` out into
     whatever comes after the loop.
 
-    * ``finished when`` — the condition, in your own words: *"the dancer's pose
+    * ``finished when`` - the condition, in your own words: *"the dancer's pose
       matches the reference"*, *"no text anywhere in the frame"*. One statement
-      per line. A separate QA agent judges every round against it, together with
-      any ``agentY qa`` node that covers the loop's stages. Empty: the loop ends
-      when those QA nodes pass.
-    * ``max rounds`` — the loop stops here even if the condition was never met.
-    * ``forward`` — what leaves the loop: the **best** result (default), **all
+      per line. Empty: the loop ends when the review in its body passes.
+    * ``max rounds`` - the loop stops here even if the condition was never met.
+    * ``forward`` - what leaves the loop: the **best** result (default), **all
       that pass**, or **all** of the last round. If the rounds run out, the best
       attempt of any round goes on.
+
+    Who judges is the ``agentY review`` node in the body: with a human reviewer
+    every change you ask for is a round and your continue ends the loop; with
+    the agent reviewer (or none) a QA agent judges each round against the
+    condition and the review's own checks.
 
     Inert on a normal Queue.
     """
@@ -1058,6 +1006,7 @@ class AgentYLoopBreak(io.ComfyNode):
             description=("End of a loop: the condition that finishes it, the most rounds it may "
                          "take, and which result goes on to the next stage."),
             inputs=[
+                _exec_in(),
                 io.String.Input(
                     "condition", display_name="finished when", multiline=True, default="",
                     placeholder="e.g. the dancer's pose matches the reference • no text in the frame",
@@ -1069,15 +1018,14 @@ class AgentYLoopBreak(io.ComfyNode):
                                tooltip=("What goes on to the next stage: the best result, every "
                                         "result that met the condition, or everything from the "
                                         "last round.")),
-                _flow_anchors(),
             ],
-            outputs=[io.AnyType.Output(display_name="out")],
+            outputs=[_exec_out()],
         )
 
     @classmethod
-    def execute(cls, condition="", max_rounds=3, forward="best", anchors=None,
+    def execute(cls, condition="", max_rounds=3, forward="best",
                 **_ignored) -> io.NodeOutput:  # noqa: ANN001, ARG003
-        return _first_anchor(anchors)
+        return io.NodeOutput(None)
 
 
 # Number of (fixed) output slots on the Python node. Executable nodes can't
@@ -1311,7 +1259,7 @@ def _describe_value(index, value):
 class AgentYText(io.ComfyNode):
     """A string the agent wrote, living on the canvas as a wireable node.
 
-    Companion to ``AgentYHook``'s ``text`` purpose: when the agent answers a text
+    Companion to ``AgentYHook``'s ``text only`` purpose: when the agent answers a text
     hook, it places one of these carrying the answer and wires its ``STRING``
     output where the hook's output went, so downstream nodes (or the next hook
     stage) consume the string on a normal run — the value is baked into the graph
@@ -1327,7 +1275,7 @@ class AgentYText(io.ComfyNode):
             category="agentY",
             **_agent_placed(),   # place_canvas_text drops these; you don't add them by hand
             description=(
-                "A string the agent wrote (answering a 'text' hook), wireable into any "
+                "A string the agent wrote (answering a 'text only' hook), wireable into any "
                 "STRING input. Editable by hand; emits its text on a normal run."
             ),
             inputs=[
@@ -2301,86 +2249,90 @@ _QA_LIKENESS = ["any", "must match the reference face",
                 "must match the reference subject"]
 
 
-class AgentYQa(io.ComfyNode):
-    """What "good" means for this graph's outputs, and which outputs it means.
+# The settings only the agent reviewer reads. The node's frontend hides exactly
+# these while the reviewer is a person (web/agent_review.js keeps the same list).
+REVIEW_AGENT_SETTINGS = ["aspect_ratio", "resolution", "sharpness", "grain", "no_clipping",
+                         "no_black_frames", "no_stalled_motion", "likeness", "retries"]
 
-    One node for the whole of QA. It used to be two — a ``qa`` hook carrying the
-    prose and a separate briefing node carrying the measured controls — which
-    meant knowing that a dropdown on one node and a whole second node were halves
-    of the same statement. They were always one thing; this is that thing.
 
-    **Two inputs, and the difference between them is the whole node.**
+class AgentYReview(io.ComfyNode):
+    """A review of the stage before it: by you, or by the QA agent.
 
-    ``judge`` — WHAT TO ASSESS. Wire in the thing you want checked:
+    It sits on the execution wire after the stage it reviews. ``reviewer``
+    decides who looks:
 
-    * an ``agentY hook``'s ``out``, to judge that stage of a chain;
-    * an IMAGE (from a sampler, a save node, anywhere), to judge what that branch
-      renders;
-    * an ``agentY image/video collector``, to judge the files it holds;
-    * a file path, to judge something already on disk.
+    * **human** - a deliberate STOP. The stage before it runs; what it produced
+      is gathered into an ``agentY image collector`` beside this node and the run
+      waits for you. Remove the rows you don't want, add files of your own,
+      reorder them, then say ``continue`` - or say what to change, and the stage
+      is redone and you are asked again. After a written stage there is nothing
+      to collect: the text is printed in the chat and the stop is on that.
+      Nothing behind this node runs until you have answered. ``notes`` is the
+      question you are asked.
+    * **agent** - the QA agent judges the outputs and the run carries on by
+      itself. ``notes`` says what needs judgement; the dropdowns and switches
+      below it are decided by MEASURING the finished file (ratio, resolution,
+      sharpness, grain, exposure, black frames, motion, likeness), so they are
+      exact and cost nothing. Anything left on "any" (or off) is not checked.
+      ``retries`` is how many times a failing output may be made again. These
+      settings are hidden while the reviewer is a person.
 
-    Left unwired it judges everything the run produces, which is right for a
-    one-stage graph and the reason an unwired QA node is still a complete one.
+    Two inputs besides the wire:
 
-    ``reference`` — WHAT TO COMPARE AGAINST. Mood, grade, character sheets. These
-    are shown to the QA model beside each output, and ``likeness`` turns that
-    comparison into a measured score rather than an impression.
+    * ``anchor`` - WHAT IS REVIEWED, when it is not simply "the stage before":
+      a save node, an IMAGE, a collector, a file path. The human reviewer's
+      collector is wired in here.
+    * ``reference`` - WHAT TO COMPARE AGAINST (agent): mood, grade, character
+      sheets, shown to the QA model beside each output; ``likeness`` turns that
+      comparison into a measured score.
 
-    Wiring the same image into the wrong one of those is the mistake this layout
-    exists to prevent: as ``judge`` it is a thing being marked, as ``reference``
-    it is the marking scheme.
+    In a loop, this node is what judges it: your continue ends the loop, or the
+    agent's verdict does.
 
-    **Scoping runs the readable way round.** The separate briefing node this
-    replaces was wired the other way — its ``out`` went INTO a hook's anchor, so
-    the arrow pointed from the standard to the work, which only reads correctly if
-    you already know. Here the stage flows into QA, like everything else on a
-    canvas flows toward what consumes it.
-
-    The dropdowns and switches are decided by MEASURING the finished file, so they
-    are exact and cost nothing — an aspect ratio is compared, not eyeballed.
-    Anything left on "any" (or off) is not checked at all; nothing here has a
-    default opinion, and an empty node enforces nothing.
-
-    Several QA nodes can name the same stage, and an unscoped one still applies to
-    all of it; where they disagree, the one naming the stage wins.
-
-    Inert on a normal Queue, like every agentY annotation node.
+    An agent review left on no ``exec`` wire and no ``anchor`` judges everything
+    the run produces. Inert on a normal Queue.
     """
 
     @classmethod
     def define_schema(cls) -> io.Schema:  # noqa: N802
         judged = io.Autogrow.TemplatePrefix(
-            input=io.AnyType.Input("judge"), prefix="judge", min=0, max=8,
+            input=io.AnyType.Input("anchor"), prefix="anchor", min=0, max=8,
         )
         refs = io.Autogrow.TemplatePrefix(
             input=io.AnyType.Input("reference"), prefix="reference", min=0, max=8,
         )
         return io.Schema(
-            node_id="AgentYQa",
-            display_name="agentY qa (quality assessment)",
+            node_id="AgentYReview",
+            display_name="agentY review",
             category="agentY",
-            search_aliases=["quality", "assessment", "check", "briefing", "qa"],
+            search_aliases=["review", "quality", "assessment", "check", "qa", "approve", "stop"],
             description=(
-                "What counts as a good output, and which outputs it applies to. Wire what "
-                "you want checked into 'judge' (a hook's out, an IMAGE, a collector, a "
-                "path) and what it should be compared against into 'reference'. Unwired, "
-                "it judges everything the run produces. The technical checks (ratio, "
-                "resolution, sharpness, grain, exposure) are decided by measuring the "
-                "finished file; 'notes' carries everything that needs judgement. Anything "
-                "left on 'any' is not checked. Inert on a normal run."
+                "A review of the stage before it on the execution wire. Reviewer 'human' "
+                "stops the run and lets you choose what goes on; 'agent' has the QA agent "
+                "judge the outputs against your notes and the measured checks, and "
+                "carries on. Wire what is reviewed into 'anchor' and what to compare "
+                "against into 'reference'. Inert on a normal run."
             ),
             inputs=[
-                io.Autogrow.Input("judged", template=judged),
+                _exec_in(),
+                io.Combo.Input(
+                    "reviewer", options=["human", "agent"], default="human",
+                    tooltip=("human: the run stops here and waits for your continue. "
+                             "agent: the QA agent judges the outputs and the run goes on."),
+                ),
+                io.Autogrow.Input("anchors", template=judged),
                 io.String.Input(
                     "notes", multiline=True, default="",
                     placeholder=(
-                        "What needs judgement, in your own words — e.g. the character must "
-                        "match the reference; warm evening light; no text anywhere"
+                        "human: the question to put to you — e.g. which two read best as a "
+                        "wide?  •  agent: what needs judgement — e.g. the character must "
+                        "match the reference; no text anywhere"
                     ),
                     tooltip=(
-                        "Read by the QA model in your own words. Put the things a "
-                        "measurement cannot settle here: likeness, mood, framing, whether "
-                        "it looks right."
+                        "Human reviewer: the question you are asked when the run stops "
+                        "here (empty: which of the outputs should go on). Agent reviewer: "
+                        "what the QA model judges, in your own words - likeness, mood, "
+                        "framing, whether it looks right."
                     ),
                 ),
                 io.Combo.Input(
@@ -2446,29 +2398,24 @@ class AgentYQa(io.ComfyNode):
                 ),
                 io.Autogrow.Input("references", template=refs),
             ],
-            # Forwards the first wired `judge`, so a QA node spliced into a chain
-            # does not break the graph it is supposed to be invisible in.
-            outputs=[io.AnyType.Output(display_name="out")],
-            is_output_node=True,
+            # `out` first: it forwards the first wired anchor, so a review spliced
+            # into a data chain does not break the graph it annotates.
+            outputs=[io.AnyType.Output(display_name="out"), _exec_out()],
         )
 
     @classmethod
-    def execute(cls, notes="", aspect_ratio="any", resolution="any", sharpness="any",
-                grain="any", no_clipping=False, no_black_frames=False,
+    def execute(cls, reviewer="human", notes="", aspect_ratio="any", resolution="any",
+                sharpness="any", grain="any", no_clipping=False, no_black_frames=False,
                 no_stalled_motion=False, likeness="any", retries=0,
-                judged=None, references=None, **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
-        # Inert on a normal run: it says what the agent should check, and a plain
-        # Queue is not the agent. Forwarding the first wired `judge` keeps a
-        # spliced-in node honest — passing None down a live link would break the
-        # very graph this is meant to annotate without disturbing.
-        judged = judged or {}
-        first = next((v for v in judged.values() if v is not None), None)
-        return io.NodeOutput(first)
+                anchors=None, references=None, **_legacy) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        anchors = anchors or {}
+        first = next((v for v in anchors.values() if v is not None), None)
+        return io.NodeOutput(first, None)
 
 
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AgentYHook, AgentYQa, AgentYPython, AgentYText,
+        return [AgentYHook, AgentYReview, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
                 AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYContext]

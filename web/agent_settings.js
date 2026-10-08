@@ -494,8 +494,8 @@ const GROUP_NOTES = {
     + "pasting its address, its start command or its JSON config, or install a bundle "
     + "(.mcpb) file; Test connects once and lists the tools. Keys go to .env, never into "
     + "config/mcp.json. Servers load into the orchestrator on the next agent start.",
-  qa: "Checks finished images/videos against a QA briefing — an `agentY hook` with "
-    + "purpose \"qa\", a named file in briefing_dir, or /qa in the chat. With no "
+  qa: "Checks finished images/videos against a QA briefing — an `agentY review` node with "
+    + "the agent as its reviewer, a named file in briefing_dir, or /qa in the chat. With no "
     + "briefing nothing here runs. max_retries 0 reports the verdict without "
     + "re-generating; the judging model is the \"QA judge\" tier under "
     + "Models.",

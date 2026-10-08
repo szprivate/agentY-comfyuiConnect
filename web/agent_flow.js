@@ -1,15 +1,18 @@
 import { app } from "../../scripts/app.js";
 
-// The flow nodes of a hook pipeline: agentY loop start / agentY loop break.
-// Neither does work; they mark which hooks repeat and when the repeating ends
-// (the host reads them - src/utils/hook_flow.py). Here: their colour, and the
-// line under the title that says where a running loop stands.
+// The flow of a hook pipeline: which stage runs after which.
+//
+// Order is the EXECUTION WIRE, as in Unreal's node editor: every hook, loop and
+// review node has an `exec` input and an `exec` output of a socket type of its
+// own, and the stages run in the order that wire is drawn. A wire that splits
+// starts branches that run side by side. It carries no data - inputs and
+// outputs are only inputs and outputs - and the host reads nothing else for
+// order (src/utils/hook_flow.py).
+//
+// Reading the wire off the graph is agent_exec.js (pure, and tested under node).
+// Here: the wire's colour and the look of the loop nodes.
 
-export const FLOW_PURPOSE = { AgentYLoopStart: "loop_start", AgentYLoopBreak: "loop_break" };
-
-export function flowPurpose(node) {
-  return (node && (FLOW_PURPOSE[node.type] || FLOW_PURPOSE[node.comfyClass])) || "";
-}
+import { EXEC_TYPE, flowPurpose } from "./agent_exec.js";
 
 // { state: "running" | "met" | "out_of_rounds", round, max_rounds, forward: [names] }
 // -> the line shown on the break node. Pure, so it can be tested without a canvas.
@@ -35,9 +38,21 @@ export function flowTitle(title, state) {
 
 const COLOR = "#2f4858";
 const BGCOLOR = "#243642";
+// White, like Unreal's: the one wire on the canvas that is not data.
+const EXEC_COLOR = "#f2f2f2";
 
 app.registerExtension({
   name: "agentY.flow",
+  setup() {
+    try {
+      const LGC = window.LGraphCanvas;
+      if (LGC && LGC.link_type_colors) LGC.link_type_colors[EXEC_TYPE] = EXEC_COLOR;
+      const canvas = app.canvas;
+      if (canvas && canvas.default_connection_color_byType) {
+        canvas.default_connection_color_byType[EXEC_TYPE] = EXEC_COLOR;
+      }
+    } catch (_) { /* a colour is not worth failing a page load over */ }
+  },
   nodeCreated(node) {
     if (!flowPurpose(node)) return;
     node.color = node.color || COLOR;

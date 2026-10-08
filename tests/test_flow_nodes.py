@@ -11,6 +11,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CHAT = (ROOT / "web" / "agent_chat.js").read_text(encoding="utf-8")
 FLOW = (ROOT / "web" / "agent_flow.js").read_text(encoding="utf-8")
+FLOW_PURE = (ROOT / "web" / "agent_exec.js").read_text(encoding="utf-8")
 NODES = (ROOT / "__init__.py").read_text(encoding="utf-8")
 
 
@@ -27,9 +28,14 @@ class TheNodes(unittest.TestCase):
             self.assertIn(field, brk)
         self.assertIn('options=["best", "all that pass", "all"]', brk)
 
-    def test_they_take_anchors_like_a_hook_so_they_come_out_of_the_graph_the_same_way(self):
-        self.assertEqual(NODES.count("_flow_anchors()"), 3)   # the helper and one use per node
-        self.assertIn('prefix="anchor"', NODES.split("def _flow_anchors", 1)[1].split("class ", 1)[0])
+    def test_they_sit_on_the_execution_wire_and_carry_no_data(self):
+        for cls, end in (("AgentYLoopStart", "class AgentYLoopBreak"),
+                         ("AgentYLoopBreak", "# Number of (fixed)")):
+            body = NODES.split(f"class {cls}(io.ComfyNode):", 1)[1].split(end, 1)[0]
+            schema = body.split("def define_schema", 1)[1]
+            self.assertIn("_exec_in()", schema)
+            self.assertIn("outputs=[_exec_out()],", schema)
+            self.assertNotIn("anchor", schema)
 
 
 class TheContextNode(unittest.TestCase):
@@ -52,19 +58,19 @@ class ThePanel(unittest.TestCase):
 
     def test_flow_nodes_are_collected_with_the_hooks(self):
         nodes = CHAT.split("  _hookNodes() {", 1)[1].split("\n  }", 1)[0]
-        self.assertIn("|| flowPurpose(n)", nodes)
+        self.assertIn("graph._nodes.filter((n) => isExecNode(n))", nodes)
+        self.assertIn("isHookNode(node) || isReviewNode(node) || !!flowPurpose(node)", FLOW_PURE)
 
     def test_a_flow_node_is_sent_even_with_nothing_typed_in_it(self):
-        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  _isQaNode", 1)[0]
-        self.assertIn("const purpose = flow || String(w.purpose", collect)
-        self.assertIn("if (!flow && !hookReaches(purpose, directive)) continue;", collect)
+        stage = CHAT.split("  _isStage(n) {", 1)[1].split("\n  }\n", 1)[0]
+        self.assertLess(stage.index("if (flowPurpose(n)) return true;"), stage.index("hookReaches("))
 
-    def test_a_hook_wired_from_a_flow_node_is_a_chain_link(self):
-        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  _isQaNode", 1)[0]
-        self.assertIn('n.comfyClass === "AgentYHook" || !!flowPurpose(n));', collect)
+    def test_a_stage_after_a_loop_node_is_ordered_by_the_execution_wire(self):
+        base = CHAT.split("  _stageBase(hn) {", 1)[1].split("\n  _anchorEntry", 1)[0]
+        self.assertIn("const execPrev = this._execPrev(hn);", base)
 
     def test_the_break_sends_its_settings(self):
-        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  _isQaNode", 1)[0]
+        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  // ── review nodes", 1)[0]
         block = collect.split('flow === "loop_break" ? {', 1)[1].split("} : {}", 1)[0]
         for field in ("condition:", "max_rounds:", "forward:"):
             self.assertIn(field, block)
@@ -90,8 +96,8 @@ class ThePanel(unittest.TestCase):
             self.assertIn(text, FLOW)
 
     def test_the_state_in_the_title_is_not_sent_as_the_nodes_name(self):
-        collect = CHAT.split("  _collectCanvasHooks() {", 1)[1].split("\n  _isQaNode", 1)[0]
-        self.assertIn('title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),', collect)
+        base = CHAT.split("  _stageBase(hn) {", 1)[1].split("\n  _anchorEntry", 1)[0]
+        self.assertIn('title: String(hn.title || "").split(FLOW_TITLE_SEP)[0].trim(),', base)
 
 
 if __name__ == "__main__":
