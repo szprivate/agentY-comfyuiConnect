@@ -2848,13 +2848,15 @@ class AgentChat {
         // Only the ops that actually put something on a graph say where it went;
         // a review being released places nothing and must not claim otherwise,
         // and neither does a text answer whose node placement is switched off.
-        if (ev.op !== "review_released" && ev.op !== "prompt_version" && ev.op !== "flow_state"
+        if (ev.op !== "review_released" && ev.op !== "review_text"
+            && ev.op !== "prompt_version" && ev.op !== "flow_state"
             && !(ev.op === "place_text" && ev.place === false)) this._noteOffscreenDrop();
         if (ev.op === "place_text") this._placeCanvasText(ev);
         // A prompt version is a strip entry, not a node placement: the widget write
         // travels as its own ordinary patch beside it.
         else if (ev.op === "prompt_version") this._notePromptVersion(ev);
         else if (ev.op === "review_collector") this._reviewCollector(ev);
+        else if (ev.op === "review_text") this._reviewText(ev);
         else if (ev.op === "review_released") this._reviewReleased(ev);
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
         else if (ev.op === "set_mode") this._setNodeMode(ev);
@@ -4336,6 +4338,18 @@ class AgentChat {
   // The halt is over — the user continued or stopped. The collector node stays
   // exactly where it is: it is the record of what that stage ran with, and
   // deleting it would take the evidence away the moment it became history.
+  // A review hook that follows a WRITTEN stage: there are no files to collect,
+  // so nothing goes onto the canvas - the text is in the chat, and the stop is
+  // the same stop (the action bar offers Continue / Stop).
+  _reviewText(ev) {
+    window.agentYReviewHalted = true;
+    try {
+      window.dispatchEvent(new CustomEvent("agentY:review", { detail: { halted: true } }));
+    } catch (_) {}
+    this._sys(`⏸️ **Stopped for review** at hook #${ev.hook_node_id} — read the text `
+      + "above, then say **continue**, or say what to change.");
+  }
+
   _reviewReleased(ev) {
     window.agentYReviewHalted = false;
     try {
@@ -4343,7 +4357,8 @@ class AgentChat {
     } catch (_) {}
     this._sys(String(ev.answer) === "stop"
       ? "🛑 Run stopped at the review — nothing further was queued."
-      : "▶️ Continuing with what the collector holds.");
+      : ev.text ? "▶️ Continuing with the text as it stands."
+        : "▶️ Continuing with what the collector holds.");
   }
 
   // Place the agent's written answer to a TEXT hook onto the canvas as an
