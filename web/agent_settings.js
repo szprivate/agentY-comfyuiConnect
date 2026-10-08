@@ -352,10 +352,15 @@ function memoryEmbedderRow(container, settings, refs) {
 // The candidates are read from this ComfyUI's own node list by the host
 // (/agentY/settings -> media_node_choices): {image: {load: [{id, label}], save: [...]}, …}.
 let MEDIA_NODES = {};
-const MEDIA_KINDS = [["image", "Images"], ["video", "Videos"], ["audio", "Audio"]];
+const MEDIA_KINDS = [["image", "Images"], ["video", "Videos"], ["audio", "Audio"],
+                     ["model", "3D models"]];
 const MEDIA_ROLES = [["load", "load with"], ["save", "save with"]];
 const MEDIA_AUTO = { load: "Automatic — the first loader this ComfyUI has",
                      save: "Automatic — the save node the workflow was built with" };
+// Audio and 3D results have no built-in loader to fall back on: without a choice
+// they are named in the chat and not placed on the canvas.
+const MEDIA_AUTO_NO_LOADER = "Automatic — not placed on the canvas";
+const MEDIA_NO_DEFAULT_LOADER = ["audio", "model"];
 const MEDIA_NOTE = "Which node the agent uses to load a file onto the canvas, and which "
   + "node saves what a workflow produces. A chosen save node replaces the workflow's own "
   + "when it can take the same connection; otherwise the workflow keeps its own.";
@@ -363,9 +368,11 @@ const MEDIA_NOTE = "Which node the agent uses to load a file onto the canvas, an
 // One <select> per kind and role. A value that is set but not offered (the pack
 // was removed, or ComfyUI could not be asked) stays selectable, so opening the
 // page and saving never silently clears a choice.
-export function mediaNodeOptions(choices, current, role) {
+export function mediaNodeOptions(choices, current, role, kind) {
   const list = Array.isArray(choices) ? choices.slice() : [];
-  const options = [{ value: "", label: MEDIA_AUTO[role] || "Automatic" }];
+  const auto = role === "load" && MEDIA_NO_DEFAULT_LOADER.includes(kind)
+    ? MEDIA_AUTO_NO_LOADER : (MEDIA_AUTO[role] || "Automatic");
+  const options = [{ value: "", label: auto }];
   for (const c of list) options.push({ value: String(c.id), label: String(c.label || c.id) });
   if (current && !list.some((c) => String(c.id) === current)) {
     options.push({ value: current, label: `${current}  — not available in this ComfyUI` });
@@ -382,7 +389,7 @@ function mediaNodesRows(container, settings, refs) {
       const key = `${kind}_${role}`;
       const current = String(chosen[key] || "");
       const sel = el("select", { className: "ays-input" });
-      for (const o of mediaNodeOptions(((MEDIA_NODES || {})[kind] || {})[role], current, role)) {
+      for (const o of mediaNodeOptions(((MEDIA_NODES || {})[kind] || {})[role], current, role, kind)) {
         const opt = el("option", { value: o.value, textContent: o.label });
         if (o.value === current) opt.selected = true;
         sel.append(opt);

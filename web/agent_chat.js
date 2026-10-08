@@ -2615,7 +2615,8 @@ class AgentChat {
       // node and no line the result would exist only as a file nobody was told
       // about. During a turn that is a row in the run; outside one, a line.
       if (this.streaming) { this._runOutput(ev, false); return; }
-      this._sys(`🖼 ${ev.kind === "video" ? "Video" : "Image"} saved → \`${ev.path}\`` +
+      const what = { video: "Video", audio: "Audio", model: "3D model" }[ev.kind] || "Image";
+      this._sys(`🖼 ${what} saved → \`${ev.path}\`` +
                 "  \n_(not placed on the canvas — Settings ▸ Canvas)_");
       return;
     }
@@ -2657,7 +2658,8 @@ class AgentChat {
     // The built-in loaders first; a loader chosen in Settings may keep its file
     // under another name (bEpic's image loader: image_path).
     const wnames = (ev.kind === "image" ? ["image"] : ["video", "file", "path"])
-      .concat(["image_path", "video_path", "audio", "audio_path", "file_path", "filepath", "filename"]);
+      .concat(["image_path", "video_path", "audio", "audio_path", "model_file",
+               "file_path", "filepath", "filename"]);
     const w = wnames.map((n) => (node.widgets || []).find((x) => x.name === n)).find(Boolean);
     if (w) {
       // Two shapes of loader, two different things to write into them. A combo
