@@ -39,11 +39,20 @@ function graph(spec, wires) {
 const g = graph(
   [[10, "AgentYLoopStart"], [4, "AgentYHook"], [12, "AgentYReview"], [11, "AgentYLoopBreak"],
    [18, "AgentYHook"], [29, "AgentYHook"], [50, "AgentYHook", 4], [51, "AgentYHook"],
-   [7, "KSampler"], [60, "AgentYHook"], [61, "AgentYHook"]],
+   [7, "KSampler"], [60, "AgentYHook"], [61, "AgentYHook"],
+   [70, "AgentYJoin"], [71, "AgentYHook"]],
   [[10, 4], [4, 12], [12, 11], [11, 18], [11, 29],      // a loop, then a fork
    [18, 50], [50, 51],                                  // 50 is bypassed
    [7, 60],                                             // an exec input fed by a foreign node
    [18, 61, true]]);                                    // a DATA wire only
+// A join has an exec input per branch: 51 (behind the bypassed 50) and 29.
+g.nodes[70].inputs = [{ name: "execs.exec0", type: EXEC_TYPE, link: 901 },
+                      { name: "execs.exec1", type: EXEC_TYPE, link: 902 },
+                      { name: "execs.exec2", type: EXEC_TYPE, link: null }];
+g.links[901] = { origin_id: 50, target_id: 70 };
+g.links[902] = { origin_id: 29, target_id: 70 };
+g.links[903] = { origin_id: 70, target_id: 71 };
+g.nodes[71].inputs[0].link = 903;
 const active = (n) => n.mode !== 4 && n.mode !== 2;
 const prev = (id) => execPredecessors(g, g.nodes[id], active);
 console.log(JSON.stringify({
@@ -53,6 +62,9 @@ console.log(JSON.stringify({
   through_bypassed: prev(51),
   foreign: prev(60),
   data_only: prev(61),
+  join: prev(70),
+  after_join: prev(71),
+  after_join_seen_through: execPredecessors(g, g.nodes[71], (n) => active(n) && n.type !== "AgentYJoin"),
   source: execSource(g, g.nodes[12]).id,
   kinds: [isExecNode(g.nodes[4]), isExecNode(g.nodes[12]), isExecNode(g.nodes[10]), isExecNode(g.nodes[7])],
   slots: [isExecSlot({ type: EXEC_TYPE }), isExecSlot({ name: "exec" }), isExecSlot({ name: "out", type: "*" })],
@@ -91,6 +103,14 @@ class ReadingTheWire(unittest.TestCase):
     def test_a_data_wire_is_not_order(self):
         self.assertEqual(self.r["data_only"], [])
 
+    def test_a_join_runs_after_every_wire_into_it(self):
+        # one per branch - and the bypassed stage on one of them is seen through
+        self.assertEqual(self.r["join"], ["18", "29"])
+        self.assertEqual(self.r["after_join"], ["70"])
+
+    def test_a_join_that_is_itself_out_of_the_run_passes_all_its_wires_on(self):
+        self.assertEqual(self.r["after_join_seen_through"], ["18", "29"])
+
     def test_hooks_reviews_and_loop_nodes_carry_the_wire(self):
         self.assertEqual(self.r["kinds"], [True, True, True, False])
         self.assertEqual(self.r["slots"], [True, True, False])
@@ -119,6 +139,15 @@ class TheSocket(unittest.TestCase):
         outs = hook.split("outputs=[", 1)[1]
         self.assertLess(outs.index('io.AnyType.Output(display_name="out")'), outs.index("_exec_out()"))
 
+    def test_the_join_grows_an_exec_input_per_branch(self):
+        join = NODES.split("class AgentYJoin(io.ComfyNode):", 1)[1].split("# Number of (fixed)", 1)[0]
+        self.assertIn('input=_Exec.Input("exec"), prefix="exec"', join)
+        self.assertIn('io.Autogrow.Input("execs", template=wires)', join)
+        self.assertIn("outputs=[_exec_out()],", join)
+        listed = NODES.split("async def get_node_list", 1)[1].split("async def comfy_entrypoint", 1)[0]
+        self.assertIn("AgentYJoin", listed)
+        self.assertIn('AgentYJoin: "join"', (WEB / "agent_exec.js").read_text(encoding="utf-8"))
+
     def test_the_loop_nodes_carry_only_the_wire(self):
         start = NODES.split("class AgentYLoopStart(io.ComfyNode):", 1)[1].split("class AgentYLoopBreak", 1)[0]
         self.assertIn("inputs=[_exec_in()],", start)
@@ -143,9 +172,10 @@ class ThePanel(unittest.TestCase):
 
     def test_the_wire_is_taken_out_of_the_captured_graph(self):
         cap = CHAT.split("  async _captureCanvasGraph() {", 1)[1].split("\n  }\n", 1)[0]
-        self.assertIn("delete node.inputs.exec;", cap)
-        self.assertIn('const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", '
-                      '"AgentYLoopBreak"];', CHAT)
+        self.assertIn('if (key === "exec" || key.startsWith("execs.")) delete node.inputs[key];', cap)
+        classes = CHAT.split("const EXEC_CLASSES = [", 1)[1].split("];", 1)[0]
+        for cls in ("AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak", "AgentYJoin"):
+            self.assertIn(f'"{cls}"', classes)
 
     def test_a_node_that_is_not_a_stage_is_passed_through(self):
         prev = CHAT.split("  _execPrev(n) {", 1)[1].split("\n  }\n", 1)[0]

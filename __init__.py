@@ -1028,6 +1028,39 @@ class AgentYLoopBreak(io.ComfyNode):
         return io.NodeOutput(None)
 
 
+class AgentYJoin(io.ComfyNode):
+    """Where branches of the execution wire come back together.
+
+    A wire that splits starts branches that run side by side, each in its own
+    conversation. Wire the end of every branch into an ``exec`` input here (a new
+    one appears each time), and ``exec`` out into what comes next: that stage runs
+    once ALL of them have finished - and, where a branch has a review, once that
+    review is answered. Then the pipeline is one line again.
+
+    No settings. Inert on a normal Queue.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        wires = io.Autogrow.TemplatePrefix(
+            input=_Exec.Input("exec"), prefix="exec", min=0, max=_MAX_ANCHORS,
+        )
+        return io.Schema(
+            node_id="AgentYJoin",
+            display_name="agentY join",
+            category="agentY/flow",
+            search_aliases=["join", "merge", "wait", "sync", "parallel"],
+            description=("Where branches of the execution wire meet. The stage after this "
+                         "node runs once every branch wired into it has finished."),
+            inputs=[io.Autogrow.Input("execs", template=wires)],
+            outputs=[_exec_out()],
+        )
+
+    @classmethod
+    def execute(cls, execs=None, **_ignored) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        return io.NodeOutput(None)
+
+
 # Number of (fixed) output slots on the Python node. Executable nodes can't
 # auto-grow outputs (the count is fixed at registration), so we declare a small
 # set of any-type outs; a snippet typically fills just out0.
@@ -2418,7 +2451,8 @@ class _AgentYExtension(ComfyExtension):
         return [AgentYHook, AgentYReview, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
-                AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYContext]
+                AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYJoin,
+                AgentYContext]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

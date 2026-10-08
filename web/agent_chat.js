@@ -25,7 +25,8 @@ import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrig
 
 // The node classes the execution wire runs through; their `exec` input is taken
 // out of a captured graph (see _captureCanvasGraph).
-const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak"];
+const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak",
+                      "AgentYJoin"];
 
 // Where /help opens: the GitHub-rendered usage guide (images render inline).
 const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agentY.md";
@@ -4870,7 +4871,10 @@ class AgentChat {
       if (graph) {
         for (const node of Object.values(graph)) {
           if (node && node.inputs && EXEC_CLASSES.includes(String(node.class_type || ""))) {
-            delete node.inputs.exec;
+            // `exec` on a stage; `execs.exec0`, `execs.exec1`, … on a join.
+            for (const key of Object.keys(node.inputs)) {
+              if (key === "exec" || key.startsWith("execs.")) delete node.inputs[key];
+            }
           }
         }
       }
