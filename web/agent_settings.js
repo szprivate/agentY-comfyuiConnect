@@ -53,6 +53,7 @@ const SECTIONS = [
                             "hooks_into_canvas", "hook_subgraph_min_nodes",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
                             "comfyui_console_lines"] },
+  { title: "Load & save nodes", extra: "mediaNodes" },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
   { title: "Slack", inline: ["slack"] },
   { title: "Updates", keys: ["auto_update", "update_channel"] },
@@ -347,6 +348,55 @@ function memoryEmbedderRow(container, settings, refs) {
   return true;
 }
 
+// Which node loads and which node saves each kind of file (settings.media_nodes).
+// The candidates are read from this ComfyUI's own node list by the host
+// (/agentY/settings -> media_node_choices): {image: {load: [{id, label}], save: [...]}, …}.
+let MEDIA_NODES = {};
+const MEDIA_KINDS = [["image", "Images"], ["video", "Videos"], ["audio", "Audio"]];
+const MEDIA_ROLES = [["load", "load with"], ["save", "save with"]];
+const MEDIA_AUTO = { load: "Automatic — the first loader this ComfyUI has",
+                     save: "Automatic — the save node the workflow was built with" };
+const MEDIA_NOTE = "Which node the agent uses to load a file onto the canvas, and which "
+  + "node saves what a workflow produces. A chosen save node replaces the workflow's own "
+  + "when it can take the same connection; otherwise the workflow keeps its own.";
+
+// One <select> per kind and role. A value that is set but not offered (the pack
+// was removed, or ComfyUI could not be asked) stays selectable, so opening the
+// page and saving never silently clears a choice.
+export function mediaNodeOptions(choices, current, role) {
+  const list = Array.isArray(choices) ? choices.slice() : [];
+  const options = [{ value: "", label: MEDIA_AUTO[role] || "Automatic" }];
+  for (const c of list) options.push({ value: String(c.id), label: String(c.label || c.id) });
+  if (current && !list.some((c) => String(c.id) === current)) {
+    options.push({ value: current, label: `${current}  — not available in this ComfyUI` });
+  }
+  return options;
+}
+
+function mediaNodesRows(container, settings, refs) {
+  const chosen = (settings || {}).media_nodes;
+  if (!chosen || typeof chosen !== "object") return false;
+  container.append(el("div", { className: "ays-note ays-keynote", textContent: MEDIA_NOTE }));
+  for (const [kind, kindLabel] of MEDIA_KINDS) {
+    for (const [role, roleLabel] of MEDIA_ROLES) {
+      const key = `${kind}_${role}`;
+      const current = String(chosen[key] || "");
+      const sel = el("select", { className: "ays-input" });
+      for (const o of mediaNodeOptions(((MEDIA_NODES || {})[kind] || {})[role], current, role)) {
+        const opt = el("option", { value: o.value, textContent: o.label });
+        if (o.value === current) opt.selected = true;
+        sel.append(opt);
+      }
+      refs.push({ path: ["media_nodes", key], get: () => sel.value });
+      const row = el("div", { className: "ays-row" });
+      row.append(el("label", { className: "ays-label", textContent: `${kindLabel} — ${roleLabel}`,
+                               title: `media_nodes.${key}` }), sel);
+      container.append(el("div", { className: "ays-field" }, [row]));
+    }
+  }
+  return true;
+}
+
 // Reasoning per agent: llm.thinking (per tier, on/off) and llm.thinking_roles (per
 // role, "" = as its tier). Not shown as groups of their own — each is a switch on
 // the model row it belongs to, where the choice is actually made.
@@ -622,6 +672,10 @@ function buildTopLevelSettings(container, settings, modelGroups, refs) {
     }
 
     if (section.extra === "memoryEmbedder" && memoryEmbedderRow(body, settings, refs)) wrote = true;
+    if (section.extra === "mediaNodes" && mediaNodesRows(body, settings, refs)) {
+      claimedObjects.add("media_nodes");
+      wrote = true;
+    }
 
     if (!wrote) continue;                       // nothing to show; no empty heading
     if (section.advanced) group.dataset.advanced = "1";
@@ -1442,6 +1496,8 @@ async function openAgentYSettingsModal() {
   const setForm = el("div");
   TIER_LABELS = data.tier_labels || {};
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
+  MEDIA_NODES = (data.media_node_choices && typeof data.media_node_choices === "object")
+    ? data.media_node_choices : {};
   buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
 
   // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)

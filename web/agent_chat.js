@@ -2654,8 +2654,11 @@ class AgentChat {
     }
     if (!grouped) node.pos = this._dropPos(null, node);
     if (this.streaming) this._runOutput(ev, true);
-    const wnames = ev.kind === "image" ? ["image"] : ["video", "file", "path"];
-    const w = (node.widgets || []).find((x) => wnames.includes(x.name));
+    // The built-in loaders first; a loader chosen in Settings may keep its file
+    // under another name (bEpic's image loader: image_path).
+    const wnames = (ev.kind === "image" ? ["image"] : ["video", "file", "path"])
+      .concat(["image_path", "video_path", "audio", "audio_path", "file_path", "filepath", "filename"]);
+    const w = wnames.map((n) => (node.widgets || []).find((x) => x.name === n)).find(Boolean);
     if (w) {
       // Two shapes of loader, two different things to write into them. A combo
       // widget is a list of what sits in ComfyUI's input directory, so it takes
