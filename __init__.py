@@ -962,12 +962,13 @@ class AgentYContext(io.ComfyNode):
     """Which sequence (or asset) and shot this graph works on.
 
     With this node on the canvas, every file the agentY agent produces is saved
-    under ComfyUI's output folder as
+    under ComfyUI's output folder in the bEpic layout:
 
-        <sequence>/<shot>_<suffix>_v###.<extension>
+        <Sequence>/<Shot>/images/v###/<shot>_v###_<suffix>
+        <Sequence>/<Shot>/videos/v###/<shot>_v###_<suffix>
 
     The agent adds the suffix from what the file is ("startframe") and the next
-    free version number. It can write to another shot or asset for part of a run
+    free version number, and writes the name into the save node before the run. It can write to another shot or asset for part of a run
     when the request asks for several ("the male lead and the woman").
 
     An AYON context node in the same graph wins over this one: sequence and shot
@@ -985,7 +986,7 @@ class AgentYContext(io.ComfyNode):
             display_name="agentY context",
             category="agentY",
             description=("Sequence / asset and shot for this graph. agentY then saves its outputs "
-                         "as <sequence>/<shot>_<suffix>_v###.<ext> in the output folder."),
+                         "under <Sequence>/<Shot>/images|videos/v###/<shot>_v###_<suffix> in the output folder."),
             inputs=[
                 io.String.Input("sequence", display_name="sequence / asset", default="",
                                 tooltip="The folder the files go into, e.g. 'spec' or 'characters'."),
