@@ -2585,9 +2585,12 @@ class AgentChat {
     if (ev.kind !== "image" && ev.kind !== "video") return;
     if (!ev.filename) return;                 // not staged: nothing this page can load
     // A turn re-read from its start (the panel re-attaching to a running turn)
-    // sends its outputs again: the picture is already in this log.
+    // sends its outputs again: the picture is already in this log. A picture the
+    // agent asked to be shown AGAIN (show_in_panel) is meant to appear a second
+    // time, further down - so those are told apart by their own id instead.
     for (const have of this.logEl.querySelectorAll(".ay-out")) {
-      if (have.dataset.file === ev.filename) return;
+      if (ev.again ? have.dataset.again === String(ev.again)
+                   : (!have.dataset.again && have.dataset.file === ev.filename)) return;
     }
     const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename);
     const media = ev.kind === "video"
@@ -2604,12 +2607,16 @@ class AgentChat {
       [media, el("div", { className: "ay-out-label", textContent: label })]);
     if (ev.index) card.dataset.index = String(ev.index);
     card.dataset.file = ev.filename;
+    if (ev.again) card.dataset.again = String(ev.again);
     this.logEl.append(card);
     this._scroll(true);
   }
 
   injectNode(ev) {
     this._showOutput(ev);
+    // Shown again, not made again: the card is all of it. No node, and no line
+    // saying a file was saved.
+    if (ev && ev.again) return;
     // Dropping results onto the canvas can be switched off (Settings ▸ Canvas ▸
     // "Put results on the canvas"). The HOST decides — one answer covers a turn's
     // own stream, a background Magnific completion and a Slack-driven run alike,
