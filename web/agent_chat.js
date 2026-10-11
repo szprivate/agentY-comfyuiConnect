@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, hostPurpose, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
 import { flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
-import { flowPurpose, isHookNode, isReviewNode, isExecNode, isExecSlot, execSource,
+import { flowPurpose, isHookNode, isReviewNode, isEditNode, isExecNode, isExecSlot, execSource,
          execPredecessors } from "./agent_exec.js";
 import { isAgentReviewer } from "./agent_review.js";
 import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
@@ -28,7 +28,7 @@ import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrig
 // The node classes the execution wire runs through; their `exec` input is taken
 // out of a captured graph (see _captureCanvasGraph).
 const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak",
-                      "AgentYJoin"];
+                      "AgentYJoin", "AgentYEdit"];
 
 // Where /help opens: the GitHub-rendered usage guide (images render inline).
 const DOCS_URL = "https://github.com/szprivate/agentY/blob/main/docs/using-agentY.md";
@@ -4689,6 +4689,8 @@ class AgentChat {
       const s = this._reviewSettings(n);
       return !s.agent || !!s.notes || s.asked;
     }
+    // An edit with nothing wired into it has nothing to cut.
+    if (isEditNode(n)) return this._anchorsFor(n).length > 0;
     return false;
   }
 
@@ -4789,6 +4791,8 @@ class AgentChat {
         });
       } else if (isReviewNode(hn)) {
         hooks.push(this._reviewEntry(hn, base));
+      } else if (isEditNode(hn)) {
+        hooks.push(this._editEntry(hn, base, w));
       } else {
         hooks.push({
           ...base,
@@ -4812,6 +4816,27 @@ class AgentChat {
   //  • the QA agent -> `qa`: prose in `directive`, the measured checks in
   //    `technical`, the stages it judges in `applies_to`, what to compare against
   //    in `anchors` (the `reference` inputs).
+  // An `agentY edit` node: the shots are its anchors, like any stage's inputs;
+  // what the cut should follow and what lies under it travel beside them, in the
+  // same shape, so the host turns all three into files the same way.
+  _editEntry(n, base, w) {
+    const [width, height] = String(w.size || "1920x1080").split("x").map((v) => Number(v) || 0);
+    return {
+      ...base,
+      directive: String(w.brief || "").trim(),
+      purpose: "edit",
+      remember: false,
+      edit: {
+        width: width || 1920, height: height || 1080,
+        fps: Number(w.fps) || 24,
+        length: Number(w.length) || 0,
+        format: String(w.format || "mp4"),
+      },
+      reference: this._anchorsFor(n, "reference").map((l) => this._anchorEntry(l)),
+      audio: this._anchorsFor(n, "audio").map((l) => this._anchorEntry(l)),
+    };
+  }
+
   _reviewEntry(n, base) {
     const s = this._reviewSettings(n);
     if (!s.agent) {

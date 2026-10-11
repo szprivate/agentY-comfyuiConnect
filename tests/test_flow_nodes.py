@@ -59,7 +59,7 @@ class ThePanel(unittest.TestCase):
     def test_flow_nodes_are_collected_with_the_hooks(self):
         nodes = CHAT.split("  _hookNodes() {", 1)[1].split("\n  }", 1)[0]
         self.assertIn("graph._nodes.filter((n) => isExecNode(n))", nodes)
-        self.assertIn("isHookNode(node) || isReviewNode(node) || !!flowPurpose(node)", FLOW_PURE)
+        self.assertIn("isHookNode(node) || isReviewNode(node) || isEditNode(node) || !!flowPurpose(node)", FLOW_PURE)
 
     def test_a_flow_node_is_sent_even_with_nothing_typed_in_it(self):
         stage = CHAT.split("  _isStage(n) {", 1)[1].split("\n  }\n", 1)[0]

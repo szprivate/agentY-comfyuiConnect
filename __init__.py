@@ -2446,13 +2446,84 @@ class AgentYReview(io.ComfyNode):
         return io.NodeOutput(first, None)
 
 
+EDIT_FORMATS = ["mp4", "mov"]
+EDIT_SIZES = ["1920x1080", "1280x720", "3840x2160", "1080x1920", "1080x1080", "2048x858"]
+
+
+class AgentYEdit(io.ComfyNode):
+    """A stage that cuts finished shots into one film.
+
+    Wire the shots into ``anchor`` - a save node, a collector, or the output of
+    the review that approved them (a new input appears each time). On a pipeline
+    run the agent builds a TIMELINE from them (which clip, from where to where,
+    in which order, cut or dissolve), the host renders it, and the film comes out
+    of ``out``. Put an ``agentY review`` behind it and your notes ("shot 3
+    shorter") change the timeline rather than starting over.
+
+    ``reference`` takes a film whose rhythm the cut should follow; ``audio`` a
+    piece of music or sound laid under the whole of it.
+
+    Inert on a normal Queue: it is worked by the agent, like a hook.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        clips = io.Autogrow.TemplatePrefix(
+            input=io.AnyType.Input("anchor"), prefix="anchor", min=0, max=_MAX_ANCHORS,
+        )
+        return io.Schema(
+            node_id="AgentYEdit",
+            display_name="agentY edit",
+            category="agentY",
+            search_aliases=["edit", "cut", "timeline", "assemble", "montage", "film"],
+            description=("Cuts the shots wired into it into one film. The agent keeps a "
+                         "timeline, the host renders it; review notes change the cut."),
+            inputs=[
+                _exec_in(),
+                io.Autogrow.Input("anchors", template=clips),
+                io.AnyType.Input(
+                    "reference", optional=True,
+                    tooltip="A film whose rhythm the cut should follow: its shot "
+                            "lengths become the template.",
+                ),
+                io.AnyType.Input(
+                    "audio", optional=True,
+                    tooltip="Music or sound laid under the whole film.",
+                ),
+                io.String.Input(
+                    "brief", multiline=True, default="",
+                    placeholder=("what the cut should be — e.g. open on the kitchen, hold "
+                                 "the last shot, quick in the middle; no dissolves"),
+                    tooltip="What the edit should do, in your own words. Empty: the "
+                            "shots in the order of the screenplay, straight cuts.",
+                ),
+                io.Combo.Input("size", options=EDIT_SIZES, default="1920x1080",
+                               tooltip="Every shot is scaled to fit and padded, never stretched."),
+                io.Int.Input("fps", default=24, min=1, max=120),
+                io.Float.Input(
+                    "length", default=0.0, min=0.0, max=3600.0, step=0.5,
+                    tooltip="How long the film should be, in seconds. 0: as long as "
+                            "the shots make it.",
+                ),
+                io.Combo.Input("format", options=EDIT_FORMATS, default="mp4",
+                               tooltip="mp4: H.264, for looking at. mov: ProRes 422 HQ, "
+                                       "for handing on."),
+            ],
+            outputs=[io.AnyType.Output(display_name="out"), _exec_out()],
+        )
+
+    @classmethod
+    def execute(cls, **_ignored) -> io.NodeOutput:  # noqa: ANN001, ARG003
+        return io.NodeOutput(None, None)
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [AgentYHook, AgentYReview, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
                 AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYJoin,
-                AgentYContext]
+                AgentYEdit, AgentYContext]
 
 
 async def comfy_entrypoint() -> ComfyExtension:

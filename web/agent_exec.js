@@ -21,10 +21,12 @@ const classOf = (node) => String((node && (node.type || node.comfyClass)) || "")
 
 export function isHookNode(node) { return classOf(node) === "AgentYHook"; }
 export function isReviewNode(node) { return classOf(node) === "AgentYReview"; }
+// The stage that cuts finished shots into one film.
+export function isEditNode(node) { return classOf(node) === "AgentYEdit"; }
 
 /** A node the execution wire runs through: a hook, a review, a loop node, a join. */
 export function isExecNode(node) {
-  return isHookNode(node) || isReviewNode(node) || !!flowPurpose(node);
+  return isHookNode(node) || isReviewNode(node) || isEditNode(node) || !!flowPurpose(node);
 }
 
 /** Is this socket (an input or an output) the execution wire? */
