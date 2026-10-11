@@ -11,7 +11,10 @@ export const STATE_MARK = { pending: "○", done: "●", waiting: "⏸", approve
 export const STATE_WORD = {
   pending: "not done yet", done: "done", waiting: "waiting for you", approved: "approved",
 };
-const BRANCH_MARK = { running: "🟢", queued: "⏳", done: "✓", failed: "✗", stopped: "⏹", new: "·" };
+// "closed" - all of its work approved; "replaced" - the approach changed and a
+// fresh branch took its stages. Neither takes another turn.
+const BRANCH_MARK = { running: "🟢", queued: "⏳", done: "✓", failed: "✗", stopped: "⏹", new: "·",
+                      closed: "🔒", replaced: "↺" };
 
 export function stageMark(row) {
   if (!row) return STATE_MARK.pending;
