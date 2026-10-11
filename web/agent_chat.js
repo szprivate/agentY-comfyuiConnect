@@ -6,6 +6,8 @@ import { flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
 import { flowPurpose, isHookNode, isReviewNode, isExecNode, isExecSlot, execSource,
          execPredecessors } from "./agent_exec.js";
 import { isAgentReviewer } from "./agent_review.js";
+import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
+         stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -589,7 +591,6 @@ class AgentChat {
                                 // of the graph, which workflows are open in the tabs)
     this._startHeartbeat();       // notice a host that crashes or is stopped while we sit idle
     this._registerHostLocation(); // record where agentY lives so "Start server" works when it's down
-    this._loadAutograph();        // reflect the host's current auto-graph setting on the toggle
     this._loadPromptLoop();       // and this conversation's prompt loop + its versions
 
     // Say so in the panel. Coming back from an offline overlay is obvious enough
@@ -599,43 +600,6 @@ class AgentChat {
     if (wasDown || restarted) {
       this._sys(firstBoot ? "🟢 agentY host connected — ready."
                           : "🟢 agentY host is back — ready.", { transient: true });
-    }
-  }
-
-  // ── auto-graph toggle (autoload_workflows_into_canvas) ───────────────────────
-  _setAutographUI(on, envLocked) {
-    this._autograph = !!on;
-    this._autographEnvLocked = !!envLocked;
-    if (!this.autographBtn) return;
-    this.autographBtn.classList.toggle("ay-on", this._autograph);
-    this.autographBtn.title =
-      "Auto-graph workflows onto canvas: " + (this._autograph ? "ON" : "OFF") +
-      (envLocked ? " — locked by the AGENTY_CANVAS_AUTOLOAD env var" : " — click to toggle");
-  }
-
-  async _loadAutograph() {
-    try {
-      const r = await fetch(backendBase() + "/agentY/autograph", { cache: "no-store" });
-      const j = await r.json();
-      if (j && j.ok) this._setAutographUI(!!j.enabled, !!j.env_locked);
-    } catch (_) { /* host down / route absent — leave the button in its default state */ }
-  }
-
-  async _toggleAutograph() {
-    if (this._autographEnvLocked) return; // env var wins; the setting can't take effect
-    const next = !this._autograph;
-    this._setAutographUI(next, false); // optimistic
-    try {
-      const r = await fetch(backendBase() + "/agentY/autograph", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      const j = await r.json();
-      if (!j || !j.ok) throw new Error((j && j.error) || "toggle failed");
-      this._setAutographUI(!!j.enabled, false);
-    } catch (_) {
-      this._setAutographUI(!next, false); // revert on failure
     }
   }
 
@@ -954,7 +918,9 @@ class AgentChat {
           // its shots, a shot its lead sent more work — to be followed live.
           await this._syncRunState();
         }
-        if (this._shotLead()) this._refreshShotBar();
+        // While a run is on screen its plan is kept current: the record changes
+        // in turns this page did not start (a branch finishing, a lead woken).
+        if (this._shotLead() || hasPlan(this._plan)) this._refreshShotBar();
         // A turn with no browser behind it (one asked for from Slack) cannot
         // capture the graph itself, so the host asks us to. This tick is the
         // only regular contact the panel has with it.
@@ -1120,7 +1086,25 @@ class AgentChat {
        step, ahead of the agent's closing words. */
     .ay-rundock{display:flex;flex-direction:column;}
     .ay-rundock-slot{display:flex;flex-direction:column;}
-    .ay-shotbar{display:flex;flex-wrap:wrap;gap:5px;padding:6px 12px;border-bottom:1px solid var(--ay-border);background:var(--ay-surface);flex-shrink:0;}
+    .ay-shotbar{display:flex;flex-direction:column;gap:5px;padding:6px 12px;border-bottom:1px solid var(--ay-border);background:var(--ay-surface);flex-shrink:0;}
+    .ay-planhead{display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+    .ay-planchips{display:flex;flex-wrap:wrap;gap:5px;}
+    .ay-planline{flex:1;min-width:0;text-align:left;background:transparent;border:0;padding:1px 0;color:var(--ay-text);font-size:11.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ay-planline[hidden],.ay-planbody[hidden]{display:none;}
+    .ay-planline:hover{color:var(--ay-accent,#6f97ff);}
+    .ay-planbody{display:flex;flex-direction:column;gap:1px;max-height:38vh;overflow-y:auto;padding-bottom:2px;}
+    .ay-plangroup{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;opacity:.7;margin-top:5px;background:transparent;border:0;color:var(--ay-text);text-align:left;padding:0;}
+    button.ay-plangroup{cursor:pointer;}
+    button.ay-plangroup:hover,.ay-plangroup.ay-on{opacity:1;color:var(--ay-accent,#6f97ff);}
+    .ay-planrow{display:flex;gap:6px;align-items:baseline;background:transparent;border:0;border-radius:5px;color:var(--ay-text);font-size:11.5px;text-align:left;padding:2px 4px;cursor:pointer;}
+    .ay-planrow:hover{background:rgba(111,151,255,.12);}
+    .ay-planmark{width:1.1em;text-align:center;flex-shrink:0;}
+    .ay-planname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ay-plannote{opacity:.65;white-space:nowrap;font-size:10.5px;}
+    .ay-planrow[data-state="approved"] .ay-planmark{color:#6fcf8f;}
+    .ay-planrow[data-state="waiting"] .ay-planmark,.ay-planrow[data-state="waiting"] .ay-plannote{color:#ffcf6f;opacity:1;}
+    .ay-planrow[data-changed="1"] .ay-planmark,.ay-planrow[data-changed="1"] .ay-plannote{color:#ff9f6f;opacity:1;}
+    .ay-planrow[data-state="pending"] .ay-planname{opacity:.6;}
     .ay-shotbar[hidden]{display:none;}
     .ay-shotchip{background:transparent;color:var(--ay-text);border:1px solid var(--ay-border);border-radius:999px;padding:2px 9px;font-size:11.5px;cursor:pointer;white-space:nowrap;}
     .ay-shotchip:hover{border-color:var(--ay-accent,#6f97ff);}
@@ -1265,13 +1249,14 @@ class AgentChat {
     this.undoBtn = el("button", { className: "ay-btn", title: "Undo the agent's last step" });
     setButtonIcon(this.undoBtn, "undoStep", "↩");
     this.undoBtn.addEventListener("click", () => this.undoLastStep());
-    // Auto-graph toggle: flips `autoload_workflows_into_canvas` on the host. The
-    // viewers — message history, long-term memory, project memory, token usage —
-    // live in the agentY Settings modal (agent_settings.js), not in this bar;
-    // they open from there via the window.agentYOpen* globals.
-    this.autographBtn = el("button", { className: "ay-btn", title: "Auto-graph workflows onto canvas" });
-    setButtonIcon(this.autographBtn, "autograph", "🖼");
-    this.autographBtn.addEventListener("click", () => this._toggleAutograph());
+    // The plan of a pipeline run: opens the list of its stages under the bar (see
+    // _refreshShotBar). It took the place of the auto-graph toggle, which is a
+    // setting and lives with the others (Settings ▸ Canvas). The viewers — message
+    // history, long-term memory, project memory, token usage — are in the agentY
+    // Settings modal too (agent_settings.js), opened via window.agentYOpen*.
+    this.planBtn = el("button", { className: "ay-btn", title: "Plan — the stages of this pipeline run" });
+    setButtonIcon(this.planBtn, "plan", "☰");
+    this.planBtn.addEventListener("click", () => this._togglePlan());
     // Prompt loop: the agent writes each prompt into one node on the canvas and you
     // queue it yourself. Per conversation, so two threads can be refining two
     // different prompts; the strip above the composer is this loop's history.
@@ -1279,9 +1264,15 @@ class AgentChat {
     setButtonIcon(this.loopBtn, "promptLoop", "✍");
     this.loopBtn.addEventListener("click", () => this._togglePromptLoop());
     wrap.append(el("div", { className: "ay-bar" },
-      [this.threadSel, newBtn, delBtn, this.undoBtn, this.autographBtn, this.loopBtn]));
-    // A lead's shots (see _refreshShotBar).
-    this.shotBar = el("div", { className: "ay-shotbar", hidden: true });
+      [this.threadSel, newBtn, delBtn, this.undoBtn, this.planBtn, this.loopBtn]));
+    // The run on screen: one line always, the stages when opened (_refreshShotBar).
+    this.planLineEl = el("button", { className: "ay-planline",
+      title: "Show or hide the stages of this run" });
+    this.planLineEl.addEventListener("click", () => this._togglePlan());
+    this.planChipsEl = el("div", { className: "ay-planchips" });
+    this.planBodyEl = el("div", { className: "ay-planbody", hidden: true });
+    this.shotBar = el("div", { className: "ay-shotbar", hidden: true },
+      [el("div", { className: "ay-planhead" }, [this.planLineEl, this.planChipsEl]), this.planBodyEl]);
     wrap.append(this.shotBar);
 
     // message log — the on-screen conversation's (see _makeCtx; _show swaps it).
@@ -1934,37 +1925,45 @@ class AgentChat {
     return this._leadIds && this._leadIds.has(id) ? id : null;
   }
 
-  // The strip under the top bar while a lead or one of its shots is on screen:
-  // the lead and every shot with where it stands; click one to open it.
+  // The strip under the top bar: the pipeline run this conversation belongs to.
+  // One line that is always there while there is a run - how many stages are
+  // approved, what is waiting for you, how many branches are working - and,
+  // opened with the plan button, every stage grouped the way the run goes: what
+  // comes before the branches, each branch, what waits for them. The record is
+  // the host's (its run ledger); nothing here is worked out from the chat.
+  //
+  // It took over from the strip of shot chips. A stage row selects its node on
+  // the canvas; a branch's heading opens its conversation. A lead with shots but
+  // no pipeline still gets its chips.
   async _refreshShotBar() {
     if (!this.shotBar) return;
-    const lead = this._shotLead();
-    if (!lead) { this.shotBar.hidden = true; this.shotBar.replaceChildren(); return; }
+    const id = this.threadId;
+    const hide = () => {
+      this.shotBar.hidden = true; this._plan = null;
+      if (this.planBtn) this.planBtn.classList.remove("ay-on");
+    };
+    if (!id) { hide(); return; }
     let data = null;
     try {
-      const r = await fetch(backendBase() + "/agentY/threads/" + encodeURIComponent(lead) + "/shots",
+      const r = await fetch(backendBase() + "/agentY/threads/" + encodeURIComponent(id) + "/plan",
         { cache: "no-store" });
       if (r.ok) data = await r.json();
     } catch (_) {}
-    if (this._shotLead() !== lead) return;   // the user moved on meanwhile
-    if (!data || !(data.shots || []).length) {
-      this.shotBar.hidden = true; this.shotBar.replaceChildren(); return;
-    }
-    const icon = { running: "🟢", queued: "⏳", done: "✓", failed: "✗", stopped: "⏹", new: "·" };
-    const chip = (id, label, title) => {
-      const b = el("button", { className: "ay-shotchip" + (id === this.threadId ? " ay-on" : ""),
+    if (this.threadId !== id) return;        // the user moved on meanwhile
+    this._plan = data;
+    const chips = planChips(data, id);
+    if (!data || (!hasPlan(data) && !chips.length)) { hide(); return; }
+    const lead = data.lead_id;
+    const chip = (cid, label, title) => {
+      const b = el("button", { className: "ay-shotchip" + (cid === this.threadId ? " ay-on" : ""),
         textContent: label, title });
-      b.addEventListener("click", () => this.openThread(id));
+      b.addEventListener("click", () => this.openThread(cid));
       return b;
     };
-    const chips = [chip(lead, "◆ Lead", data.lead_title || "The lead conversation")];
-    for (const sh of data.shots) {
-      chips.push(chip(sh.thread_id, (icon[sh.status] || "·") + " " + sh.shot,
-        sh.status + (sh.report ? " — " + sh.report.slice(0, 160) : "")));
-    }
+    const els = chips.map((c) => chip(c.id, c.label, c.title));
     // Stop them all from here: the lead's own Stop only exists while ITS turn
     // runs, and shots keep working long after it has handed them their briefs.
-    if (data.shots.some((sh) => sh.status === "running" || sh.status === "queued")) {
+    if (anyBranchRunning(data)) {
       const stop = el("button", { className: "ay-shotchip ay-shotstop", textContent: "⏹ Stop shots",
         title: "Stop every running shot of this sequence (their conversations stay)" });
       stop.addEventListener("click", async () => {
@@ -1978,10 +1977,77 @@ class AgentChat {
         this._sys(names.length ? "⏹ Stopped shots: " + names.join(", ") + "." : "⏹ No shot was running.");
         setTimeout(() => this._refreshShotBar(), 1500);
       });
-      chips.push(stop);
+      els.push(stop);
     }
-    this.shotBar.replaceChildren(...chips);
+    this.planChipsEl.replaceChildren(...els);
+    const line = planLine(data);
+    this.planLineEl.hidden = !line;
+    this.planLineEl.textContent = line ? (this._planOpen ? "▾ " : "▸ ") + "Plan: " + line : "";
+    this._renderPlanBody(data);
     this.shotBar.hidden = false;
+  }
+
+  // Opened or closed by the plan button and by the line itself; remembered for
+  // the session, so it stays as you left it from one conversation to the next.
+  _togglePlan() {
+    this._planOpen = !this._planOpen;
+    if (!hasPlan(this._plan)) {
+      // Nothing to open. Say so once instead of a button that does nothing.
+      this._planOpen = false;
+      this._sys("_No pipeline run in this conversation yet — the plan lists the stages "
+        + "of a hook pipeline once one has started._", { transient: true });
+      return;
+    }
+    this._refreshShotBar();
+  }
+
+  _renderPlanBody(data) {
+    const open = !!this._planOpen && hasPlan(data);
+    if (this.planBtn) this.planBtn.classList.toggle("ay-on", open);
+    this.planBodyEl.hidden = !open;
+    if (!open) { this.planBodyEl.replaceChildren(); return; }
+    const rows = [];
+    for (const g of data.groups) {
+      // A branch's heading is the way into its conversation.
+      const tid = g.kind === "branch" ? g.thread_id : "";
+      const head = el(tid ? "button" : "div", {
+        className: "ay-plangroup" + (tid && tid === this.threadId ? " ay-on" : ""),
+        textContent: groupLabel(g),
+        title: tid ? "Open this branch's conversation" : "" });
+      if (tid) head.addEventListener("click", () => this.openThread(tid));
+      rows.push(head);
+      for (const s of g.stages || []) {
+        const row = el("button", { className: "ay-planrow", title: stageTitle(s) }, [
+          el("span", { className: "ay-planmark", textContent: stageMark(s) }),
+          el("span", { className: "ay-planname", textContent: stageLabel(s) }),
+          el("span", { className: "ay-plannote", textContent: stageNote(s) }),
+        ]);
+        row.dataset.state = s.state || "pending";
+        if (s.changed) row.dataset.changed = "1";
+        row.addEventListener("click", () => this._selectCanvasNode(s.id));
+        rows.push(row);
+      }
+    }
+    this.planBodyEl.replaceChildren(...rows);
+  }
+
+  // Put a stage's node in front of the user: selected and in view.
+  _selectCanvasNode(id) {
+    try {
+      const graph = app.graph;
+      const node = graph && graph.getNodeById && (graph.getNodeById(Number(id)) || graph.getNodeById(id));
+      const canvas = app.canvas;
+      if (!node || !canvas) {
+        this._sys("_Node " + id + " is not on the graph that is open now._", { transient: true });
+        return;
+      }
+      if (canvas.selectNode) canvas.selectNode(node, false);
+      else if (canvas.select) canvas.select(node);
+      if (canvas.centerOnNode) canvas.centerOnNode(node);
+      if (canvas.setDirty) canvas.setDirty(true, true);
+    } catch (err) {
+      console.warn("[agentY] could not select node", id, err);
+    }
   }
 
   // Reflect the current threadId in the dropdown. With no active thread — a fresh
@@ -2915,6 +2981,7 @@ class AgentChat {
         // Stages marked for folding are folded now, once nothing in this turn
         // still addresses their nodes one by one.
         this._foldPending();
+        this._refreshShotBar();     // what this turn did to the plan
         // Unpin: outside a turn, "the graph in front of you" is the right answer
         // again, and holding a reference to a closed workflow keeps it alive.
         this._reportCheckpointCanvas();

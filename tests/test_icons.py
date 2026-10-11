@@ -70,28 +70,24 @@ class TheIconMapIsWhole(unittest.TestCase):
         self.assertEqual(config()["viewBox"], "0 0 24 24")
 
 
-class TheAutoGraphToggle(unittest.TestCase):
-    """It uses lucide `replace-all`, which is what was asked for."""
+class ThePlanButton(unittest.TestCase):
+    """It took the auto-graph toggle's place in the bar, and uses lucide `list-checks`."""
 
-    def test_the_button_is_mapped_to_replace_all(self):
-        self.assertEqual(config()["buttons"]["autograph"], "replace-all")
+    def test_the_button_is_mapped_to_list_checks(self):
+        self.assertEqual(config()["buttons"]["plan"], "list-checks")
+        self.assertNotIn("autograph", config()["buttons"])
 
     def test_the_glyph_is_the_whole_glyph(self):
-        """Nine elements: eight paths and the rect. A truncated paste renders —
-        as most of an icon — so the count is the thing worth pinning."""
-        inner = config()["icons"]["replace-all"]
-        self.assertEqual(inner.count("<path"), 8)
-        self.assertEqual(inner.count("<rect"), 1)
+        inner = config()["icons"]["list-checks"]
+        self.assertEqual(inner.count("<path"), 5)
+        self.assertIn('d="m3 17 2 2 4-4"', inner)
+        self.assertIn('d="M13 18h8"', inner)
 
-    def test_a_couple_of_its_actual_paths(self):
-        inner = config()["icons"]["replace-all"]
-        self.assertIn('d="m3 7 3 3 3-3"', inner)
-        self.assertIn('<rect x="3" y="14" width="7" height="7" rx="1"/>', inner)
-
-    def test_the_panel_still_asks_for_it(self):
+    def test_the_panel_asks_for_it(self):
         """Both ends of the link. Mapping an icon nothing requests is as useless
         as requesting one nothing maps."""
-        self.assertIn("autograph", keys_used_in_js())
+        self.assertIn("plan", keys_used_in_js())
+        self.assertNotIn("autograph", keys_used_in_js())
 
 
 if __name__ == "__main__":
