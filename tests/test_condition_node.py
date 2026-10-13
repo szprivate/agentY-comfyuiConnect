@@ -3,6 +3,9 @@
 The work (_condition.py) is tested without ComfyUI and without Ollama: the HTTP
 calls are stood in for.
 """
+import json
+import shutil
+import subprocess
 import importlib.util
 import pathlib
 import unittest
@@ -147,6 +150,40 @@ class TheNode(unittest.TestCase):
                      'io.Boolean.Output(display_name="met")', 'io.Float.Output(display_name="probability")',
                      'io.String.Output(display_name="report")', 'io.Image.Output(display_name="images")'):
             self.assertIn(part, self.BODY)
+
+    def test_it_carries_the_execution_wire_and_its_data_outputs_keep_their_places(self):
+        self.assertIn('_Exec.Input(\n                    "exec", optional=True,', self.BODY)
+        self.assertIn('io.Image.Input("images", optional=True', self.BODY)      # a loop's judge is handed files
+        outs = self.BODY.split("outputs=[", 1)[1].split("],", 1)[0]
+        order = [outs.index(n) for n in ('"met"', '"probability"', '"report"', '"images"', "_exec_out()")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("text, images, None, ui=", self.BODY)
+
+    def test_the_panel_reports_it_only_when_it_is_on_the_wire(self):
+        web = ROOT / "web"
+        ex = (web / "agent_exec.js").read_text(encoding="utf-8")
+        chat = (web / "agent_chat.js").read_text(encoding="utf-8")
+        self.assertIn('AgentYCondition: "condition"', ex)
+        self.assertIn('if (flowPurpose(n) === "condition") return onExecWire(n);', chat)
+        self.assertIn('"AgentYLoopBreak", "AgentYCondition",', chat)             # its exec input leaves the graph
+        for field in ("condition: String(w.condition", "model: String(w.model", "threshold: Number(w.threshold",
+                      "batch: String(w.batch"):
+            self.assertIn(field, chat)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_on_the_wire_means_an_exec_socket_that_is_connected(self):
+        script = """
+import { onExecWire, flowPurpose, isExecNode, EXEC_TYPE } from %s;
+const node = (inLink, outLinks) => ({ type: "AgentYCondition",
+  inputs: [{ name: "exec", type: EXEC_TYPE, link: inLink }, { name: "images", type: "IMAGE", link: 5 }],
+  outputs: [{ name: "met", type: "BOOLEAN", links: [9] }, { name: "exec", type: EXEC_TYPE, links: outLinks }] });
+console.log(JSON.stringify([onExecWire(node(null, [])), onExecWire(node(3, [])), onExecWire(node(null, [4])),
+                            onExecWire(node(null, null)), flowPurpose(node(null, [])), isExecNode(node(null, []))]));
+""" % json.dumps((ROOT / "web" / "agent_exec.js").as_uri())
+        out = subprocess.run([shutil.which("node"), "--input-type=module", "-e", script],
+                             capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), [False, True, True, False, "condition", True])
 
     def test_the_model_is_fetched_when_the_node_first_runs_not_at_install(self):
         self.assertIn("C.ensure(model, progress=progress)", self.BODY)

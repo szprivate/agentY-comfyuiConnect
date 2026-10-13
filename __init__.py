@@ -2549,6 +2549,15 @@ class AgentYCondition(io.ComfyNode):
 
     A probability from these models says how sure the model is, not how often it
     is right - a threshold is a setting to tune on your own pictures.
+
+    **On the execution wire** (``exec`` in and out) the node is the JUDGE OF A
+    LOOP: put it between an ``agentY loop start`` and an ``agentY loop break`` and
+    every round of that loop is judged by its statements - by this model, at this
+    threshold - instead of by the QA agent. It needs no picture wired in for
+    that: the agent hands it the files each round made. The loop ends when one of
+    them meets the condition, or when the break's rounds run out. A break that
+    has a condition of its own still has it judged, by the QA agent, on what
+    passed here. Outside a loop the wire does nothing on this node.
     """
 
     @classmethod
@@ -2562,7 +2571,14 @@ class AgentYCondition(io.ComfyNode):
                          "`not:` in front of what must be false. The model is downloaded on "
                          "first use."),
             inputs=[
-                io.Image.Input("images", tooltip="The picture(s) the condition is about."),
+                _Exec.Input(
+                    "exec", optional=True,
+                    tooltip=("Execution wire. Between a loop start and a loop break this node "
+                             "judges every round of the loop; it carries no data.")),
+                io.Image.Input("images", optional=True,
+                               tooltip=("The picture(s) the condition is about. Not needed when the "
+                                        "node judges a loop on the execution wire: the agent hands "
+                                        "it each round's files.")),
                 io.String.Input(
                     "condition", multiline=True, default="",
                     placeholder="the woman looks frustrated\nnot: the woman looks angry",
@@ -2584,19 +2600,23 @@ class AgentYCondition(io.ComfyNode):
                 io.Float.Output(display_name="probability"),
                 io.String.Output(display_name="report"),
                 io.Image.Output(display_name="images"),
+                # Last, so the data outputs keep their places in saved workflows.
+                _exec_out(),
             ],
         )
 
     @classmethod
     def execute(cls, images=None, condition="", model="clef-flash", threshold=0.5,  # noqa: ANN001
-                batch=CONDITION_BATCH[0]) -> io.NodeOutput:
+                batch=CONDITION_BATCH[0], **_ignored) -> io.NodeOutput:
         from . import _condition as C
         statements = C.parse(condition)
         if not statements:
             raise RuntimeError("agentY condition: write at least one statement, e.g. "
                                "'the woman looks frustrated'.")
         if images is None or len(images) == 0:
-            raise RuntimeError("agentY condition: no picture arrived on `images`.")
+            raise RuntimeError("agentY condition: no picture arrived on `images`. (Without one the "
+                               "node only works as the judge of a loop, on the execution wire, "
+                               "where the agent hands it the files.)")
         bar = None
         try:
             import comfy.utils
@@ -2619,7 +2639,7 @@ class AgentYCondition(io.ComfyNode):
             raise RuntimeError(f"agentY condition: {exc}") from None
         met, score = C.combine(verdicts, batch)
         text = C.report(verdicts, met, model, float(threshold))
-        return io.NodeOutput(bool(met), float(score), text, images, ui={"text": [text]})
+        return io.NodeOutput(bool(met), float(score), text, images, None, ui={"text": [text]})
 
 
 def _condition_make_room(need_gb: float) -> None:

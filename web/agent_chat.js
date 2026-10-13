@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { hookReaches, hostPurpose, wireIntoAnchor, showPythonResult } from "./agent_hook.js";
 import { flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
-import { flowPurpose, isHookNode, isReviewNode, isEditNode, isExecNode, isExecSlot, execSource,
+import { flowPurpose, isHookNode, isReviewNode, isEditNode, isExecNode, isExecSlot, execSource, onExecWire,
          execPredecessors } from "./agent_exec.js";
 import { isAgentReviewer } from "./agent_review.js";
 import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
@@ -27,7 +27,7 @@ import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrig
 
 // The node classes the execution wire runs through; their `exec` input is taken
 // out of a captured graph (see _captureCanvasGraph).
-const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak",
+const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak", "AgentYCondition",
                       "AgentYJoin", "AgentYEdit"];
 
 // Where /help opens: the GitHub-rendered usage guide (images render inline).
@@ -4680,6 +4680,10 @@ class AgentChat {
   //    author had not asked for it.
   _isStage(n) {
     if (!this._active(n)) return false;
+    // A condition node is a real node too: only one drawn onto the execution
+    // wire is a stage. Left alone it judges the picture wired into it, and
+    // reporting it would turn a plain graph into a pipeline.
+    if (flowPurpose(n) === "condition") return onExecWire(n);
     if (flowPurpose(n)) return true;
     if (isHookNode(n)) {
       const w = this._widgetSnapshot(n);
@@ -4703,7 +4707,8 @@ class AgentChat {
   // called, where its data goes and comes from, and where it sits in the order.
   _stageBase(hn) {
     const links = this._anchorsFor(hn);
-    const isStageNode = (n) => isExecNode(n);
+    // (A condition node's outputs are a real node's, wire or no wire.)
+    const isStageNode = (n) => isExecNode(n) && flowPurpose(n) !== "condition";
     // An anchor wired FROM another stage reads that stage's value (resolved at
     // run time), so it is recorded in prev_hook_id(s)/prev_links. An anchor from
     // a real node is material. With auto-grow a stage can carry several of each;
@@ -4787,6 +4792,14 @@ class AgentChat {
             condition: String(w.condition || "").trim(),
             max_rounds: Number(w.max_rounds) || 3,
             forward: String(w.forward || "best"),
+          } : {}),
+          // A condition node judges the loop it is in: its statements, the
+          // decision model that answers them, and how sure it must be.
+          ...(flow === "condition" ? {
+            condition: String(w.condition || "").trim(),
+            model: String(w.model || "clef-flash"),
+            threshold: Number(w.threshold) || 0.5,
+            batch: String(w.batch || ""),
           } : {}),
         });
       } else if (isReviewNode(hn)) {

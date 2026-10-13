@@ -11,7 +11,11 @@ export const EXEC_TYPE = "AGENTY_EXEC";
 
 // The loop nodes, by what they are to the host.
 export const FLOW_PURPOSE = { AgentYLoopStart: "loop_start", AgentYLoopBreak: "loop_break",
-                              AgentYJoin: "join" };
+                              AgentYJoin: "join",
+                              // The judge of the loop it is wired into. Unlike the others it is
+                              // also a real node (it judges a picture wired into it), so it is a
+                              // flow node only while it is ON the wire - see onExecWire.
+                              AgentYCondition: "condition" };
 
 export function flowPurpose(node) {
   return (node && (FLOW_PURPOSE[node.type] || FLOW_PURPOSE[node.comfyClass])) || "";
@@ -27,6 +31,13 @@ export function isEditNode(node) { return classOf(node) === "AgentYEdit"; }
 /** A node the execution wire runs through: a hook, a review, a loop node, a join. */
 export function isExecNode(node) {
   return isHookNode(node) || isReviewNode(node) || isEditNode(node) || !!flowPurpose(node);
+}
+
+/** Is `node` wired into the execution wire, by its exec input or its exec output? */
+export function onExecWire(node) {
+  if (!node) return false;
+  return (node.inputs || []).some((i) => isExecSlot(i) && i.link != null)
+      || (node.outputs || []).some((o) => isExecSlot(o) && o.links && o.links.length > 0);
 }
 
 /** Is this socket (an input or an output) the execution wire? */
