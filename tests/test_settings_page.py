@@ -63,9 +63,13 @@ class HowRowsAreNamed(unittest.TestCase):
         self.assertIn('"llm.ollama.num_ctx": "Context Window Size"', JS)
         self.assertIn('"llm.ollama.max_tokens": "Max Output Tokens"', JS)
 
-    def test_the_window_says_what_zero_came_to(self):
+    def test_the_window_shows_the_number_it_was_worked_out_to(self):
         self.assertIn('KEY_NOTES["llm.ollama.num_ctx"]', JS)
         self.assertIn("data.ollama_window", JS)
+        self.assertIn('if (win.auto && Number(win.window) > 0) AUTO_VALUES["llm.ollama.num_ctx"] = Number(win.window);', JS)
+        # the field shows that number; untouched, the file keeps its -1
+        self.assertIn("const shown = worked !== undefined ? worked : val;", JS)
+        self.assertIn("return n === shown ? val : n;", JS)
 
     def test_a_blank_path_says_where_it_goes(self):
         self.assertIn("SETTING_DEFAULTS = (data.setting_defaults", JS)

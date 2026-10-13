@@ -109,6 +109,11 @@ const isProviderUrl = (key) => /_BASE_URL$/.test(key);
 // pressing Save would write this machine's paths into every setting.
 let SETTING_DEFAULTS = {};
 
+// Number settings that are stored as "work it out" (-1) and were worked out to
+// a number on this machine: { "llm.ollama.num_ctx": 98304 }. The field shows the
+// number; -1 typed into it goes back to working it out.
+let AUTO_VALUES = {};
+
 // What can be picked for the models the agent loads itself (/agentY/settings ->
 // aux_model_choices): { "decision.router_model": [{id, label}], ... }.
 let AUX_CHOICES = {};
@@ -665,8 +670,16 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     input.checked = val;
     refs.push({ path, get: () => input.checked });
   } else if (typeof val === "number") {
-    input = el("input", { type: "number", className: "ays-input", value: String(val) });
-    refs.push({ path, get: () => { const n = Number(input.value); return Number.isNaN(n) ? val : n; } });
+    // A setting whose stored value means "work it out" shows what that came to
+    // (AUTO_VALUES); untouched, the file keeps its "work it out".
+    const worked = AUTO_VALUES[path.join(".")];
+    const shown = worked !== undefined ? worked : val;
+    input = el("input", { type: "number", className: "ays-input", value: String(shown) });
+    refs.push({ path, get: () => {
+      const n = Number(input.value);
+      if (input.value === "" || Number.isNaN(n)) return val;
+      return n === shown ? val : n;
+    } });
   } else if (Array.isArray(val)) {
     input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
     refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
@@ -1725,13 +1738,18 @@ async function openAgentYSettingsModal() {
   EXTRA_MODEL_DIRS = Array.isArray(data.comfyui_extra_model_dirs) ? data.comfyui_extra_model_dirs : [];
   // The window's note says what "0" came to on this machine.
   const win = data.ollama_window || {};
+  AUTO_VALUES = {};
+  if (win.auto && Number(win.window) > 0) AUTO_VALUES["llm.ollama.num_ctx"] = Number(win.window);
   KEY_NOTES["llm.ollama.num_ctx"] = "How many tokens a local model holds at once: what goes into a call and what "
-    + "comes out of it. 0 works it out at startup - the largest window, up to the model's own, with which the "
-    + "largest local model the agents use still fits the graphics card. It is not simply the model's own window: "
-    + "Ollama sets aside memory for the whole window when it loads the model, used or not, and a model that no "
-    + "longer fits the card runs on the CPU. Set a number to overrule it."
-    + (win.window ? (win.auto ? ` Now: ${Number(win.window).toLocaleString("en-US")}` + (win.why ? ` (${win.why}).` : ".")
-                              : ` Now: ${Number(win.window).toLocaleString("en-US")}, set by hand.`) : "");
+    + "comes out of it. "
+    + (win.auto && win.window
+      ? "This number was worked out at startup" + (win.why ? ` (${win.why})` : "") + ": the largest window, up to the "
+        + "model's own, with which the largest local model the agents use still fits the graphics card. Type a number "
+        + "to fix it yourself; -1 goes back to working it out. "
+      : "Set by hand. -1 has it worked out at startup: the largest window, up to the model's own, with which the "
+        + "largest local model the agents use still fits the graphics card. ")
+    + "It is not simply the model's own window: Ollama sets aside memory for the whole window when it loads the "
+    + "model, used or not, and a model that no longer fits the card runs on the CPU.";
   KEY_NOTES["llm.ollama.max_tokens"] = "The most a local model may write in one answer. It is taken out of the "
     + "window: what a call may send is the window less this.";
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
