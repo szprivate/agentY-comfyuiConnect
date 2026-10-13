@@ -39,6 +39,8 @@ function isSecret(key) {
 //   inline   nested path whose leaves are shown directly, with no sub-heading
 //   open     start expanded instead of collapsed
 //   advanced hidden unless "Show advanced settings" is on
+//   aux      a sub-group of sub-groups: { title, objects } - "Auxiliary models"
+//   envUrls  the providers' endpoint variables of .env, shown here as fields
 //
 // Anything not claimed by a section still appears, under "Other" — a new setting
 // must never become unreachable just because this list was not updated.
@@ -46,8 +48,14 @@ const SECTIONS = [
   // Models first and OPEN. It is the setting people come here to change, and it
   // used to be two collapsed levels down ("Models & providers" -> "Model tiers").
   { title: "Models", open: true, inline: ["llm", "tiers"],
-    objects: [["llm", "pipeline"]], extra: "memoryEmbedder" },
+    objects: [["llm", "pipeline"]], extra: "memoryEmbedder",
+    // The models the agent loads itself, beside the language models: each does
+    // one job, and each is a choice of model like the ones above.
+    aux: { title: "Auxiliary models", objects: [["decision"], ["annotate"], ["likeness"]] } },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
+  // Where each provider is reached. They are .env variables (a key and its
+  // endpoint belong to one account), shown here because they are addresses.
+  { title: "LLM provider URLs", envUrls: true },
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
                             "hooks_into_canvas", "hook_subgraph_min_nodes",
@@ -61,16 +69,42 @@ const SECTIONS = [
   // read the startup warning should find them without checking a box first.
   { title: "Security", inline: ["security"] },
   { title: "Memory", inline: ["memory"], advanced: true },
-  { title: "Providers", advanced: true,
-    keys: [], objects: [["llm", "ollama"], ["llm", "anthropic"], ["llm", "dashscope"]],
-    inlineExtra: ["llm"] },   // llm's own scalars (history_window, model hints)
+  { title: "LLM providers", advanced: true,
+    keys: [], objects: [["llm", "ollama"]],
+    inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Files & logs", advanced: true,
     keys: ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir",
            "comfyui_custom_templates_dir", "output_dir", "output_workflows_dir",
            "conversation_db", "message_history_log", "tokens_usage_log"] },
-  { title: "Prompts", inline: ["system_prompts"], advanced: true },
-  { title: "Annotation", inline: ["annotate"], advanced: true },
 ];
+
+// Settings that are in the file and not on the page. Each is either set
+// somewhere better (a model's reasoning on its row under Models, Ollama's
+// address under Connections, the embedder as a choice under Models) or is not a
+// thing to tune from a form at all (which prompt file a role reads, a hosted
+// provider's fallback model). They are read and kept as they are: the page
+// writes only what it shows.
+const HIDDEN = new Set([
+  "memory.embedder", "memory.llm",
+  "llm.vision_models", "llm.text_only_models",
+  "llm.ollama.host", "llm.ollama.think",
+  "llm.anthropic", "llm.dashscope", "llm.openai", "llm.google",
+  "system_prompts",
+]);
+const isHidden = (path) => HIDDEN.has(path.join("."));
+
+// A row's name where the key does not say what it is.
+const LEAF_LABELS = {
+  "llm.ollama.num_ctx": "Max Token Window (Input + Output)",
+  "llm.ollama.max_tokens": "Max Output Tokens",
+};
+
+// The providers' endpoints among the .env variables.
+const isProviderUrl = (key) => /_BASE_URL$/.test(key);
+
+// What a blank path setting comes to on this machine (/agentY/settings ->
+// setting_defaults): shown in the empty field, so it says where things go.
+let SETTING_DEFAULTS = {};
 
 // Per-key notes, for the few settings whose name does not carry the trade-off.
 // The TOML comments never reach the browser, and this is the only place a switch
@@ -289,6 +323,9 @@ function buildModelSelect(groups, current, inheritable) {
 // from the settings file, so without this the UI is stuck with whatever the TOML
 // key is called — "pipeline" for what is really "which model does which job".
 const GROUP_LABELS = {
+  decision: "Decision models (routing, prompt check)",
+  annotate: "Finding things in pictures (SAM3)",
+  likeness: "Face matching (InsightFace)",
   pipeline: "Per-role overrides",
   qa: "Checking finished outputs",
   refine: "Refine loops",
@@ -328,7 +365,7 @@ function memoryEmbedderRow(container, settings, refs) {
   const current = String(emb.preset || "");
   const sel = el("select", { className: "ays-input" });
   const custom = el("option", { value: "", textContent:
-    `Set by hand (${emb.provider || "?"} · ${emb.model || "?"}) — advanced › Memory` });
+    `As the settings file has it (${emb.provider || "?"} · ${emb.model || "?"})` });
   if (!current) custom.selected = true;
   sel.append(custom);
   for (const c of EMBEDDERS) {
@@ -511,12 +548,27 @@ const GROUP_NOTES = {
     + "rarely for agents that make many quick tool calls.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
     + "that single job wants a different model from the rest of its tier.",
-  memory: "Long-term memory. The store is always local FAISS. The two models here "
-    + "are NOT interchangeable: the EMBEDDER turns text into vectors so memories "
-    + "can be searched by meaning (an embedding model does only this — it cannot "
-    + "write text, and a chat model cannot embed), while the LLM rewrites memories "
-    + "in its own words and is only used for `infer` writes. Leave the llm model "
-    + "blank and it follows the Fast utility tier, endpoint and key included.",
+  memory: "Long-term memory. The store is always local FAISS. Its embedder is "
+    + "chosen under Models; what rewrites a memory in its own words is the Fast "
+    + "utility tier.",
+  "Auxiliary models": "Models the agent loads itself, beside the language models "
+    + "above: each does one small job. The ones that run through Ollama are "
+    + "downloaded the first time they are needed.",
+  decision: "Small models that answer one question with a probability instead of "
+    + "writing: whether a request is about the graph that is open (router), and "
+    + "whether a finished picture shows what its prompt asked for (prompt check). "
+    + "They run through Ollama on this machine; \"auto\" uses them when Ollama is "
+    + "there, \"off\" never.",
+  annotate: "SAM3 finds a named thing in a picture, for the agent's own looking. "
+    + "Blank paths are searched for in ComfyUI's models folder.",
+  likeness: "Compares a face in a result with a face in a reference, for QA "
+    + "checks that ask for the same person. Runs on the CPU.",
+  "LLM provider URLs": "The address each hosted provider is reached at. Change one "
+    + "only for another region or a gateway of your own; the keys are under "
+    + "Authentication. Ollama's address is under Connections.",
+  ollama: "How local models are run. The window is the model's whole memory of a "
+    + "call - what goes in and what comes out; the output allowance is taken from "
+    + "it. Which model, and whether it reasons, is set on its row under Models.",
   embedder: "Used when \"Memory embedder\" under Models is set by hand. Blank "
     + "api_key_env falls back to the provider's usual variable. A change re-embeds "
     + "every stored memory (the old index is kept as a backup).",
@@ -540,6 +592,8 @@ const GROUP_NOTES = {
 // by section title or, for a nested group, by its settings key.
 const GROUP_FAMILY = {
   models: "models", "per-role overrides": "models", providers: "models", pipeline: "models",
+  "llm providers": "models", "auxiliary models": "models", decision: "models", likeness: "models",
+  "llm provider urls": "connections",
   ollama: "models", anthropic: "models", dashscope: "models", pricing: "models",
   connections: "connections", "files & logs": "connections", prompts: "connections",
   system_prompts: "connections",
@@ -573,6 +627,7 @@ function makeCollapsibleGroup(key, suffix, open) {
 // register its ref for save-time collection.
 function renderLeafRow(container, key, val, path, modelGroups, refs) {
   if (path.join(".") === "memory.embedder.preset" && EMBEDDERS.length) return;
+  if (isHidden(path)) return;
   // A switch whose name does not carry its trade-off gets the trade-off written
   // out. Hovering is not discovery: nobody hovers a setting they have not already
   // decided to think about. The note goes UNDER its own row, inside one block with
@@ -589,6 +644,10 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
   if (path[0] === "llm" && path[1] === "tiers" && TIER_LABELS[key]) {
     label.textContent = TIER_LABELS[key];
     label.title = key;
+  }
+  if (LEAF_LABELS[path.join(".")]) {
+    label.textContent = LEAF_LABELS[path.join(".")];
+    label.title = path.join(".");
   }
   if (typeof val === "boolean") {
     input = el("input", { type: "checkbox", className: "ays-input" });
@@ -611,15 +670,19 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     input = searchableSelect(sel, { placeholder: "Type a model name…" });
   } else {
     input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
+    // Blank because the machine supplies it: the field says what that comes to.
+    const fallback = SETTING_DEFAULTS[path.join(".")] || "";
+    if (fallback) { input.placeholder = fallback; input.title = "Blank: " + fallback; }
     refs.push({ path, get: () => input.value });
   }
   row.append(input);
   const think = thinkingControl(path, key, refs);
   if (think) row.append(think);
   field.append(row);
-  if (KEY_NOTES[key]) {
+  const note = KEY_NOTES[path.join(".")] || KEY_NOTES[key];
+  if (note) {
     field.classList.add("ays-hasnote");
-    field.append(el("div", { className: "ays-note ays-keynote", textContent: KEY_NOTES[key] }));
+    field.append(el("div", { className: "ays-note ays-keynote", textContent: note }));
   }
   container.append(field);
 }
@@ -629,6 +692,7 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
 function buildSettingsForm(container, obj, modelGroups, pathPrefix, refs) {
   for (const [key, val] of Object.entries(obj)) {
     const path = pathPrefix.concat(key);
+    if (isHidden(path)) continue;
     if (val && typeof val === "object" && !Array.isArray(val)) {
       // "Per-role overrides (2 set)" — otherwise a collapsed group gives no hint
       // that something in it is quietly winning over the tier above.
@@ -657,9 +721,11 @@ function pathValue(settings, path) {
   return node && typeof node === "object" && !Array.isArray(node) ? node : null;
 }
 
-function buildTopLevelSettings(container, settings, modelGroups, refs) {
+function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRows) {
   const claimedScalars = new Set();
   const claimedObjects = new Set();      // joined settings paths, e.g. "llm.tiers"
+  // What the page does not show is not a leftover either.
+  for (const path of HIDDEN) claimedObjects.add(path);
   // Drawn as switches on the model rows (thinkingControl), not as groups.
   const llm = (settings && settings.llm) || {};
   THINKING = { tiers: llm.thinking || {}, roles: llm.thinking_roles || {} };
@@ -690,6 +756,7 @@ function buildTopLevelSettings(container, settings, modelGroups, refs) {
       if (note) body.append(el("div", { className: "ays-note", textContent: note }));
       for (const [k, v] of Object.entries(obj)) {
         if (v && typeof v === "object" && !Array.isArray(v)) continue;  // handled below
+        if (isHidden(inlinePath.concat(k))) continue;
         renderLeafRow(body, k, v, inlinePath.concat(k), modelGroups, refs);
         wrote = true;
       }
@@ -729,6 +796,30 @@ function buildTopLevelSettings(container, settings, modelGroups, refs) {
     }
 
     if (section.extra === "memoryEmbedder" && memoryEmbedderRow(body, settings, refs)) wrote = true;
+
+    // A group of groups: the models the agent loads besides the language models.
+    if (section.aux) {
+      const outer = makeCollapsibleGroup(section.aux.title, "", false);
+      let any = false;
+      for (const objPath of section.aux.objects) {
+        const obj = pathValue(settings, objPath);
+        claimedObjects.add(objPath.join("."));
+        if (!obj) continue;
+        const sub = makeCollapsibleGroup(objPath[objPath.length - 1], "", false);
+        outer.body.append(sub.group);
+        buildSettingsForm(sub.body, obj, modelGroups, objPath, refs);
+        any = true;
+      }
+      if (any) { body.append(outer.group); wrote = true; }
+    }
+
+    // The providers' endpoints: .env variables, so they are saved with the keys.
+    if (section.envUrls && envUrlRows && envUrlRows.length) {
+      const note = GROUP_NOTES[section.title];
+      if (note) body.append(el("div", { className: "ays-note", textContent: note }));
+      for (const row of envUrlRows) body.append(row);
+      wrote = true;
+    }
     if (section.extra === "mediaNodes" && mediaNodesRows(body, settings, refs)) {
       claimedObjects.add("media_nodes");
       wrote = true;
@@ -1475,7 +1566,7 @@ async function openAgentYSettingsModal() {
   const envSec = el("div", { className: "ays-sec" });
   envSec.append(el("h3", { textContent: "Authentication (.env)" }));
   envSec.append(el("div", { className: "ays-note", textContent:
-    "API keys and host settings, stored in .env on the agent host. Keys already " +
+    "API keys, stored in .env on the agent host. Keys already " +
     "set are shown masked — the host does not send them back. Type over one to " +
     "replace it; leave it alone and it stays as it is." }));
 
@@ -1498,11 +1589,17 @@ async function openAgentYSettingsModal() {
 
   // No "show values" toggle: the host sends a mask, never a secret, so revealing
   // the field would only show the mask back. A key is replaced by typing over it.
+  const envUrlRows = [];
   for (const key of data.env_keys || Object.keys(data.env || {})) {
     const cur = (data.env || {})[key] || "";
     const inp = el("input", { className: "ays-input", type: isSecret(key) ? "password" : "text", value: cur });
     envInputs[key] = { input: inp, original: cur };
     const label = el("label", { className: "ays-label", textContent: key });
+    // An endpoint is an address, not a secret: it goes under "LLM provider URLs".
+    if (isProviderUrl(key)) {
+      envUrlRows.push(el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [label, inp])]));
+      continue;
+    }
     const age = ages.get(key);
     if (age) {
       const days = Math.floor(age.age_days);
@@ -1541,7 +1638,7 @@ async function openAgentYSettingsModal() {
   const refs = [];
   const setSec = el("div", { className: "ays-sec" });
   setSec.append(el("h3", { textContent: "Application settings (config/settings.json)" }));
-  setSec.append(el("div", { className: "ays-note", textContent: "Model per stage (llm ▸ pipeline), directories, and behaviour toggles. Comments are preserved on save; only changed values are written." }));
+  setSec.append(el("div", { className: "ays-note", textContent: "Models, connections and behaviour. Comments are preserved on save; only changed values are written." }));
   // The host could not read its committed defaults, so what follows is only this
   // machine's overrides. Said up front, or a section with one checkbox in it just
   // looks like the settings went missing.
@@ -1552,10 +1649,20 @@ async function openAgentYSettingsModal() {
   }
   const setForm = el("div");
   TIER_LABELS = data.tier_labels || {};
+  SETTING_DEFAULTS = (data.setting_defaults && typeof data.setting_defaults === "object") ? data.setting_defaults : {};
+  // The window's note says what "0" came to on this machine.
+  const win = data.ollama_window || {};
+  KEY_NOTES["llm.ollama.num_ctx"] = "The model's whole window: what goes into a call and what comes out of it. "
+    + "0 works it out at startup from the graphics card's memory and the size of the largest local model the "
+    + "agents use - the largest window with which that model still fits the card. Set a number to overrule it."
+    + (win.window ? (win.auto ? ` Now: ${Number(win.window).toLocaleString("en-US")}` + (win.why ? ` (${win.why}).` : ".")
+                              : ` Now: ${Number(win.window).toLocaleString("en-US")}, set by hand.`) : "");
+  KEY_NOTES["llm.ollama.max_tokens"] = "The most a local model may write in one answer. It is taken out of the "
+    + "window: what a call may send is the window less this.";
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
   MEDIA_NODES = (data.media_node_choices && typeof data.media_node_choices === "object")
     ? data.media_node_choices : {};
-  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs);
+  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs, envUrlRows);
 
   // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)
   // stay hidden until asked for. They are real settings, not clutter — but showing
@@ -1564,7 +1671,7 @@ async function openAgentYSettingsModal() {
   const advWrap = el("label", {
     className: "ays-note",
     style: { display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" },
-  }, [advToggle, document.createTextNode("Show advanced settings (prompts, provider tuning, embedder)")]);
+  }, [advToggle, document.createTextNode("Show advanced settings (memory, local model tuning, files and logs)")]);
   const applyAdvanced = () => {
     for (const g of setForm.querySelectorAll('[data-advanced="1"]')) {
       g.style.display = advToggle.checked ? "" : "none";
