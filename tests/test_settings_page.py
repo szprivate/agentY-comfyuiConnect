@@ -60,7 +60,7 @@ class WhatIsKeptOffThePage(unittest.TestCase):
 class HowRowsAreNamed(unittest.TestCase):
 
     def test_the_window_and_the_output_allowance(self):
-        self.assertIn('"llm.ollama.num_ctx": "Max Token Window (Input + Output)"', JS)
+        self.assertIn('"llm.ollama.num_ctx": "Context Window Size"', JS)
         self.assertIn('"llm.ollama.max_tokens": "Max Output Tokens"', JS)
 
     def test_the_window_says_what_zero_came_to(self):

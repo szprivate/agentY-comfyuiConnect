@@ -95,7 +95,7 @@ const isHidden = (path) => HIDDEN.has(path.join("."));
 
 // A row's name where the key does not say what it is.
 const LEAF_LABELS = {
-  "llm.ollama.num_ctx": "Max Token Window (Input + Output)",
+  "llm.ollama.num_ctx": "Context Window Size",
   "llm.ollama.max_tokens": "Max Output Tokens",
 };
 
@@ -1725,9 +1725,11 @@ async function openAgentYSettingsModal() {
   EXTRA_MODEL_DIRS = Array.isArray(data.comfyui_extra_model_dirs) ? data.comfyui_extra_model_dirs : [];
   // The window's note says what "0" came to on this machine.
   const win = data.ollama_window || {};
-  KEY_NOTES["llm.ollama.num_ctx"] = "The model's whole window: what goes into a call and what comes out of it. "
-    + "0 works it out at startup from the graphics card's memory and the size of the largest local model the "
-    + "agents use - the largest window with which that model still fits the card. Set a number to overrule it."
+  KEY_NOTES["llm.ollama.num_ctx"] = "How many tokens a local model holds at once: what goes into a call and what "
+    + "comes out of it. 0 works it out at startup - the largest window, up to the model's own, with which the "
+    + "largest local model the agents use still fits the graphics card. It is not simply the model's own window: "
+    + "Ollama sets aside memory for the whole window when it loads the model, used or not, and a model that no "
+    + "longer fits the card runs on the CPU. Set a number to overrule it."
     + (win.window ? (win.auto ? ` Now: ${Number(win.window).toLocaleString("en-US")}` + (win.why ? ` (${win.why}).` : ".")
                               : ` Now: ${Number(win.window).toLocaleString("en-US")}, set by hand.`) : "");
   KEY_NOTES["llm.ollama.max_tokens"] = "The most a local model may write in one answer. It is taken out of the "
