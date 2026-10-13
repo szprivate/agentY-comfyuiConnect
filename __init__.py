@@ -2517,12 +2517,139 @@ class AgentYEdit(io.ComfyNode):
         return io.NodeOutput(None, None)
 
 
+# ── a condition, judged by a decision model ───────────────────────────────────
+# Decision models (Ollama's "decision" category) do not write: given a picture
+# and typed questions they answer each with a probability. clef and clef-flash
+# read images, which makes them a judge for things that cannot be measured from
+# the file - "does she look frustrated, but not angry?", "does the picture show
+# what was asked for?". The work is in _condition.py; this is the node.
+
+CONDITION_MODELS = ["clef-flash", "clef"]
+CONDITION_BATCH = ["every image must pass", "any image may pass", "first image only"]
+
+
+class AgentYCondition(io.ComfyNode):
+    """Is this true of the picture? A yes/no judged by a decision model.
+
+    Write the condition one statement per line; a line starting with ``not:``
+    must be false:
+
+        the woman looks frustrated
+        not: the woman looks angry
+
+    * ``met`` - every statement holds at the threshold.
+    * ``probability`` - how strongly the weakest statement holds (0..1).
+    * ``report`` - each statement with the model's probability.
+    * ``images`` - the pictures, passed through, so the node can sit in a chain.
+
+    ``model``: **clef-flash** (9B, about 10 GB) or **clef** (27B, about 18 GB), both
+    from Cloudflare, run by Ollama on this machine. Neither is part of any
+    install: the one you pick is downloaded through Ollama the first time the
+    node runs with it, and the node shows the progress.
+
+    A probability from these models says how sure the model is, not how often it
+    is right - a threshold is a setting to tune on your own pictures.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:  # noqa: N802
+        return io.Schema(
+            node_id="AgentYCondition",
+            display_name="agentY condition",
+            category="agentY/flow",
+            description=("Judge a yes/no condition about a picture with a decision model "
+                         "(clef / clef-flash, run locally by Ollama): one statement per line, "
+                         "`not:` in front of what must be false. The model is downloaded on "
+                         "first use."),
+            inputs=[
+                io.Image.Input("images", tooltip="The picture(s) the condition is about."),
+                io.String.Input(
+                    "condition", multiline=True, default="",
+                    placeholder="the woman looks frustrated\nnot: the woman looks angry",
+                    tooltip=("One statement per line, each something visible in the picture. "
+                             "Start a line with `not:` for something that must NOT be the case.")),
+                io.Combo.Input(
+                    "model", options=CONDITION_MODELS, default="clef-flash",
+                    tooltip=("clef-flash: 9B, about 10 GB, faster. clef: 27B, about 18 GB. "
+                             "Downloaded through Ollama the first time it is used.")),
+                io.Float.Input(
+                    "threshold", default=0.5, min=0.05, max=0.95, step=0.05,
+                    tooltip=("How sure the model must be of each statement. Higher is stricter. "
+                             "It is the model's confidence, not a measured accuracy.")),
+                io.Combo.Input("batch", options=CONDITION_BATCH, default=CONDITION_BATCH[0],
+                               tooltip="How a batch of pictures is judged as one condition."),
+            ],
+            outputs=[
+                io.Boolean.Output(display_name="met"),
+                io.Float.Output(display_name="probability"),
+                io.String.Output(display_name="report"),
+                io.Image.Output(display_name="images"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, images=None, condition="", model="clef-flash", threshold=0.5,  # noqa: ANN001
+                batch=CONDITION_BATCH[0]) -> io.NodeOutput:
+        from . import _condition as C
+        statements = C.parse(condition)
+        if not statements:
+            raise RuntimeError("agentY condition: write at least one statement, e.g. "
+                               "'the woman looks frustrated'.")
+        if images is None or len(images) == 0:
+            raise RuntimeError("agentY condition: no picture arrived on `images`.")
+        bar = None
+        try:
+            import comfy.utils
+            bar = comfy.utils.ProgressBar(100)
+        except Exception:  # noqa: BLE001
+            pass
+
+        def progress(done, total, status):
+            if bar is not None and total > 0:
+                bar.update_absolute(int(100 * done / total), 100)
+
+        try:
+            if C.ensure(model, progress=progress):
+                print(f"[agentY condition] downloaded {model} through Ollama.")
+            _condition_make_room(C.VRAM_GB.get(model, 11.0))
+            pictures = [images[0]] if batch == C.BATCH_MODES[2] else list(images)
+            verdicts = [C.judge(C.ask(model, C.encode(img.cpu().numpy() if hasattr(img, "cpu") else img),
+                                      statements), statements, float(threshold)) for img in pictures]
+        except C.ConditionError as exc:
+            raise RuntimeError(f"agentY condition: {exc}") from None
+        met, score = C.combine(verdicts, batch)
+        text = C.report(verdicts, met, model, float(threshold))
+        return io.NodeOutput(bool(met), float(score), text, images, ui={"text": [text]})
+
+
+def _condition_make_room(need_gb: float) -> None:
+    """Ask ComfyUI to unload its models when the card has no room for the judge.
+
+    One card for both: a decision model that does not fit beside what ComfyUI has
+    loaded would run on the CPU, and a third of a second becomes minutes. What was
+    unloaded is loaded again by whichever node needs it next.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return
+        free, _total = torch.cuda.mem_get_info()
+        if free / 2 ** 30 >= need_gb:
+            return
+        import comfy.model_management as mm
+        mm.unload_all_models()
+        mm.soft_empty_cache()
+    except Exception:  # noqa: BLE001 - best effort; the question is still asked
+        pass
+
+
 class _AgentYExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [AgentYHook, AgentYReview, AgentYPython, AgentYText,
                 AgentYImageCollector, AgentYVideoCollector, AgentYImageBatchExpand,
                 AgentYProjectMemoryGet, AgentYProjectMemorySet, AgentYRefNote,
                 AgentYLoadItem, AgentYLoopStart, AgentYLoopBreak, AgentYJoin,
+                AgentYCondition,
                 AgentYEdit, AgentYContext]
 
 
