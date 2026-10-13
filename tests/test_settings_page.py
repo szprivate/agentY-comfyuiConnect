@@ -71,6 +71,9 @@ class HowRowsAreNamed(unittest.TestCase):
         self.assertIn("const shown = worked !== undefined ? worked : val;", JS)
         self.assertIn("return n === shown ? val : n;", JS)
 
+    def test_the_output_allowance_shows_what_it_was_worked_out_to_as_well(self):
+        self.assertIn('if (win.output_auto && Number(win.output) > 0) AUTO_VALUES["llm.ollama.max_tokens"] = Number(win.output);', JS)
+
     def test_a_blank_path_says_where_it_goes(self):
         self.assertIn("SETTING_DEFAULTS = (data.setting_defaults", JS)
         self.assertIn('const full = SETTING_DEFAULTS[path.join(".")] || "";', JS)

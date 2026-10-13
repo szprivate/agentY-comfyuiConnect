@@ -1750,8 +1750,14 @@ async function openAgentYSettingsModal() {
         + "largest local model the agents use still fits the graphics card. ")
     + "It is not simply the model's own window: Ollama sets aside memory for the whole window when it loads the "
     + "model, used or not, and a model that no longer fits the card runs on the CPU.";
-  KEY_NOTES["llm.ollama.max_tokens"] = "The most a local model may write in one answer. It is taken out of the "
-    + "window: what a call may send is the window less this.";
+  if (win.output_auto && Number(win.output) > 0) AUTO_VALUES["llm.ollama.max_tokens"] = Number(win.output);
+  KEY_NOTES["llm.ollama.max_tokens"] = "The most a local model may write in one answer. "
+    + (win.output_auto && win.output
+      ? "This number was worked out from the window: 16,384, or a quarter of a smaller window. Type a number to fix "
+        + "it yourself; -1 goes back to working it out. "
+      : "Set by hand; -1 has it worked out from the window. ")
+    + "It is taken OUT of the window - what a call may send is the window less this - so a larger number does not "
+    + "make answers longer, it leaves the model less room for what it is sent.";
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
   MEDIA_NODES = (data.media_node_choices && typeof data.media_node_choices === "object")
     ? data.media_node_choices : {};
