@@ -17,9 +17,8 @@ class TheSections(unittest.TestCase):
 
     def test_their_names_in_order(self):
         titles = re.findall(r'^  \{ title: "([^"]+)"', SECTIONS, flags=re.M)
-        self.assertEqual(titles, ["Models", "Connections", "LLM provider URLs", "Canvas", "Load & save nodes",
-                                  "Output checks", "Slack", "Updates", "Security", "Memory", "LLM providers",
-                                  "Files & logs"])
+        self.assertEqual(titles, ["Models", "Connections", "LLM providers", "Canvas", "Load & save nodes",
+                                  "Output checks", "Slack", "Updates", "Security", "Memory", "Files & logs"])
 
     def test_prompts_and_annotation_are_not_sections(self):
         for gone in ('"Prompts"', '"Annotation"', '"Providers"'):
@@ -34,6 +33,8 @@ class TheSections(unittest.TestCase):
     def test_the_local_provider_is_the_only_one_with_settings(self):
         providers = SECTIONS.split('{ title: "LLM providers"', 1)[1].split("},", 1)[0]
         self.assertIn('objects: [["llm", "ollama"]]', providers)
+        self.assertIn("envUrls: true", providers)             # the endpoints are in the same section
+        self.assertNotIn("advanced", providers)               # and it is shown without asking
         self.assertNotIn("anthropic", providers)
         self.assertNotIn("dashscope", providers)
 
@@ -68,12 +69,27 @@ class HowRowsAreNamed(unittest.TestCase):
 
     def test_a_blank_path_says_where_it_goes(self):
         self.assertIn("SETTING_DEFAULTS = (data.setting_defaults", JS)
-        self.assertIn('const fallback = SETTING_DEFAULTS[path.join(".")] || "";', JS)
-        self.assertIn("input.placeholder = fallback", JS)
+        self.assertIn('const full = SETTING_DEFAULTS[path.join(".")] || "";', JS)
+        # shown in full; saved as the file had it unless the field was edited
+        self.assertIn("refs.push({ path, get: () => (input.value === shown ? stored : input.value) });", JS)
+
+    def test_comfyuis_other_model_folders_are_shown_and_not_edited(self):
+        self.assertIn('"comfyui_extra_model_dirs"', JS)
+        self.assertIn("input.readOnly = true;", JS)
+
+    def test_an_auxiliary_model_is_picked_from_a_searchable_list(self):
+        self.assertIn('Array.isArray(AUX_CHOICES[path.join(".")])', JS)
+        block = JS.split('Array.isArray(AUX_CHOICES[path.join(".")])', 1)[1].split("} else {", 1)[0]
+        self.assertIn("searchableSelect(sel", block)
+        self.assertIn("if (!choices.some((c) => c.id === current))", block)      # what is set stays pickable
+
+    def test_a_key_can_be_taken_out_of_env(self):
+        self.assertIn("Remove auth key", JS)
+        self.assertIn("if (envRemove.size) payload.env_remove = [...envRemove];", JS)
+        self.assertIn("if (envRemove.has(key)) continue;", JS)                 # a removed key is not also written
 
     def test_the_providers_endpoints_are_with_the_settings(self):
         self.assertIn("const isProviderUrl = (key) => /_BASE_URL$/.test(key);", JS)
-        self.assertIn('{ title: "LLM provider URLs", envUrls: true }', SECTIONS)
         # still saved as .env variables, with the keys
         self.assertIn("envInputs[key] = { input: inp, original: cur };", JS)
 

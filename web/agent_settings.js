@@ -53,9 +53,12 @@ const SECTIONS = [
     // one job, and each is a choice of model like the ones above.
     aux: { title: "Auxiliary models", objects: [["decision"], ["annotate"], ["likeness"]] } },
   { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
-  // Where each provider is reached. They are .env variables (a key and its
-  // endpoint belong to one account), shown here because they are addresses.
-  { title: "LLM provider URLs", envUrls: true },
+  // Where each provider is reached, and how the local one is run. The
+  // endpoints are .env variables (a key and its endpoint belong to one
+  // account), shown here because they are addresses.
+  { title: "LLM providers", envUrls: true,
+    keys: [], objects: [["llm", "ollama"]],
+    inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
                             "hooks_into_canvas", "hook_subgraph_min_nodes",
@@ -69,9 +72,6 @@ const SECTIONS = [
   // read the startup warning should find them without checking a box first.
   { title: "Security", inline: ["security"] },
   { title: "Memory", inline: ["memory"], advanced: true },
-  { title: "LLM providers", advanced: true,
-    keys: [], objects: [["llm", "ollama"]],
-    inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Files & logs", advanced: true,
     keys: ["comfyui_dir", "comfyui_models_dir", "comfyui_user_dir",
            "comfyui_custom_templates_dir", "output_dir", "output_workflows_dir",
@@ -102,9 +102,20 @@ const LEAF_LABELS = {
 // The providers' endpoints among the .env variables.
 const isProviderUrl = (key) => /_BASE_URL$/.test(key);
 
-// What a blank path setting comes to on this machine (/agentY/settings ->
-// setting_defaults): shown in the empty field, so it says where things go.
+// What a path setting comes to on this machine, in full (/agentY/settings ->
+// setting_defaults): a blank one resolved to where things really go, a relative
+// one to the folder it is read against. The field shows that; what is SAVED is
+// still what the file had, unless the field is edited - or opening the page and
+// pressing Save would write this machine's paths into every setting.
 let SETTING_DEFAULTS = {};
+
+// What can be picked for the models the agent loads itself (/agentY/settings ->
+// aux_model_choices): { "decision.router_model": [{id, label}], ... }.
+let AUX_CHOICES = {};
+
+// The folders ComfyUI loads models from besides its own. Not a setting of
+// agentY's - they are ComfyUI's extra model paths - so they are shown, not edited.
+let EXTRA_MODEL_DIRS = [];
 
 // Per-key notes, for the few settings whose name does not carry the trade-off.
 // The TOML comments never reach the browser, and this is the only place a switch
@@ -563,9 +574,10 @@ const GROUP_NOTES = {
     + "Blank paths are searched for in ComfyUI's models folder.",
   likeness: "Compares a face in a result with a face in a reference, for QA "
     + "checks that ask for the same person. Runs on the CPU.",
-  "LLM provider URLs": "The address each hosted provider is reached at. Change one "
+  "LLM providers": "The address each hosted provider is reached at - change one "
     + "only for another region or a gateway of your own; the keys are under "
-    + "Authentication. Ollama's address is under Connections.",
+    + "Authentication, Ollama's address under Connections - and, below, how local "
+    + "models are run.",
   ollama: "How local models are run. The window is the model's whole memory of a "
     + "call - what goes in and what comes out; the output allowance is taken from "
     + "it. Which model, and whether it reasons, is set on its row under Models.",
@@ -593,7 +605,6 @@ const GROUP_NOTES = {
 const GROUP_FAMILY = {
   models: "models", "per-role overrides": "models", providers: "models", pipeline: "models",
   "llm providers": "models", "auxiliary models": "models", decision: "models", likeness: "models",
-  "llm provider urls": "connections",
   ollama: "models", anthropic: "models", dashscope: "models", pricing: "models",
   connections: "connections", "files & logs": "connections", prompts: "connections",
   system_prompts: "connections",
@@ -668,12 +679,29 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     }
     refs.push({ path, get: () => sel.value });
     input = searchableSelect(sel, { placeholder: "Type a model name…" });
+  } else if (Array.isArray(AUX_CHOICES[path.join(".")]) && AUX_CHOICES[path.join(".")].length) {
+    // A model the agent loads itself: picked from a list, like the others.
+    const current = val == null ? "" : String(val);
+    const sel = el("select", { className: "ays-input" });
+    const choices = AUX_CHOICES[path.join(".")];
+    if (!choices.some((c) => c.id === current)) sel.append(el("option", { value: current, textContent: current || "(not set)" }));
+    for (const c of choices) sel.append(el("option", { value: c.id, textContent: c.label || c.id }));
+    sel.value = current;
+    refs.push({ path, get: () => sel.value });
+    input = searchableSelect(sel, { placeholder: "Type a model name…" });
   } else {
-    input = el("input", { type: "text", className: "ays-input", value: val == null ? "" : String(val) });
-    // Blank because the machine supplies it: the field says what that comes to.
-    const fallback = SETTING_DEFAULTS[path.join(".")] || "";
-    if (fallback) { input.placeholder = fallback; input.title = "Blank: " + fallback; }
-    refs.push({ path, get: () => input.value });
+    const stored = val == null ? "" : String(val);
+    // A path: shown in full, as it comes to on this machine.
+    const full = SETTING_DEFAULTS[path.join(".")] || "";
+    const isPath = !!full && /[\\/]/.test(full) && /^(?:[A-Za-z]:[\\/]|[\\/])/.test(full);
+    const shown = isPath ? full : stored;
+    input = el("input", { type: "text", className: "ays-input", value: shown });
+    if (full && !isPath) { input.placeholder = full; input.title = "Blank: " + full; }
+    if (isPath && shown !== stored) {
+      input.title = stored ? `In the settings file: ${stored}` : "Blank in the settings file: this is where it comes to on this machine.";
+    }
+    // Untouched, the file keeps what it had.
+    refs.push({ path, get: () => (input.value === shown ? stored : input.value) });
   }
   row.append(input);
   const think = thinkingControl(path, key, refs);
@@ -743,6 +771,20 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
       renderLeafRow(body, k, settings[k], [k], modelGroups, refs);
       claimedScalars.add(k);
       wrote = true;
+      // ComfyUI's other model folders, under its own: shown, not edited.
+      if (k === "comfyui_models_dir" && EXTRA_MODEL_DIRS.length) {
+        const field = el("div", { className: "ays-field ays-hasnote" });
+        EXTRA_MODEL_DIRS.forEach((dir, i) => {
+          const input = el("input", { type: "text", className: "ays-input", value: dir });
+          input.readOnly = true;
+          field.append(el("div", { className: "ays-row" }, [
+            el("label", { className: "ays-label", textContent: i ? "" : "comfyui_extra_model_dirs" }), input]));
+        });
+        field.append(el("div", { className: "ays-note ays-keynote", textContent:
+          "The folders ComfyUI loads models from besides its own, as it reports them. They are ComfyUI's "
+          + "extra model paths, set where ComfyUI is started - the agent reads them, it does not set them." }));
+        body.append(field);
+      }
     }
 
     // A nested group shown WITHOUT its own heading — the section heading is
@@ -814,10 +856,12 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
     }
 
     // The providers' endpoints: .env variables, so they are saved with the keys.
+    // They lead their section: put in front of what the loops above wrote.
     if (section.envUrls && envUrlRows && envUrlRows.length) {
+      const first = body.firstChild;
       const note = GROUP_NOTES[section.title];
-      if (note) body.append(el("div", { className: "ays-note", textContent: note }));
-      for (const row of envUrlRows) body.append(row);
+      if (note) body.insertBefore(el("div", { className: "ays-note", textContent: note }), first);
+      for (const row of envUrlRows) body.insertBefore(row, first);
       wrote = true;
     }
     if (section.extra === "mediaNodes" && mediaNodesRows(body, settings, refs)) {
@@ -1563,6 +1607,7 @@ async function openAgentYSettingsModal() {
 
   // ── .env auth section ──
   const envInputs = {};
+  const envRemove = new Set();          // keys to take out of .env on Save
   const envSec = el("div", { className: "ays-sec" });
   envSec.append(el("h3", { textContent: "Authentication (.env)" }));
   envSec.append(el("div", { className: "ays-note", textContent:
@@ -1616,7 +1661,24 @@ async function openAgentYSettingsModal() {
                  color: age.stale ? "#ffb454" : "inherit" },
       }));
     }
-    envSec.append(el("div", { className: "ays-row" }, [label, inp]));
+    const row = el("div", { className: "ays-row" }, [label, inp]);
+    // "Remove auth key" puts a button on every key that is set; pressing it
+    // marks the key, and Save takes its line out of .env.
+    if (cur) {
+      const rm = el("button", { className: "ays-btn ays-envrm", textContent: "Remove", title: `Take ${key} out of .env when you save` });
+      rm.style.display = "none";
+      rm.addEventListener("click", (e) => {
+        e.preventDefault();
+        const off = !envRemove.has(key);
+        if (off) envRemove.add(key); else envRemove.delete(key);
+        rm.textContent = off ? "Keep" : "Remove";
+        inp.disabled = off;
+        row.style.opacity = off ? "0.45" : "";
+        label.style.textDecoration = off ? "line-through" : "";
+      });
+      row.append(rm);
+    }
+    envSec.append(row);
   }
   // Add NEW .env keys (e.g. an MCP server's API key). The host appends them and
   // applies them to the live process, so a header-auth MCP server can reference
@@ -1631,7 +1693,16 @@ async function openAgentYSettingsModal() {
   };
   const addKeyBtn = el("button", { className: "ays-btn", textContent: "+ Add auth key" });
   addKeyBtn.addEventListener("click", (e) => { e.preventDefault(); addAKeyRow(); });
-  envSec.append(addKeysWrap, addKeyBtn);
+  const rmKeyBtn = el("button", { className: "ays-btn", textContent: "\u2212 Remove auth key",
+    title: "Show a Remove button on every key that is set. A key you mark is taken out of .env when you save." });
+  rmKeyBtn.style.marginLeft = "6px";
+  rmKeyBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const show = !rmKeyBtn.classList.contains("primary");
+    rmKeyBtn.classList.toggle("primary", show);
+    for (const b of envSec.querySelectorAll(".ays-envrm")) b.style.display = show ? "" : "none";
+  });
+  envSec.append(addKeysWrap, addKeyBtn, rmKeyBtn);
   body.append(envSec);
 
   // ── settings.json section ──
@@ -1650,6 +1721,8 @@ async function openAgentYSettingsModal() {
   const setForm = el("div");
   TIER_LABELS = data.tier_labels || {};
   SETTING_DEFAULTS = (data.setting_defaults && typeof data.setting_defaults === "object") ? data.setting_defaults : {};
+  AUX_CHOICES = (data.aux_model_choices && typeof data.aux_model_choices === "object") ? data.aux_model_choices : {};
+  EXTRA_MODEL_DIRS = Array.isArray(data.comfyui_extra_model_dirs) ? data.comfyui_extra_model_dirs : [];
   // The window's note says what "0" came to on this machine.
   const win = data.ollama_window || {};
   KEY_NOTES["llm.ollama.num_ctx"] = "The model's whole window: what goes into a call and what comes out of it. "
@@ -1671,7 +1744,7 @@ async function openAgentYSettingsModal() {
   const advWrap = el("label", {
     className: "ays-note",
     style: { display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" },
-  }, [advToggle, document.createTextNode("Show advanced settings (memory, local model tuning, files and logs)")]);
+  }, [advToggle, document.createTextNode("Show advanced settings (memory, files and logs)")]);
   const applyAdvanced = () => {
     for (const g of setForm.querySelectorAll('[data-advanced="1"]')) {
       g.style.display = advToggle.checked ? "" : "none";
@@ -1718,6 +1791,7 @@ async function openAgentYSettingsModal() {
     msg.textContent = "Saving…";
     const envChanges = {};
     for (const [key, { input, original }] of Object.entries(envInputs)) {
+      if (envRemove.has(key)) continue;
       if (input.value !== original) envChanges[key] = input.value;
     }
     for (const { name, val } of addKeyRows) {
@@ -1732,6 +1806,7 @@ async function openAgentYSettingsModal() {
     // server that references them.
     if (mcpOut && !mcpOut.error) Object.assign(envChanges, mcpOut.secrets);
     const payload = { env: envChanges, settings: collectSettings(refs) };
+    if (envRemove.size) payload.env_remove = [...envRemove];
     if (priceOut.payload && priceOut.changed) payload.pricing = priceOut.payload;
     try {
       // Offline, the MCP config rides in the same save: one process writes all
