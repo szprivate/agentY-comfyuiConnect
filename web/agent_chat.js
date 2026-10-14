@@ -2658,7 +2658,10 @@ class AgentChat {
       if (ev.again ? have.dataset.again === String(ev.again)
                    : (!have.dataset.again && have.dataset.file === ev.filename)) return;
     }
-    const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename);
+    // "agentY/<file>": /view takes the folder apart from the name.
+    const cut = ev.filename.lastIndexOf("/");
+    const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename.slice(cut + 1))
+      + (cut > 0 ? "&subfolder=" + encodeURIComponent(ev.filename.slice(0, cut)) : "");
     const media = ev.kind === "video"
       ? el("video", { className: "ay-out-media", src, controls: true, muted: true, loop: true,
                       preload: "metadata" })
