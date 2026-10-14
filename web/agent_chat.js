@@ -4128,12 +4128,23 @@ class AgentChat {
       || (graph._nodes || []).find((n) => n && String(n.id) === String(id));
     const made = {};
     const node = (id) => made[String(id)] || byId(id);
-    const added = [], wired = [], missed = [];
+    const added = [], wired = [], missed = [], replaced = [];
+    const placeOf = {};      // where a removed node stood, for the one that replaces it
     const changed = typeof graph.beforeChange === "function"
       && typeof graph.afterChange === "function";
     if (changed) { try { graph.beforeChange(); } catch (_) {} }
     try {
       for (const op of ev.ops || []) {
+        if (op.op === "remove") {
+          // Only as part of a replacement: the host follows it with the node
+          // that takes this one's place, id and wires.
+          const n = node(op.node);
+          if (!n) { missed.push(`remove #${op.node} (not on the graph)`); continue; }
+          placeOf[String(op.node)] = { pos: [n.pos[0], n.pos[1]], type: n.type };
+          try { graph.remove(n); } catch (_) {}
+          delete made[String(op.node)];
+          continue;
+        }
         if (op.op === "add") {
           let n = null;
           try { n = LG.createNode(op.class_type); } catch (_) {}
@@ -4148,8 +4159,14 @@ class AgentChat {
             try { if (w.callback) w.callback(value, app.canvas, n); } catch (_) {}
           }
           markAgentDrop(n);
-          n.pos = this._dropPos(op.near != null ? node(op.near) : null, n);
-          added.push(`#${n.id} ${n.type}`);
+          const was = op.at != null ? placeOf[String(op.at)] : null;
+          if (was) {
+            n.pos = [was.pos[0], was.pos[1]];
+            replaced.push(`#${n.id} ${was.type} → ${n.type}`);
+          } else {
+            n.pos = this._dropPos(op.near != null ? node(op.near) : null, n);
+            added.push(`#${n.id} ${n.type}`);
+          }
         } else if (op.op === "connect") {
           const from = node(op.from), to = node(op.to);
           const slot = to ? (to.inputs || []).findIndex((i) => i && i.name === op.input) : -1;
@@ -4177,7 +4194,8 @@ class AgentChat {
     graph.setDirtyCanvas(true, true);
     const why = ev.reason ? ` — ${ev.reason}` : "";
     this._sys("🔧 Edited the graph" + why + ": "
-      + [added.length ? `added ${added.join(", ")}` : "",
+      + [replaced.length ? `replaced ${replaced.join(", ")}` : "",
+         added.length ? `added ${added.join(", ")}` : "",
          wired.length ? `wired ${wired.length} input${wired.length === 1 ? "" : "s"}` : "",
          blockName ? `in group **${blockName}**` : ""]
         .filter(Boolean).join("; ")
