@@ -1304,7 +1304,7 @@ class AgentChat {
     // What the turn has spent so far - filled by "usage" events while it runs,
     // and left showing the turn's total until the next one starts.
     this.usageEl = el("div", { className: "ay-usage", hidden: true,
-      title: "Tokens used by this turn so far, all agents together" });
+      title: "Tokens used by this turn so far, all agents together, and how long it has run" });
     const inwrap = el("div", { className: "ay-inwrap" },
       [this.pop, this.runDock, this.queueEl, this.vBarEl, this.selBarEl, this.attachEl,
        inrow, this.usageEl, this.fileInput]);
@@ -2478,14 +2478,27 @@ class AgentChat {
   }
   // File the run into the conversation where it began. Called wherever the old
   // status line was cleared: the turn ending, a stop, a stream that went quiet.
-  // "12.4k in · 1.2k out · 68% cached · $0.03 · 9 calls", for the conversation
-  // on screen. Hidden until its turn has reported something.
+  // "12.4k in · 1.2k out · 68% cached · 9 calls · ⏱ 3:07", for the conversation
+  // on screen. Hidden until its turn has started. The clock runs from the turn's
+  // start (ctx.turnStart) and stops where it ended (ctx.turnEnd); while a turn
+  // on screen runs, one timer redraws the line each second.
   _renderUsage() {
     const box = this.usageEl;
     if (!box) return;
-    const u = this._viewCtx && this._viewCtx.usage;
-    if (!u) { box.hidden = true; box.textContent = ""; return; }
-    box.textContent = formatUsage(u);
+    const ctx = this._viewCtx;
+    const u = ctx && ctx.usage;
+    const start = ctx && ctx.turnStart;
+    if (start && !ctx.turnEnd && !ctx.streaming) ctx.turnEnd = Date.now();   // a stream that went quiet
+    const seconds = start ? ((ctx.turnEnd || Date.now()) - start) / 1000 : null;
+    const running = !!(start && !ctx.turnEnd);
+    if (running && !this._clockTimer) {
+      this._clockTimer = setInterval(() => this._renderUsage(), 1000);
+    } else if (!running && this._clockTimer) {
+      clearInterval(this._clockTimer);
+      this._clockTimer = null;
+    }
+    if (!u && seconds === null) { box.hidden = true; box.textContent = ""; return; }
+    box.textContent = formatUsage(u, seconds);
     box.hidden = false;
   }
 
@@ -2848,8 +2861,13 @@ class AgentChat {
         this._ctx().usage = ev;
         this._renderUsage();
         break;
-      case "request":
-        this._ctx().usage = null;      // a new turn counts from zero
+      case "request": {
+        const ctx = this._ctx();
+        ctx.usage = null;              // a new turn counts from zero
+        // Its clock from when it began: a turn followed after a reload says when.
+        const began = Number(ev.started) * 1000;
+        ctx.turnStart = began > 0 && began <= Date.now() ? began : Date.now();
+        ctx.turnEnd = null;
         this._renderUsage();
         this.curRequestId = ev.request_id;
         this._seenRuns.add(ev.request_id);
@@ -2861,6 +2879,7 @@ class AgentChat {
           if (!said || said.dataset.raw !== String(ev.text).trim()) this._userMsg(ev.text);
         }
         break;
+      }
       case "text":
         this._appendAssistant(ev.data);
         break;
@@ -2998,6 +3017,8 @@ class AgentChat {
         this._clearStatus();
         this.streaming = false;
         this._adoptedRun = false;
+        this._ctx().turnEnd = this._ctx().turnEnd || Date.now();   // the clock stops here
+        this._renderUsage();
         // A question cannot outlive the turn that asked it. The host pops its
         // reply registry in the same breath as this event, so from here on
         // POST /agentY/reply for that id answers 404 — and send() routes every
