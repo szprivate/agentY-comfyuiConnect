@@ -3,8 +3,11 @@
 //
 // The host sends a "usage" event whenever a turn's totals move (after each tool
 // call, before each model call, and at the end):
-//   { input, output, cache_read, cache_write, cache_hit, cost, calls }
+//   { input, output, cache_read, cache_write, cache_hit, cost, calls, last_call }
 // `cost` is not shown: it is a guess from a price table, and read as a bill.
+// `input` is every call's input added up, which reads as a context of 830k when
+// each call was 100k; `last_call` (the orchestrator's latest call) is the
+// context in use, and is shown instead where the host sends it.
 // The clock is the panel's own, from the turn's start (the "request" event).
 //
 // Kept in a module of its own, with no DOM and no ComfyUI imports, so it can be
@@ -31,12 +34,14 @@ export function formatClock(seconds) {
   return (h ? h + ":" + two(m) : String(m)) + ":" + two(s % 60);
 }
 
-/** "🪙 12.4k in · 1.2k out · 68% cached · 9 calls · ⏱ 3:07". *seconds* is how
- *  long the turn has run (null: no clock); either part may stand alone. */
+/** "🪙 98.4k context · 1.2k out · 68% cached · 9 calls · ⏱ 3:07". *seconds* is
+ *  how long the turn has run (null: no clock); either part may stand alone. */
 export function formatUsage(u, seconds = null) {
   const out = [];
   if (u) {
-    const parts = [compactCount(u.input) + " in", compactCount(u.output) + " out"];
+    const context = Number(u.last_call) || 0;
+    const parts = [context > 0 ? compactCount(context) + " context" : compactCount(u.input) + " in",
+                   compactCount(u.output) + " out"];
     const hit = Number(u.cache_hit) || 0;
     if (hit > 0) parts.push(Math.round(hit * 100) + "% cached");
     const calls = Number(u.calls) || 0;

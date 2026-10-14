@@ -75,6 +75,7 @@ class Wording(unittest.TestCase):
             {"input": 950, "output": 12, "cache_hit": 0, "cost": None, "calls": 1},
             {"input": 1250000, "output": 45000, "cache_hit": 0.5, "cost": 0.004, "calls": 40},
             None,
+            {"input": 830600, "output": 2010, "cache_hit": 0.9, "calls": 11, "last_call": 101500},
         ]
         script = SCRIPT % (json.dumps((WEB / "agent_usage.js").as_uri()), json.dumps(cases))
         out = subprocess.run([NODE, "--input-type=module", "-e", script], capture_output=True, text=True,
@@ -85,6 +86,11 @@ class Wording(unittest.TestCase):
     def test_a_full_line_has_no_cost(self):
         self.assertEqual(self.got["lines"][0], "\U0001fa99 12.4k in · 1.18k out · 68% cached · 9 calls")
         self.assertNotIn("$", "".join(self.got["lines"]))
+
+    def test_the_context_in_use_replaces_the_added_up_input(self):
+        """830.6k was eleven calls of ~100k each, read as an 830k context."""
+        self.assertEqual(self.got["lines"][4],
+                         "\U0001fa99 101.5k context · 2.01k out · 90% cached · 11 calls")
 
     def test_no_cache_is_left_out_not_shown_as_zero(self):
         self.assertEqual(self.got["lines"][1], "\U0001fa99 950 in · 12 out · 1 call")
