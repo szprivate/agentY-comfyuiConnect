@@ -2771,11 +2771,11 @@ class AgentChat {
       // node looks perfectly normal until it runs.
       const isCombo = !!(w.options && Array.isArray(w.options.values));
       const val = (isCombo ? ev.filename : ev.path) || ev.filename || ev.path;
-      if (isCombo && ev.filename && !w.options.values.includes(ev.filename)) {
-        w.options.values.push(ev.filename);
-      }
+      const offMenu = isCombo && ev.filename && this._offMenu(w, ev.filename);
+      if (offMenu) w.options.values.push(ev.filename);
       w.value = val;
       try { if (w.callback) w.callback(val); } catch (_) {}
+      if (offMenu) this._freshenMenus([node]);
     }
     // The node keeps the title LiteGraph gave it.
     //
@@ -3959,6 +3959,47 @@ class AgentChat {
     return out;
   }
 
+  // True when *w* is a menu whose current value is not one of its options.
+  _offMenu(w, value = w && w.value) {
+    return !!(w && w.options && Array.isArray(w.options.values) && value != null
+      && value !== "" && typeof value !== "object" && !w.options.values.includes(value));
+  }
+
+  // A file the agent put into ComfyUI's input dir during the turn is not in the
+  // menus the page loaded at start, so ComfyUI marks the node as broken — red
+  // outline, and "Workflow contains missing resources" (⚠) on Run — although the
+  // server has the file and the graph runs. Refresh the menus (what pressing R
+  // does), then clear both marks on the nodes whose values are all options now.
+  // Pressing R alone clears neither: the ⚠ comes from the frontend's own
+  // missing-media / missing-model stores, which only a node edit re-checks.
+  // A file that really is missing stays marked.
+  _freshenMenus(nodes) {
+    const hit = [...new Set((nodes || []).filter(Boolean))];
+    if (!hit.length || typeof app.refreshComboInNodes !== "function") return;
+    Promise.resolve(app.refreshComboInNodes()).then(() => {
+      const fine = hit.filter((n) => !(n.widgets || []).some((w) => this._offMenu(w)));
+      for (const n of fine) n.has_errors = false;
+      const stores = this._piniaStores();
+      for (const n of fine) {
+        try { stores?.get("missingMedia")?.removeMissingMediaByNodeId(String(n.id)); } catch (_) {}
+        try { stores?.get("missingModel")?.removeMissingModelsByNodeId(String(n.id)); } catch (_) {}
+      }
+      try { this._targetGraph().setDirtyCanvas(true, true); } catch (_) {}
+    }).catch((err) => console.warn("[agentY] could not refresh ComfyUI's menus:", err));
+  }
+
+  // The frontend's Pinia stores (a Map by store id), or null. Not an extension
+  // API: found through the Vue app mounted in the page, so every use is guarded.
+  _piniaStores() {
+    try {
+      const host = document.querySelector("#vue-app")
+        || [...document.body.children].find((e) => e.__vue_app__);
+      return host?.__vue_app__?.config?.globalProperties?.$pinia?._s || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Apply an agent-initiated node edit to the live graph (no refresh, no re-queue).
   _applyCanvasPatch(ev) {
     const graph = this._targetGraph();
@@ -3972,18 +4013,20 @@ class AgentChat {
     }
     const params = ev.params || {};
     const applied = [];
+    let offMenu = false;
     for (const [name, value] of Object.entries(params)) {
       const w = (node.widgets || []).find((x) => x && x.name === name);
       if (!w) continue; // unknown widget on this node — skip
       // Keep combo widgets valid: register a new option value if needed.
-      if (w.options && Array.isArray(w.options.values) &&
-          typeof value !== "object" && !w.options.values.includes(value)) {
+      if (this._offMenu(w, value)) {
         w.options.values.push(value);
+        offMenu = true;
       }
       w.value = value;
       try { if (w.callback) w.callback(value, app.canvas, node); } catch (_) {}
       applied.push(name);
     }
+    if (offMenu) this._freshenMenus([node]);
     this._targetGraph().setDirtyCanvas(true, true);
     const title = (node.title || node.type || ("#" + ev.node_id));
     if (applied.length) {
@@ -4133,6 +4176,7 @@ class AgentChat {
     const made = {};
     const node = (id) => made[String(id)] || byId(id);
     const added = [], wired = [], missed = [], replaced = [];
+    const offMenu = [];      // nodes given a file the page's menus don't list yet
     const placeOf = {};      // where a removed node stood, for the one that replaces it
     const changed = typeof graph.beforeChange === "function"
       && typeof graph.afterChange === "function";
@@ -4159,6 +4203,7 @@ class AgentChat {
           for (const [name, value] of Object.entries(op.params || {})) {
             const w = (n.widgets || []).find((x) => x && x.name === name);
             if (!w) continue;
+            if (this._offMenu(w, value)) offMenu.push(n);
             w.value = value;
             try { if (w.callback) w.callback(value, app.canvas, n); } catch (_) {}
           }
@@ -4195,6 +4240,7 @@ class AgentChat {
         console.warn("[agentY] could not lay out the inserted workflow:", err);
       }
     }
+    if (offMenu.length) this._freshenMenus(offMenu);
     graph.setDirtyCanvas(true, true);
     const why = ev.reason ? ` — ${ev.reason}` : "";
     this._sys("🔧 Edited the graph" + why + ": "
