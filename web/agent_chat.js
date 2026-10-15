@@ -2400,13 +2400,17 @@ class AgentChat {
         if (r.queued.size) this._queueText();
         else r.queueRow = null;   // the row stays as history; a new wait starts a new one
       }
-      let row = isBar ? r.bars.get(prefix) : null;
+      // A download's bar line starts with its file name: one row per file, so two
+      // downloads at once are two rows counting up, not one row they fight over.
+      const dl = bare.match(/^⬇️ (\S+) [█░]/u);
+      const barKey = dl ? `${prefix}⬇${dl[1]}` : prefix;
+      let row = isBar ? r.bars.get(barKey) : null;
       if (!row) {
         row = el("div", { className: "ay-run-step" });
         r.steps.append(row);
       }
       row.textContent = line;
-      if (isBar) r.bars.set(prefix, row);
+      if (isBar) r.bars.set(barKey, row);
       else r.bars.delete(prefix);
       r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
       r.text.title = line;
