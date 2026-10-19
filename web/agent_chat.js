@@ -16,7 +16,7 @@ import { formatUsage } from "./agent_usage.js";
 import { standardSize } from "./agent_canvas.js";
 import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
          isAgentGroupTitle, layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
-         overlaps } from "./agent_layout.js";
+         flowArrange, boundsOf, overlaps } from "./agent_layout.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -2969,6 +2969,7 @@ class AgentChat {
         else if (ev.op === "set_mode") this._setNodeMode(ev);
         else if (ev.op === "flow_state") this._flowState(ev);
         else if (ev.op === "edit_graph") this._editGraph(ev);
+        else if (ev.op === "layout") this._layoutCanvas(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
         else this._applyCanvasPatch(ev);
         break;
@@ -4251,6 +4252,125 @@ class AgentChat {
         .filter(Boolean).join("; ")
       + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
       + " **Ctrl+Z** undoes it.");
+  }
+
+  // arrange_canvas / group_canvas_nodes / auto_group_canvas: groups drawn, renamed
+  // and recoloured, then the nodes laid out in flow order with every group one
+  // rectangle. One undo step. Geometry is agent_layout.js's flowArrange.
+  _layoutCanvas(ev) {
+    const graph = this._targetGraph();
+    if (!graph) return;
+    const nodeOf = (id) => (graph.getNodeById ? graph.getNodeById(Number(id))
+      : (graph._nodes || []).find((n) => n && String(n.id) === String(id)));
+    const live = (n) => n && isXY(n.pos) && isXY(n.size);
+    const txt = (t) => String(t || "").trim();
+    const changed = typeof graph.beforeChange === "function" && typeof graph.afterChange === "function";
+    if (changed) { try { graph.beforeChange(); } catch (_) {} }
+    const said = [];
+    const missed = [];
+    try {
+      const all = (graph._nodes || []).filter(live);
+      const centre = (n) => [n.pos[0] + n.size[0] / 2, n.pos[1] + n.size[1] / 2 - GAPS.title_bar / 2];
+      const inside = (n, r) => { const [x, y] = centre(n); return x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]; };
+      const area = (r) => r[2] * r[3];
+      // Who is in which group now: by position, as a person reads it.
+      const members = new Map();
+      for (const g of this._groupsOf(graph)) {
+        const r = this._groupRect(g);
+        members.set(g, new Set(all.filter((n) => inside(n, r))));
+      }
+      const claim = (g, set) => {
+        for (const [other, m] of members) if (other !== g) for (const n of set) m.delete(n);
+        members.set(g, set);
+      };
+
+      // The groups asked for: renamed, resized, or new.
+      const touched = new Set();
+      for (const spec of ev.groups || []) {
+        const nodes = (spec.node_ids || []).map(nodeOf).filter(live);
+        const groups = this._groupsOf(graph);
+        let g = null;
+        if (spec.rename_from) g = groups.find((t) => txt(t.title) === txt(spec.rename_from));
+        if (!g) g = groups.find((t) => txt(t.title) === txt(spec.title) && !touched.has(t));
+        if (spec.rename_from && !g) { missed.push(`no group called "${spec.rename_from}"`); continue; }
+        if (!g && !nodes.length) { missed.push(`"${spec.title}": none of its nodes are on the canvas`); continue; }
+        if (!g) {
+          g = this._addGroup(graph, spec.title, groupBox(nodes.map((n) => this._rectOf(n))),
+                             spec.color || GROUP_COLOR);
+          said.push(`drew **${spec.title}**`);
+        } else {
+          const was = txt(g.title);
+          g.title = spec.title;
+          if (spec.color) g.color = spec.color;
+          said.push(was === spec.title ? `updated **${spec.title}**` : `renamed **${was}** to **${spec.title}**`);
+        }
+        touched.add(g);
+        claim(g, new Set(nodes.length ? nodes : (members.get(g) || [])));
+      }
+
+      // Which nodes to lay out.
+      const a = ev.arrange;
+      let targets = null;
+      if (a) {
+        if (a.only_groups) targets = new Set([...touched].flatMap((g) => [...(members.get(g) || [])]));
+        else if (a.node_ids && a.node_ids.length) {
+          targets = new Set(a.node_ids.map(nodeOf).filter(live));
+          for (const m of members.values()) if ([...m].some((n) => targets.has(n))) m.forEach((n) => targets.add(n));
+        } else targets = new Set(all);
+      }
+      if (targets && targets.size) {
+        const keyOf = new Map();
+        const groupKeys = [...members.keys()];
+        for (const n of targets) {
+          let best = null;
+          groupKeys.forEach((g, i) => {
+            if (members.get(g).has(n) && (best === null || area(this._groupRect(g)) < area(this._groupRect(groupKeys[best])))) best = i;
+          });
+          keyOf.set(n, best);
+        }
+        const items = [...targets].map((n) => ({ id: String(n.id), size: [n.size[0], n.size[1]],
+          group: keyOf.get(n), x: n.pos[0], y: n.pos[1] }));
+        const ids = new Set(items.map((i) => i.id));
+        const edges = [];
+        for (const n of targets) {
+          for (const inp of n.inputs || []) {
+            const link = inp && inp.link != null && graph.links
+              ? (typeof graph.links.get === "function" ? graph.links.get(inp.link) : graph.links[inp.link]) : null;
+            if (link && ids.has(String(link.origin_id))) edges.push([String(link.origin_id), String(n.id)]);
+          }
+        }
+        const rects = [...targets].map((n) => this._rectOf(n));
+        const b0 = boundsOf(rects);
+        let origin = [b0[0], b0[1]];
+        let res = flowArrange(items, edges, origin, GAPS);
+        // Leaving a part of the graph alone: what is left must not be run over.
+        const used = new Set([...keyOf.values()].filter((v) => v !== null).map((v) => groupKeys[v]));
+        const others = all.filter((n) => !targets.has(n)).map((n) => this._rectOf(n))
+          .concat(this._groupsOf(graph).filter((g) => !used.has(g)).map((g) => this._groupRect(g)));
+        if (others.some((r) => overlaps(res.bounds, r))) {
+          origin = blockOrigin(others, origin);
+          res = flowArrange(items, edges, origin, GAPS);
+        }
+        for (const n of targets) {
+          const p = res.positions[String(n.id)];
+          if (p) n.pos = [p[0], p[1]];
+        }
+        for (const [key, box] of Object.entries(res.boxes)) this._setGroupBox(groupKeys[Number(key)], box);
+        said.push(`arranged ${targets.size} node${targets.size === 1 ? "" : "s"} left to right`);
+      } else if (touched.size) {
+        // Groups only: draw each round what it holds, nodes stay where they are.
+        for (const g of touched) {
+          const fit = groupBox([...(members.get(g) || [])].filter(live).map((n) => this._rectOf(n)));
+          if (fit) this._setGroupBox(g, fit);
+        }
+      }
+    } finally {
+      if (changed) { try { graph.afterChange(); } catch (_) {} }
+    }
+    graph.setDirtyCanvas(true, true);
+    const why = ev.reason ? ` — ${ev.reason}` : "";
+    this._sys("🧭 Canvas layout" + why + ": " + (said.join("; ") || "nothing to change")
+      + (missed.length ? `. ⚠️ Skipped: ${missed.join("; ")}` : "") + ". **Ctrl+Z** undoes it.");
   }
 
   // ── where the agent's additions go (geometry in agent_layout.js) ──────────

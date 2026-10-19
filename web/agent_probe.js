@@ -24,6 +24,7 @@ import { app } from "../../scripts/app.js";
 // constructor, so without this line the dependency would exist and be invisible
 // — and reordering an import in agent_chat.js would silently 403 the probe.
 import "./agent_backend.js";
+import { cleanName, planSave } from "./agent_save.js";
 
 // How long the host holds the poll open. Slightly under its own cap so the
 // request ends server-side, on an empty answer, rather than as a client abort.
@@ -366,12 +367,68 @@ export function captureGraph(opts = {}) {
   }
 }
 
+/**
+ * Save the open workflow - the tab's own save, never a replacement of another file.
+ * The decision (what may be written) is agent_save.js's planSave; this only does it.
+ * Uses ComfyUI's workflow store where it has the calls, else the frontend's own
+ * Save command (which opens its name dialog for the user).
+ */
+async function saveWorkflow(payload) {
+  const store = ws();
+  const wf = store && store.activeWorkflow;
+  if (!wf) return { status: "failed", error: "no workflow is open in ComfyUI." };
+  try { wf.changeTracker && wf.changeTracker.checkState && wf.changeTracker.checkState(); } catch (_) {}
+  const name = cleanName(payload && payload.name);
+  const path = String(wf.path || "");
+  const dir = path.includes("/") ? path.split("/").slice(0, -1).join("/") : "workflows";
+  const newPath = name ? `${dir}/${name}.json` : "";
+  let taken = false;
+  try {
+    const other = newPath && store.getWorkflowByPath ? store.getWorkflowByPath(newPath) : null;
+    taken = !!other && other !== wf && !other.isTemporary;
+  } catch (_) {}
+  const plan = planSave({ temporary: !!wf.isTemporary, modified: !!wf.isModified, path,
+                          filename: wf.filename || "", taken }, name, !!(payload && payload.overwrite));
+  if (plan.action === "refuse") return { ...plan, status: plan.status };
+  const command = (id) => {
+    const cmd = app.extensionManager && app.extensionManager.command;
+    if (!cmd || !cmd.execute) throw new Error("this ComfyUI cannot save from here");
+    return cmd.execute(id);
+  };
+  try {
+    if (plan.action === "save") {
+      if (typeof wf.save === "function") await wf.save(); else await command("Comfy.SaveWorkflow");
+      return { status: "saved", path, message: `Saved over ${path}.` };
+    }
+    // save_as
+    if (wf.isTemporary && store.renameWorkflow && store.saveWorkflow) {
+      await store.renameWorkflow(wf, newPath);
+      await store.saveWorkflow(wf);
+      return { status: "saved", path: newPath, message: `Saved as ${newPath}.` };
+    }
+    if (!wf.isTemporary && store.saveAs && store.openWorkflow) {
+      const copy = store.saveAs(wf, newPath);
+      await store.openWorkflow(copy);
+      await (copy.save ? copy.save() : store.saveWorkflow(copy));
+      return { status: "saved", path: newPath, message: `Saved a copy as ${newPath}.` };
+    }
+    await command(wf.isTemporary ? "Comfy.SaveWorkflow" : "Comfy.SaveWorkflowAs");
+    return { status: "dialog_opened",
+      message: "This ComfyUI cannot save under a given name from here; its save dialog is open "
+        + `for the user - they type ${name} and confirm. Not saved yet.` };
+  } catch (err) {
+    return { status: "failed", error: String((err && err.message) || err) };
+  }
+}
+
 function answer(probe) {
   switch (probe.kind) {
     case "screenshot":
       return captureGraph(probe.payload || {});
     case "open_workflows":
       return { workflows: openWorkflows() };
+    case "save_workflow":
+      return saveWorkflow(probe.payload || {});
     case "ping":
       return { ok: true };
     default:
@@ -419,7 +476,7 @@ export class ProbeLoop {
       if (!probe) continue;                // the poll simply expired; go again
 
       let data;
-      try { data = answer(probe); }
+      try { data = await answer(probe); }
       catch (err) { data = { error: String((err && err.message) || err) }; }
 
       try {
