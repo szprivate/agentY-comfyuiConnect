@@ -5388,6 +5388,31 @@ window.agentYRunHooks = (text, opts = {}) => {
     : `Running ${hooks.length} agentY hook(s)…`;
 };
 
+// Feedback from the bEpic viewer's annotation tool ("Send to agentY"): the text the
+// viewer wrote about the marks, and the flattened pictures it saved. It goes in as
+// the user's own next message - the same send() a typed message takes - so a running
+// turn is interjected into, a stopped review is answered, and an idle panel starts
+// a turn. Nothing here is a second path; the viewer reaches it through
+// window.agentYViewerBridge.feedback (agent_viewer_bridge.js).
+window.agentYSendFeedback = ({ text, files } = {}) => {
+  if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();
+  const chat = _AGENTY_CHAT;
+  const paths = (files || []).map(String).filter(Boolean);
+  try {
+    const em = app.extensionManager;
+    const store = (em && em.sidebarTab) || em;
+    if (store && typeof store.toggleSidebarTab === "function") {
+      if (store.activeSidebarTabId !== "agentY-chat") store.toggleSidebarTab("agentY-chat");
+    }
+  } catch (_) {}
+  chat.attachments = paths.map((p) => ({ path: p, name: p.split("/").pop().split(String.fromCharCode(92)).pop() }));
+  try { chat._renderAttachments(); } catch (_) {}
+  chat.input.value = String(text || "");
+  const wasBusy = chat.streaming;
+  chat.send();
+  return wasBusy ? "Sent into the running turn." : "Sent to agentY.";
+};
+
 app.registerExtension({
   name: "agentY.chat.sidebar",
   async setup() {

@@ -103,6 +103,23 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(r["url"], "http://host/agentY/viewer/tag")
         self.assertEqual(r["body"], {"tag": "anna", "path": "/o/a.png", "role": "lead"})
 
+    def test_feedback_goes_to_the_panel_as_a_message_with_the_pictures(self):
+        r = self.run_bridge(
+            "window.agentYReviewHalted = true;\n"
+            "window.agentYSendFeedback = (a) => { calls.push(['fb', a]); return 'Sent to agentY.'; };\n"
+            "const res = await b.feedback({ text: 'at 00:03 the face drifts', files: ['/o/f.png'] });\n"
+            "const none = await b.feedback({ text: '', files: [] });\n"
+            "console.log(JSON.stringify({ res, none, call: calls[0][1] }));")
+        self.assertTrue(r["res"]["ok"], r)
+        self.assertTrue(r["res"]["halted"])
+        self.assertEqual(r["call"], {"text": "at 00:03 the face drifts", "files": ["/o/f.png"]})
+        self.assertFalse(r["none"]["ok"])
+
+    def test_feedback_never_presses_continue(self):
+        self.assertIn("window.agentYViewerBridge.feedback = feedback", SRC)
+        body = SRC.split("async function feedback")[1]
+        self.assertNotIn("agentYRunHooks", body)
+
 
 if __name__ == "__main__":
     unittest.main()

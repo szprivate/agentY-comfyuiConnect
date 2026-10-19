@@ -75,3 +75,24 @@ async function approve({ files }) {
 }
 
 window.agentYViewerBridge = { version: 1, state, tag, approve };
+
+// feedback  the annotation tool's "Send to agentY": { text, files: [path, ...] } goes
+//           to the active conversation as the user's next message, with the
+//           flattened pictures attached. At a review stop it is the answer "change
+//           this" (the text says so); it never presses Continue. Added to the
+//           object above rather than into its literal, so a viewer without it
+//           (older build) just does not show the button.
+async function feedback({ text, files }) {
+  const list = (files || []).map(String).filter(Boolean);
+  const body = String(text || "").trim();
+  if (!body && !list.length) return say(false, "There is nothing to send.");
+  if (typeof window.agentYSendFeedback !== "function") {
+    return say(false, "The agentY panel is not loaded yet - open the agentY sidebar tab once.");
+  }
+  const halted = !!window.agentYReviewHalted;
+  let msg = "";
+  try { msg = window.agentYSendFeedback({ text: body, files: list }) || ""; }
+  catch (e) { return say(false, "Failed: " + e); }
+  return say(true, (halted ? "Review feedback sent. " : "") + msg, { halted });
+}
+window.agentYViewerBridge.feedback = feedback;
