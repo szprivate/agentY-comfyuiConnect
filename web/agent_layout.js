@@ -142,3 +142,89 @@ export function outputSlot(groupPos, taken, cell = OUTPUT_CELL, columns = OUTPUT
   }
   return [x0, y0];
 }
+
+// ── Tidying a graph that is already there (arrange_canvas, group_canvas_nodes) ──
+//
+// The same columns-and-rows block as an inserted workflow (layoutBlock), applied
+// to the nodes of an existing graph: columns by distance from the inputs, rows
+// ordered by where a node's feeds sit, one block per group so a group stays one
+// rectangle, blocks side by side in the order their data flows. This does not
+// replace arrangeAgentGraph (agent_canvas.js) / graph_groups.arrange, which
+// place a freshly built workflow from the server's slots; it reuses the same
+// gaps and the same layoutBlock, and does not change either.
+
+export const MAX_ROW_WIDTH = 6000;     // a row of blocks wraps below this width
+export const BLOCK_GAP = 80;
+
+/** Longest-path depth of every id (roots 0), cycle-safe. edges: [[from, to]]. */
+export function depthsOf(ids, edges) {
+  const known = new Set(ids.map(String));
+  const depth = {};
+  for (const id of known) depth[id] = 0;
+  const live = (edges || []).map(([a, b]) => [String(a), String(b)])
+    .filter(([a, b]) => known.has(a) && known.has(b) && a !== b);
+  for (let pass = 0; pass <= known.size; pass++) {
+    let moved = false;
+    for (const [a, b] of live) {
+      if (depth[a] + 1 > depth[b] && depth[a] + 1 <= known.size) { depth[b] = depth[a] + 1; moved = true; }
+    }
+    if (!moved) break;
+  }
+  return depth;
+}
+
+/** items: [{id, size:[w,h], group:key|null, x, y}] (x, y = where the node is now,
+ *  only to break ties); edges: [[from, to]]; origin: top-left of the result.
+ *  -> {positions:{id:[x,y]}, boxes:{groupKey:[x,y,w,h]}, bounds, order:[groupKey|null]} */
+export function flowArrange(items, edges, origin, gaps = GAPS, maxWidth = MAX_ROW_WIDTH) {
+  const list = (items || []).filter((i) => i && Array.isArray(i.size));
+  const out = { positions: {}, boxes: {}, bounds: null, order: [] };
+  if (!list.length) return out;
+  const depth = depthsOf(list.map((i) => i.id), edges);
+  const preds = {};
+  for (const [a, b] of edges || []) (preds[String(b)] = preds[String(b)] || []).push(String(a));
+
+  const blocks = new Map();
+  for (const i of list) {
+    const k = i.group == null ? null : String(i.group);
+    if (!blocks.has(k)) blocks.set(k, []);
+    blocks.get(k).push(i);
+  }
+  const laid = [];
+  for (const [key, members] of blocks) {
+    const depths = [...new Set(members.map((m) => depth[String(m.id)]))].sort((a, b) => a - b);
+    const col = new Map(depths.map((d, n) => [d, n]));
+    const row = {};
+    const items2 = [];
+    for (const d of depths) {
+      const inCol = members.filter((m) => depth[String(m.id)] === d);
+      const bary = (m) => {
+        const rs = (preds[String(m.id)] || []).filter((p) => p in row).map((p) => row[p]);
+        return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : Infinity;
+      };
+      inCol.sort((a, b) => (bary(a) - bary(b)) || ((a.y || 0) - (b.y || 0)) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+      inCol.forEach((m, r) => { row[String(m.id)] = r; items2.push({ id: m.id, size: m.size, band: 0, col: col.get(d), row: r }); });
+    }
+    const block = layoutBlock(items2, [0, 0], gaps);
+    laid.push({ key, block,
+      minDepth: depths[0],
+      minX: Math.min(...members.map((m) => m.x || 0)) });
+  }
+  laid.sort((a, b) => (a.minDepth - b.minDepth) || (a.minX - b.minX));
+
+  let cx = origin[0], cy = origin[1], rowH = 0;
+  const all = [];
+  for (const { key, block } of laid) {
+    const [, , bw, bh] = block.bounds;
+    if (cx > origin[0] && cx + bw > origin[0] + maxWidth) { cx = origin[0]; cy += rowH + BLOCK_GAP; rowH = 0; }
+    for (const [id, p] of Object.entries(block.positions)) out.positions[id] = [p[0] + cx, p[1] + cy];
+    const box = [block.bounds[0] + cx, block.bounds[1] + cy, bw, bh];
+    if (key != null) out.boxes[key] = box;
+    out.order.push(key);
+    all.push(box);
+    cx += bw + BLOCK_GAP;
+    rowH = Math.max(rowH, bh);
+  }
+  out.bounds = boundsOf(all);
+  return out;
+}
