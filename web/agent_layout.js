@@ -211,6 +211,24 @@ export function flowArrange(items, edges, origin, gaps = GAPS, maxWidth = MAX_RO
       minX: Math.min(...members.map((m) => m.x || 0)) });
   }
   laid.sort((a, b) => (a.minDepth - b.minDepth) || (a.minX - b.minX));
+  // A block goes after every block it receives links from; ties keep the order
+  // above, and a cycle between blocks is broken at the earliest one.
+  const blockOf = {};
+  for (const l of laid) for (const m of blocks.get(l.key)) blockOf[String(m.id)] = l.key;
+  const feeds = new Map(laid.map((l) => [l.key, new Set()]));
+  for (const [a, b] of edges || []) {
+    const ka = blockOf[String(a)], kb = blockOf[String(b)];
+    if (ka !== undefined && kb !== undefined && ka !== kb) feeds.get(kb).add(ka);
+  }
+  const rest = laid.slice(), placed = new Set(), sorted = [];
+  while (rest.length) {
+    let at = rest.findIndex((l) => [...feeds.get(l.key)].every((k) => placed.has(k)));
+    if (at < 0) at = 0;
+    const [next] = rest.splice(at, 1);
+    placed.add(next.key);
+    sorted.push(next);
+  }
+  laid.splice(0, laid.length, ...sorted);
 
   let cx = origin[0], cy = origin[1], rowH = 0;
   const all = [];

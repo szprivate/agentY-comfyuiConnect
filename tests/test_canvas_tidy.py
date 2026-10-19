@@ -58,6 +58,22 @@ out.wrapWidth = wrapped.bounds[2];
 out.wrapRows = new Set(Object.values(wrapped.positions).map((p) => p[1])).size;
 // a cycle does not hang it
 out.cycle = Object.keys(L.flowArrange(items.slice(0, 2), [["1", "2"], ["2", "1"]], [0, 0]).positions).length;
+// txt2img: Load -> Prompt -> Sampling -> Decode; Empty Latent (depth 0) sits in Sampling
+const t2i = [
+  { id: "1", size: sz(300, 100), group: "load", x: 74, y: 0 },
+  { id: "2", size: sz(300, 100), group: "prompt", x: 1200, y: 0 },
+  { id: "3", size: sz(300, 100), group: "prompt", x: 1200, y: 200 },
+  { id: "4", size: sz(300, 100), group: "samp", x: 472, y: 0 },
+  { id: "5", size: sz(300, 100), group: "samp", x: 802, y: 0 },
+  { id: "6", size: sz(300, 100), group: "dec", x: 1728, y: 0 },
+];
+const te = [["1", "2"], ["1", "3"], ["2", "5"], ["3", "5"], ["4", "5"], ["1", "5"], ["5", "6"], ["1", "6"]];
+const tr = L.flowArrange(t2i, te, [0, 0]);
+out.t2iOrder = tr.order;
+out.t2iBackwards = te.filter(([a, b]) => {
+  const ga = t2i.find((i) => i.id === a).group, gb = t2i.find((i) => i.id === b).group;
+  return ga !== gb && tr.boxes[ga][0] > tr.boxes[gb][0];
+}).length;
 out.empty = L.flowArrange([], [], [0, 0]).bounds;
 
 // saving
@@ -109,6 +125,10 @@ class Behaviour(unittest.TestCase):
 
     def test_blocks_come_in_the_order_the_data_flows(self):
         self.assertEqual(self.got["order"][0], "a")
+
+    def test_groups_follow_their_upstream_groups(self):
+        self.assertEqual(self.got["t2iOrder"], ["load", "prompt", "samp", "dec"])
+        self.assertEqual(self.got["t2iBackwards"], 0)
 
     def test_a_long_chain_wraps_and_a_cycle_does_not_hang(self):
         self.assertLessEqual(self.got["wrapWidth"], 3000 + 500)
