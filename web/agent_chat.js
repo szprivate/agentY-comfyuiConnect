@@ -334,6 +334,11 @@ class AgentChat {
     // Identifies the stream that currently owns the shared streaming state, so a
     // stream that finishes after being replaced can't clear its successor's state.
     this._streamToken = 0;
+    // Which reader is feeding each running turn (request_id -> reader), and when a
+    // turn last ended. A second reader on the same turn replays it from its start
+    // and doubles every line, so only one is ever allowed to apply a turn's events.
+    this._openRuns = new Map();
+    this._endedRuns = new Map();
     this._stopping = false; // set while a user-initiated stop is in progress
     this.attachments = []; // [{path,name}]
     this.commands = SLASH_FALLBACK;
@@ -3443,6 +3448,8 @@ class AgentChat {
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
+    let owned = null;   // the turn this reader is feeding
+    try {
     while (true) {
       const { done, value } = await reader.read();
       // Any byte at all, keep-alive comments included — this is a liveness
@@ -3456,12 +3463,33 @@ class AgentChat {
         buf = buf.slice(idx + 2);
         const line = frame.split("\n").find((l) => l.startsWith("data:"));
         if (line) {
+          let ev = null;
+          try { ev = JSON.parse(line.slice(line.indexOf(":") + 1).trim()); }
+          catch (e) { console.error("[agentY] bad SSE frame", e); }
+          if (!ev) continue;
+          if (ev.type === "request" && ev.request_id && !owned) {
+            // Another reader already has this turn (a re-mount or a status check
+            // started a second follow of it), or it ended a moment ago and this is
+            // its replay: drop this one rather than render the turn twice.
+            const holder = this._openRuns.get(ev.request_id);
+            const endedAt = this._endedRuns.get(ev.request_id) || 0;
+            if ((holder && holder !== reader) || Date.now() - endedAt < 60000) {
+              try { await reader.cancel(); } catch (_) {}
+              return;
+            }
+            owned = ev.request_id;
+            this._openRuns.set(owned, reader);
+          }
+          if (ev.type === "done" && owned) this._endedRuns.set(owned, Date.now());
           run(() => {
-            try { this._onEvent(JSON.parse(line.slice(line.indexOf(":") + 1).trim())); }
+            try { this._onEvent(ev); }
             catch (e) { console.error("[agentY] bad SSE frame", e); }
           });
         }
       }
+    }
+    } finally {
+      if (owned && this._openRuns.get(owned) === reader) this._openRuns.delete(owned);
     }
   }
 
@@ -3470,6 +3498,9 @@ class AgentChat {
   // live, exactly as if we had sent it. Resolves false when the host cannot
   // (an older host without the route), so the caller can fall back to adopting.
   async _watchRun(run_) {
+    // Already being followed: a second reader would replay the turn from its
+    // start into the same log, and its end would mark the first one idle.
+    if (run_ && this._openRuns.has(run_.request_id)) return true;
     const ctx = this._ctx();
     const run = (fn) => this._as(ctx, fn);
     const token = ++this._streamToken;
