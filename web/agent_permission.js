@@ -26,13 +26,20 @@ const WAIT_S = 25;
 const POLL_MS = 200;
 // While a prompt is on screen there is nothing to ask for, so this is only how
 // often the loop re-checks whether it has been answered.
-const SHOWING_MS = 500;
+const SHOWING_MS = 200;
+// While a prompt is on screen the panel keeps polling, with a short hold. That
+// poll is what tells the host the panel is still here: the host declines a
+// question unrun once the panel has not polled for 30 s, and a card the user
+// is still reading must not count as a panel that has gone away. It is also how
+// the panel learns the host stopped waiting, and takes the card down.
+const SHOWING_WAIT_S = 5;
 // After a failed poll. The host being down is the ordinary case (nobody has
 // started it yet), and a panel that retried every second would spend the session
 // filling the network tab.
 const BACKOFF_MS = 5000;
 
-let showing = null;   // permission_id currently on screen
+const answered = new Set();   // ids already answered or dismissed: never drawn again
+let showing = null;   // {id, dismiss} of the prompt currently on screen
 
 function injectStyles() {
   if (document.getElementById("agentY-permission-styles")) return;
@@ -105,13 +112,17 @@ async function reply(id, allowed, remember) {
 
 function show(req) {
   injectStyles();
-  showing = req.permission_id;
-
   const overlay = el("div", { className: "ayp-overlay" });
-  const close = (allowed, remember) => {
+  // Take the card down without answering: the host has already stopped waiting.
+  const dismiss = () => {
+    answered.add(req.permission_id);
     overlay.remove();
-    showing = null;
+    if (showing && showing.id === req.permission_id) showing = null;
     document.removeEventListener("keydown", onKey);
+  };
+  showing = { id: req.permission_id, dismiss };
+  const close = (allowed, remember) => {
+    dismiss();
     reply(req.permission_id, allowed, remember);
   };
   // Escape denies. The safe answer is the reflexive one, and every other way of
@@ -166,17 +177,34 @@ function show(req) {
 }
 
 async function poll() {
-  if (showing) return SHOWING_MS;
   try {
+    const wait = showing ? SHOWING_WAIT_S : WAIT_S;
     const r = await fetch(
-      `${backendBase()}/agentY/permission?wait=${WAIT_S}`, { cache: "no-store" });
+      `${backendBase()}/agentY/permission?wait=${wait}`, { cache: "no-store" });
     if (!r.ok) return BACKOFF_MS;
     const data = await r.json();
-    if (data && data.request) show(data.request);
-    return POLL_MS;
+    // The host no longer lists the question on screen: it timed out or the turn
+    // was stopped, and an answer now would land on nothing. (`pending` is absent
+    // on an older host, which leaves the card up as before.)
+    if (showing && data && Array.isArray(data.pending)
+        && !data.pending.includes(showing.id)) {
+      showing.dismiss();
+    }
+    // A question that is already on screen comes round again whenever the host's
+    // reservation lapses; only a different one gets drawn.
+    if (data && data.request && !showing && !answered.has(data.request.permission_id)) show(data.request);
+    return showing ? SHOWING_MS : POLL_MS;
   } catch (_) {
     return BACKOFF_MS;
   }
+}
+
+let loopStarted = false;
+// One loop per page, however many times the extension's setup runs.
+function startLoop() {
+  if (loopStarted) return;
+  loopStarted = true;
+  loop();
 }
 
 async function loop() {
@@ -190,6 +218,6 @@ async function loop() {
 app.registerExtension({
   name: "agentY.toolPermission",
   setup() {
-    loop();
+    startLoop();
   },
 });
