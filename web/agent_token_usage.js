@@ -35,6 +35,21 @@ function money(n) {
   if (n === 0) return "$0.00";
   return "$" + (n < 1 ? n.toFixed(4) : n.toFixed(2));
 }
+// Where a cost figure comes from: "reported" = the provider stated what the calls
+// cost (e.g. OpenRouter's usage.cost); "estimated" = tokens x the price table.
+function srcOf(o) {
+  const rep = o.calls_reported || 0, est = o.calls_estimated || 0;
+  if (rep && est) return "mixed";
+  if (rep) return "reported";
+  if (est) return "estimated";
+  return o.calls ? "free" : "estimated";
+}
+const SRC_TITLE = {
+  reported: "Cost stated by the provider for every call",
+  estimated: "Estimated: tokens x the price table (the provider does not state a cost)",
+  mixed: "Part stated by the provider, part estimated",
+  free: "Local model: no cost",
+};
 function pct(x) { return (100 * (x || 0)).toFixed(1) + "%"; }
 // Prompt-cache hit rate: cache reads over ALL input-side tokens (fresh input +
 // cache reads + cache writes). Anthropic reports these three as disjoint parts
@@ -209,7 +224,8 @@ async function openTokenUsageModal() {
     if (sel !== "__all__") rows = rows.filter((r) => r.model === sel);
 
     // sum the visible rows for the headline tiles
-    const t = { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, calls: 0, tokens: 0 };
+    const t = { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, calls: 0, tokens: 0,
+                cost_reported: 0, cost_estimated: 0, calls_reported: 0, calls_estimated: 0 };
     for (const r of rows) for (const k of Object.keys(t)) t[k] += r[k] || 0;
 
     tiles.innerHTML = "";
@@ -222,7 +238,10 @@ async function openTokenUsageModal() {
       tile("", "Total tokens", el("div", { className: "v", textContent: compact(t.input + t.output), title: full(t.input + t.output) }), full(t.input + t.output)),
       tile("cache", "Cache read (hits)", el("div", { className: "v", textContent: compact(t.cache_read), title: full(t.cache_read) + " tokens" }), `${compact(t.cache_write)} written`),
       tile("cache", "Cache hit rate", el("div", { className: "v", textContent: pct(rate) }), "of input from cache"),
-      tile("", "Est. cost", el("div", { className: "v", textContent: money(t.cost) }), t.cost === 0 ? "model unpriced" : "USD"),
+      tile("", srcOf(t) === "reported" ? "Cost (reported)" : srcOf(t) === "mixed" ? "Cost (mixed)" : "Est. cost",
+        el("div", { className: "v", textContent: money(t.cost), title: SRC_TITLE[srcOf(t)] }),
+        t.cost === 0 && srcOf(t) !== "free" ? "model unpriced"
+          : srcOf(t) === "mixed" ? `${money(t.cost_reported)} reported + ${money(t.cost_estimated)} est.` : "USD"),
       tile("", "Calls", el("div", { className: "v", textContent: full(t.calls) }), `${compact(t.tokens || (t.input + t.output))} tokens total`),
     );
 
@@ -239,6 +258,7 @@ async function openTokenUsageModal() {
         el("th", { textContent: "Cache write" }),
         el("th", { textContent: "Hit rate" }),
         el("th", { textContent: "Cost" }),
+        el("th", { textContent: "Source" }),
         el("th", { textContent: "Calls" }),
       ])]);
       const tbody = el("tbody");
@@ -251,6 +271,7 @@ async function openTokenUsageModal() {
           el("td", { textContent: full(r.cache_write) }),
           el("td", { textContent: pct(hitRate(r)) }),
           el("td", { textContent: money(r.cost) }),
+          el("td", { textContent: srcOf(r), title: SRC_TITLE[srcOf(r)] }),
           el("td", { textContent: full(r.calls) }),
         ]));
       }
@@ -262,6 +283,7 @@ async function openTokenUsageModal() {
         el("td", { textContent: full(t.cache_write) }),
         el("td", { textContent: pct(hitRate(t)) }),
         el("td", { textContent: money(t.cost) }),
+        el("td", { textContent: srcOf(t) }),
         el("td", { textContent: full(t.calls) }),
       ])]);
       tableHost.append(el("div", { className: "atu-tablewrap" }, [
@@ -270,12 +292,22 @@ async function openTokenUsageModal() {
     }
 
     const lr = lastData.log_range || {};
+    let reconNote = "";
+    const rc = lastData.reconcile;
+    if (rc && rc.enabled) {
+      const parts = Object.entries(rc.providers || {}).map(([k, v]) => `${k} ${money(v.cost)}`);
+      const skipped = Object.entries(rc.skipped || {}).map(([k, v]) => `${k}: ${v}`);
+      reconNote = "Provider books for this period (whole organisation): " +
+        (parts.join(", ") || "none") + (skipped.length ? ` (skipped - ${skipped.join("; ")})` : "") + ". ";
+    }
     const scopeNote = rangeSel.value === "thread" && _threadTitle
       ? `Scoped to the selected conversation: “${_threadTitle}”. ` : "";
     note.textContent =
       scopeNote +
       `Log spans ${fmtTs(lr.min)} → ${fmtTs(lr.max)}. ` +
       `Summed from per-call deltas in .logs/tokens_usage.log. ` +
+      `Cost: "reported" = the provider stated it per call; "estimated" = tokens x price table. ` +
+      reconNote +
       `Hit rate = cache reads ÷ all input tokens (fresh + cache read + cache write). ` +
       `Lines logged before model tracking are grouped as "role:<agent>".`;
   }
@@ -315,6 +347,16 @@ async function openTokenUsageModal() {
       return;
     }
     lastData = data;
+    lastData.reconcile = null;
+    // Optional cross-check against the providers' own cost APIs ([costs] reconcile).
+    if (!p.scope) try {
+      const rq = new URLSearchParams();
+      const lr0 = data.log_range || {};
+      rq.set("from", String(p.from != null ? p.from : (lr0.min || "")));
+      if (p.to != null) rq.set("to", String(p.to));
+      const rr = await fetch(backendBase() + "/agentY/cost_reconcile?" + rq.toString());
+      if (rr.ok) { const rj = await rr.json(); if (rj.ok) lastData.reconcile = rj; }
+    } catch (e) { /* the overview works without it */ }
 
     // Refresh the model dropdown from the full model list, keeping the selection.
     const prev = modelSel.value;
