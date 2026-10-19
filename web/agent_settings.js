@@ -455,7 +455,25 @@ function mediaNodesRows(container, settings, refs) {
       if (key === "video_save") videoAsRows(container, chosen, refs, sel);
     }
   }
+  viewerTabRow(container, chosen, refs);
   return true;
+}
+
+// The one viewer tab the agent's pictures go to (Send to Image Viewer as the save
+// node). Each stage's pictures are grouped inside it under the hook's title.
+const VIEWER_TAB_NOTE = "With Send to Image Viewer as the save node, everything the agent saves "
+  + "goes into this one viewer tab, grouped by the stage (hook title) it came from. "
+  + "Empty leaves each save node with its own tab.";
+
+function viewerTabRow(container, chosen, refs) {
+  const input = el("input", { type: "text", className: "ays-input", placeholder: "agentY",
+                              value: String(chosen.viewer_tab == null ? "agentY" : chosen.viewer_tab) });
+  refs.push({ path: ["media_nodes", "viewer_tab"], get: () => input.value.trim() });
+  const row = el("div", { className: "ays-row" });
+  row.append(el("label", { className: "ays-label", textContent: "Viewer tab for the agent's pictures",
+                           title: "media_nodes.viewer_tab" }), input);
+  container.append(el("div", { className: "ays-field" }, [row]));
+  container.append(el("div", { className: "ays-note ays-keynote", textContent: VIEWER_TAB_NOTE }));
 }
 
 // A video file or an image sequence, and the sequence's format. Only a save node
