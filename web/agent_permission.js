@@ -147,10 +147,15 @@ function show(req) {
   once.addEventListener("click", () => close(true, false));
   always.addEventListener("click", () => close(true, true));
 
+  // allow_session === false: the host asks every time for this tool, so the
+  // session button would promise something that never happens.
+  const canRemember = req.allow_session !== false;
   card.append(el("div", { className: "ayp-foot" }, [
     el("span", { className: "ayp-count",
-                 textContent: `“Allow for this session” stops asking about ${req.tool} until the host restarts.` }),
-    deny, once, always,
+                 textContent: canRemember
+                   ? `“Allow for this session” stops asking about ${req.tool} until the host restarts.`
+                   : `This is asked every time.` }),
+    ...(canRemember ? [deny, once, always] : [deny, once]),
   ]));
 
   overlay.append(card);
