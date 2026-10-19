@@ -14,6 +14,7 @@ import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
 import { standardSize } from "./agent_canvas.js";
+import { installPanelHost } from "./agent_panel_host.js";
 import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
          isAgentGroupTitle, layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
          flowArrange, boundsOf, overlaps } from "./agent_layout.js";
@@ -365,6 +366,7 @@ class AgentChat {
     this._probing = false;  // an off-timer health probe is in flight
     this._injectStyles();
     this._build();
+    installPanelHost(this);   // where the panel is shown (sidebar / viewer) and what can be dropped on it
     this._hookVisibility();
     this._bootstrap();
   }
@@ -485,6 +487,13 @@ class AgentChat {
   // so a running turn's streaming text and rendered blocks survive a tab switch.
   mount(elm) {
     if (!elm) return;
+    // The panel is in the viewer: a sidebar tab opened now says so (and offers it back).
+    if (this._where === "viewer" && elm !== this._viewerEl) {
+      this._sidebarEl = elm;
+      this._showAway(elm);
+      return;
+    }
+    if (elm !== this._viewerEl) this._sidebarEl = elm;
     this.mountEl = elm;
     elm.classList.add("ay-host");  // see .ay-host: without a real height here the bars scroll
     elm.innerHTML = "";
@@ -3794,16 +3803,9 @@ class AgentChat {
 
   // ── attachments ──────────────────────────────────────────────────────────────
   async _onFiles() {
-    for (const f of this.fileInput.files) {
-      const fd = new FormData();
-      fd.append("file", f);
-      try {
-        const r = await fetch(backendBase() + "/agentY/upload", { method: "POST", body: fd });
-        if (r.ok) { const j = await r.json(); this.attachments.push({ path: j.path, name: j.name }); }
-      } catch (e) { this._sys("❌ Upload failed: " + e); }
-    }
+    const files = Array.from(this.fileInput.files);
     this.fileInput.value = "";
-    this._renderAttachments();
+    await this.attachFiles(files);   // agent_panel_host.js: the same path a dropped file takes
   }
   _renderAttachments() {
     this.attachEl.innerHTML = "";
@@ -5325,6 +5327,19 @@ for (const name of CTX_FIELDS) {
 // to a discarded DOM, so messages "disappeared" when you looked away. Instead we
 // keep a single instance and just re-parent its DOM into each new mount point.
 let _AGENTY_CHAT = null;
+
+// What the bEpic viewer (ComfyUI-ImageViewer) calls to show this panel as a dock
+// panel of its own (agent_panel_host.js). It exists from page load, before the
+// sidebar tab has ever been opened, and builds the panel on first use.
+window.agentYPanelHost = {
+  version: 1,
+  mountInto(elm, opts) {
+    if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();
+    _AGENTY_CHAT.mountInto(elm, opts);
+  },
+  toSidebar(opts) { if (_AGENTY_CHAT) _AGENTY_CHAT.toSidebar(opts); },
+  where() { return _AGENTY_CHAT ? _AGENTY_CHAT._where : "sidebar"; },
+};
 
 // Expose the conversation currently selected in the history dropdown so other
 // panels (e.g. the Token Usage overview's "Current run" scope) can scope to it.
