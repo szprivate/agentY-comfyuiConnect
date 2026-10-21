@@ -4291,7 +4291,17 @@ class AgentChat {
           }
         } else if (op.op === "connect") {
           const from = node(op.from), to = node(op.to);
-          const slot = to ? (to.inputs || []).findIndex((i) => i && i.name === op.input) : -1;
+          let slot = to ? (to.inputs || []).findIndex((i) => i && i.name === op.input) : -1;
+          // A slot of a V3 autogrow group (`model.reference_images.image_2`) only
+          // exists once its neighbour is wired - a node loaded or created fresh has
+          // the first, or none. The name is the address the API prompt uses, so
+          // add the socket under it, as ComfyUI's own growth would.
+          if (to && slot < 0 && String(op.input || "").includes(".")) {
+            try {
+              to.addInput(String(op.input), op.slot_type || "*");
+              slot = (to.inputs || []).findIndex((i) => i && i.name === op.input);
+            } catch (_) { slot = -1; }
+          }
           let ok = false;
           try { ok = !!(from && slot >= 0 && from.connect(Number(op.output) || 0, to, slot)); } catch (_) {}
           if (ok) wired.push(`#${from.id} → #${to.id}.${op.input}`);
