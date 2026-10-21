@@ -2426,8 +2426,12 @@ class AgentChat {
       row.textContent = line;
       if (isBar) r.bars.set(barKey, row);
       else r.bars.delete(prefix);
-      r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
-      r.text.title = line;
+      if (dl && isBar) {
+        this._downloadTotal(dl[1], bare);
+      } else {
+        r.text.textContent = line.replace(/\[[█░]+\]\s*/, "");
+        r.text.title = line;
+      }
     }
     if (/^(❌|🛑|⏹)/u.test(bare)) r.failed = true;
     else if (/^✅/u.test(bare)) r.failed = false;
@@ -2438,6 +2442,41 @@ class AgentChat {
     if (pct && r.total <= 1) this._runBar(Number(pct[1]));
     this._runCount();
     r.body.scrollTop = r.body.scrollHeight;
+  }
+  // Several downloads at once: the card's title and bar add them all up (GB done of
+  // GB in all, speed, time left) instead of showing whichever file spoke last, so
+  // they no longer flick between files. The per-file rows stay below.
+  _downloadTotal(file, bare) {
+    const r = this._runEl;
+    const size = bare.match(/([\d.]+)\/([\d.]+) GB/);
+    const rate = bare.match(/([\d.]+) MB\/s/);
+    if (!r.dls) r.dls = new Map();
+    const prev = r.dls.get(file) || {};
+    r.dls.set(file, {
+      done: size ? Number(size[1]) : prev.done || 0,
+      total: size ? Number(size[2]) : prev.total || 0,
+      rate: / done$/.test(bare) ? 0 : rate ? Number(rate[1]) : prev.rate || 0,
+    });
+    let done = 0, total = 0, mbps = 0, running = 0;
+    for (const d of r.dls.values()) {
+      done += d.done; total += d.total; mbps += d.rate;
+      if (d.done < d.total) running += 1;
+    }
+    const n = r.dls.size;
+    const pct = total > 0 ? Math.min(100, (100 * done) / total) : 0;
+    const info = [`${done.toFixed(1)}/${total.toFixed(1)} GB`];
+    if (mbps > 0) {
+      info.push(`${mbps.toFixed(1)} MB/s`);
+      const left = ((total - done) * 1024) / mbps;
+      if (left > 0) info.push(left >= 90 ? `${Math.round(left / 60)} min left` : `${Math.round(left)} s left`);
+    } else if (!running) {
+      info.push("done");
+    }
+    const what = n === 1 ? `⬇️ ${file}` : `⬇️ ${n} downloads${running && running < n ? ` (${running} running)` : ""}`;
+    const text = `${what} · ${Math.round(pct)}% · ${info.join(" · ")}`;
+    r.text.textContent = text;
+    r.text.title = [...r.dls.keys()].join("\n");
+    this._runBar(pct);
   }
   // The run's one queue row: how far back the furthest waiting run is, and how
   // many are waiting.
