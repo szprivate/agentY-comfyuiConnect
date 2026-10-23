@@ -1544,7 +1544,122 @@ function buildMcpCard(mcpData, envSet) {
     else bundleError(j.error || "could not read that bundle");
   });
 
-  body.append(list, el("div", { className: "ays-btnrow" }, [addBtn, bundleBtn]), bundleInput, addBox, bundleBox, err);
+  // ── add from the shared preset catalog (config/mcp_presets.json) ──
+  // The host lists the presets (GET /agentY/mcp/presets) and installs one
+  // (POST /agentY/mcp/presets/install): its keys go to .env, the entry into
+  // config/mcp.json, the server is tested once, and when something outside the
+  // config is left to do (setup steps, a bundle, a failed test) agentY is started
+  // on it in the chat. A host without the route simply has no dropdown.
+  let presets = [];
+  const presetSel = el("select", { className: "ays-input" });
+  const presetRow = el("div", { className: "ays-row" }, [presetSel]);
+  presetRow.hidden = true;
+  const presetBox = el("div", { className: "ays-mcpadd" });
+  presetBox.hidden = true;
+  const fillPresets = () => {
+    const have = new Set(rows.map((r) => r.currentName()));
+    presetSel.textContent = "";
+    presetSel.append(el("option", { value: "", textContent: "Add from presets…" }));
+    for (const p of presets) {
+      if (p.installed || have.has(p.id)) continue;
+      const d = p.description || "";
+      presetSel.append(el("option", { value: p.id,
+        textContent: `${p.name} · ${p.category}${d ? " - " + (d.length > 70 ? d.slice(0, 67) + "…" : d) : ""}` }));
+    }
+    presetRow.hidden = presetSel.options.length < 2;
+  };
+  const closePreset = () => { presetBox.hidden = true; presetBox.textContent = ""; presetSel.value = ""; };
+  const showPreset = (p) => {
+    presetBox.textContent = "";
+    presetBox.hidden = false;
+    const fields = {};
+    const msg = el("div", { className: "ays-note" });
+    const parts = [
+      el("div", { className: "ays-bundlehead" }, [
+        el("span", { className: "ays-mcpname", textContent: p.name }),
+        el("span", { className: "ays-mcpsum", textContent: p.category }),
+      ]),
+      el("div", { className: "ays-note", textContent: p.description || "" }),
+    ];
+    if (p.needs_bundle || p.setup_steps) {
+      parts.push(el("div", { className: "ays-note ays-warn", textContent: "This one needs more than a config entry"
+        + (p.needs_bundle ? " (its .mcpb bundle is not installed)" : "")
+        + ". After Install, agentY finishes the setup for you in the chat." }));
+    }
+    for (const k of p.env_keys || []) {
+      const stored = envSet.has(k.key);
+      const input = el("input", { className: "ays-input", type: "password", autocomplete: "off",
+        placeholder: stored ? "already in .env - leave blank to keep" : (k.optional ? "optional" : "required") });
+      fields[k.key] = { input, meta: k, stored };
+      const label = el("div", { className: "ays-row" }, [
+        el("span", { className: "ays-mcpsum", textContent: k.label || k.key }),
+        k.help_url ? el("a", { href: k.help_url, target: "_blank", rel: "noopener", textContent: "get a key" }) : null,
+      ]);
+      parts.push(label, input);
+    }
+    const go = el("button", { className: "ays-btn primary ays-sm", textContent: "Install" });
+    const cancel = el("button", { className: "ays-btn ays-sm", textContent: "Cancel" });
+    cancel.addEventListener("click", (e) => { e.preventDefault(); closePreset(); });
+    go.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const secrets = {};
+      for (const [key, f] of Object.entries(fields)) {
+        const v = f.input.value.trim();
+        if (v) secrets[key] = v;
+        else if (!f.meta.optional && !f.stored) { msg.textContent = `❌ ${f.meta.label || key} is needed`; return; }
+      }
+      go.disabled = true; cancel.disabled = true;
+      msg.textContent = "Installing and testing…";
+      try {
+        const j = await postJson("/agentY/mcp/presets/install", { id: p.id, secrets });
+        if (!j.ok) { msg.textContent = "❌ " + (j.error || "the host refused it"); return; }
+        for (const k of Object.keys(secrets)) envSet.add(k);
+        const lines = [];
+        if (j.state === "needs_bundle") lines.push("⏳ Not added yet: the server's .mcpb bundle is not installed.");
+        else if (j.test && j.test.ok) lines.push(`✅ ${p.name} added and connected (${j.test.tools} tools).`);
+        else if (j.test && j.test.needs_auth) lines.push(`✅ ${p.name} added. It signs in through the browser: press Authorize… on its card.`);
+        else lines.push(`⚠️ ${p.name} added, but the test failed: ${(j.test && j.test.error) || "unknown error"}`);
+        if (j.turn_id) lines.push("🤖 agentY is finishing the setup in the chat (a new conversation, \"MCP preset: " + p.name + "\"). Watch it there.");
+        else if (j.turn_error) lines.push("agentY could not be started on it: " + j.turn_error);
+        msg.textContent = lines.join("\n");
+        msg.style.whiteSpace = "pre-wrap";
+        p.installed = true;
+        if (j.state === "added") {
+          // The card of the server as the host wrote it (placeholders filled in).
+          try {
+            const cfg = await (await fetch(backendBase() + "/agentY/mcp")).json();
+            const sc = cfg && cfg.config && cfg.config.servers && cfg.config.servers[p.id];
+            if (sc) {
+              addRow(p.id, sc);
+              // Written by the host already: it is not an unsaved change of this form.
+              savedServers = JSON.stringify({ ...JSON.parse(savedServers || "{}"), [p.id]: rows[rows.length - 1].build().sc });
+            }
+          } catch (_) { /* the card appears after reopening Settings */ }
+        }
+        fillPresets();
+        go.hidden = true; cancel.textContent = "Close"; cancel.disabled = false;
+      } catch (err2) {
+        msg.textContent = "❌ " + err2;
+        go.disabled = false; cancel.disabled = false;
+      }
+    });
+    parts.push(el("div", { className: "ays-row" }, [go, cancel]), msg);
+    presetBox.append(...parts);
+  };
+  presetSel.addEventListener("change", () => {
+    const p = presets.find((x) => x.id === presetSel.value);
+    if (p) showPreset(p); else closePreset();
+  });
+  (async () => {
+    try {
+      const r = await fetch(backendBase() + "/agentY/mcp/presets");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && j.ok) { presets = j.presets || []; fillPresets(); }
+    } catch (_) { /* a host from before presets: no dropdown */ }
+  })();
+
+  body.append(list, el("div", { className: "ays-btnrow" }, [addBtn, bundleBtn]), presetRow, presetBox, bundleInput, addBox, bundleBox, err);
 
   let savedServers = null;
   const collect = () => {
