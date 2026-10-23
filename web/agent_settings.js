@@ -1586,6 +1586,7 @@ function buildMcpCard(mcpData, envSet) {
         + (p.needs_bundle ? " (its .mcpb bundle is not installed)" : "")
         + ". After Install, agentY finishes the setup for you in the chat." }));
     }
+    if (p.notes) parts.push(el("div", { className: "ays-note", textContent: p.notes }));
     for (const k of p.env_keys || []) {
       const stored = envSet.has(k.key);
       const input = el("input", { className: "ays-input", type: "password", autocomplete: "off",
