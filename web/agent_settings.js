@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
 import { iconsReady, setButtonIcon, applyIcons } from "./agent_icons.js";
 import { searchableSelect } from "./agent_combo.js";
+import { serviceEnvNames } from "./agent_env_names.js";
 
 // agentY Application Settings — adds an entry to the ComfyUI Settings panel that
 // opens a modal for editing the agent's auth keys (.env) and everything in
@@ -41,6 +42,7 @@ function isSecret(key) {
 //   advanced hidden unless "Show advanced settings" is on
 //   aux      a sub-group of sub-groups: { title, objects } - "Auxiliary models"
 //   envUrls  the providers' endpoint variables of .env, shown here as fields
+//   deadline the DEADLINE_* variables of .env, shown here as fields
 //
 // Anything not claimed by a section still appears, under "Other" — a new setting
 // must never become unreachable just because this list was not updated.
@@ -52,12 +54,13 @@ const SECTIONS = [
     // The models the agent loads itself, beside the language models: each does
     // one job, and each is a choice of model like the ones above.
     aux: { title: "Auxiliary models", objects: [["decision"], ["annotate"], ["likeness"]] } },
-  { title: "Connections", keys: ["comfyui_url", "agent_server_url", "ollama_server_url"] },
-  // Where each provider is reached, and how the local one is run. The
-  // endpoints are .env variables (a key and its endpoint belong to one
-  // account), shown here because they are addresses.
-  { title: "LLM providers", envUrls: true,
-    keys: [], objects: [["llm", "ollama"]],
+  // Where everything is reached, and how the local models are run. The hosted
+  // providers' endpoints are .env variables (a key and its endpoint belong to one
+  // account), shown here because they are addresses - and only for a provider
+  // whose key (or endpoint) is set.
+  { title: "Connections", envUrls: true,
+    keys: ["comfyui_url", "agent_server_url", "ollama_server_url"],
+    objects: [["llm", "ollama"]],
     inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
@@ -67,6 +70,8 @@ const SECTIONS = [
   { title: "Load & save nodes", extra: "mediaNodes" },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
   { title: "Slack", inline: ["slack"] },
+  // The render farm's variables are .env values, not settings.json ones.
+  { title: "Deadline", deadline: true },
   { title: "Updates", keys: ["auto_update", "update_channel"] },
   // Not advanced. These decide who can reach the host, and someone who has just
   // read the startup warning should find them without checking a box first.
@@ -101,6 +106,10 @@ const LEAF_LABELS = {
 
 // The providers' endpoints among the .env variables.
 const isProviderUrl = (key) => /_BASE_URL$/.test(key);
+
+// The Deadline render farm's .env variables: their own section, not Authentication.
+const DEADLINE_KEYS = ["DEADLINE_PATH", "DEADLINE_REPOSITORY", "DEADLINE_WEBSERVICE_URL",
+  "DEADLINE_COMFYUI_PATH", "DEADLINE_COMFYUI_POOL", "DEADLINE_GROUP", "DEADLINE_OUTPUT_DIR"];
 
 // What a path setting comes to on this machine, in full (/agentY/settings ->
 // setting_defaults): a blank one resolved to where things really go, a relative
@@ -597,10 +606,12 @@ const GROUP_NOTES = {
     + "Blank paths are searched for in ComfyUI's models folder.",
   likeness: "Compares a face in a result with a face in a reference, for QA "
     + "checks that ask for the same person. Runs on the CPU.",
-  "LLM providers": "The address each hosted provider is reached at - change one "
-    + "only for another region or a gateway of your own; the keys are under "
-    + "Authentication, Ollama's address under Connections - and, below, how local "
-    + "models are run.",
+  Connections: "Where everything is reached. The address of each hosted provider is "
+    + "listed once its key is set under Authentication - change one only for another "
+    + "region or a gateway of your own. Below: ComfyUI's and Ollama's addresses, and how "
+    + "local models are run.",
+  Deadline: "Optional: render on a Thinkbox Deadline 10 farm instead of the local ComfyUI. "
+    + "Empty fields use the defaults; saved to .env (see docs/deadline.md).",
   ollama: "How local models are run. The window is the model's whole memory of a "
     + "call - what goes in and what comes out; the output allowance is taken from "
     + "it. Which model, and whether it reasons, is set on its row under Models.",
@@ -612,7 +623,7 @@ const GROUP_NOTES = {
     + "so you can queue a render at the desk and watch it finish from a phone; a DM "
     + "back drives the same conversation this panel is in. Needs a Slack app of your "
     + "own: put its bot token (xoxb-…), an app-level token with connections:write "
-    + "(xapp-…) and your Slack member id in Authentication above, then turn `enabled` "
+    + "(xapp-…) and your Slack member id in Authentication above (+ Add API key > Slack), then turn `enabled` "
     + "on — it takes effect on the next agent start. The connection is outbound "
     + "(Socket Mode), so nothing here has to be reachable from the internet. "
     + "SLACK_ALLOWED_USERS is not optional: empty means every message is refused, "
@@ -627,13 +638,13 @@ const GROUP_NOTES = {
 // by section title or, for a nested group, by its settings key.
 const GROUP_FAMILY = {
   models: "models", "per-role overrides": "models", providers: "models", pipeline: "models",
-  "llm providers": "models", "auxiliary models": "models", decision: "models", likeness: "models",
+  "auxiliary models": "models", decision: "models", likeness: "models",
   ollama: "models", anthropic: "models", dashscope: "models", pricing: "models",
   connections: "connections", "files & logs": "connections", prompts: "connections",
   system_prompts: "connections",
   canvas: "canvas", annotation: "canvas", annotate: "canvas",
   "output checks": "checks", qa: "checks", refine: "checks",
-  slack: "integrations", mcp: "integrations",
+  slack: "integrations", mcp: "integrations", deadline: "integrations",
   memory: "memory", embedder: "memory", llm: "memory",   // memory.llm = the memory writer
   security: "safety", updates: "safety",
 };
@@ -780,7 +791,7 @@ function pathValue(settings, path) {
   return node && typeof node === "object" && !Array.isArray(node) ? node : null;
 }
 
-function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRows) {
+function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRows, deadlineRows) {
   const claimedScalars = new Set();
   const claimedObjects = new Set();      // joined settings paths, e.g. "llm.tiers"
   // What the page does not show is not a leftover either.
@@ -889,10 +900,14 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
     // The providers' endpoints: .env variables, so they are saved with the keys.
     // They lead their section: put in front of what the loops above wrote.
     if (section.envUrls && envUrlRows && envUrlRows.length) {
-      const first = body.firstChild;
-      const note = GROUP_NOTES[section.title];
-      if (note) body.insertBefore(el("div", { className: "ays-note", textContent: note }), first);
+      // (the section's note is already at the top: makeCollapsibleGroup put it there)
+      const lead = body.firstChild;
+      const first = lead && lead.classList && lead.classList.contains("ays-note") ? lead.nextSibling : lead;
       for (const row of envUrlRows) body.insertBefore(row, first);
+      wrote = true;
+    }
+    if (section.deadline && deadlineRows && deadlineRows.length) {
+      for (const row of deadlineRows) body.append(row);
       wrote = true;
     }
     if (section.extra === "mediaNodes" && mediaNodesRows(body, settings, refs)) {
@@ -1758,9 +1773,9 @@ async function openAgentYSettingsModal() {
   const envSec = el("div", { className: "ays-sec" });
   envSec.append(el("h3", { textContent: "Authentication (.env)" }));
   envSec.append(el("div", { className: "ays-note", textContent:
-    "API keys, stored in .env on the agent host. Keys already " +
-    "set are shown masked — the host does not send them back. Type over one to " +
-    "replace it; leave it alone and it stays as it is." }));
+    "API keys, stored in .env on the agent host. Only keys that are set are " +
+    "listed, masked — the host does not send them back. Type over one to " +
+    "replace it; leave it alone and it stays as it is. Use + Add API key to set another." }));
 
   // Rotation warning, at the top of the section it is about. The host prints the
   // same thing at startup, which is easy to scroll past in a terminal — this is
@@ -1781,13 +1796,35 @@ async function openAgentYSettingsModal() {
 
   // No "show values" toggle: the host sends a mask, never a secret, so revealing
   // the field would only show the mask back. A key is replaced by typing over it.
+  //
+  // Only what is set is listed (add a key with "+ Add API key"). The endpoints are
+  // addresses and go to Connections - there, for a provider whose key is set or
+  // whose endpoint is in .env. The host seeds each endpoint with its default, so
+  // "set" is read from env_file_keys, not from the value.
+  const envNow = data.env || {};
+  const fileKeys = Array.isArray(data.env_file_keys) ? new Set(data.env_file_keys) : null;
   const envUrlRows = [];
-  for (const key of data.env_keys || Object.keys(data.env || {})) {
-    const cur = (data.env || {})[key] || "";
+  const deadlineRows = [];
+  for (const key of DEADLINE_KEYS) {
+    const cur = envNow[key] || "";
+    const inp = el("input", { className: "ays-input", type: "text", value: cur });
+    envInputs[key] = { input: inp, original: cur };
+    deadlineRows.push(el("div", { className: "ays-field" }, [
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: key }), inp])]));
+  }
+  for (const key of data.env_keys || Object.keys(envNow)) {
+    if (DEADLINE_KEYS.includes(key)) continue;
+    const cur = envNow[key] || "";
+    if (isProviderUrl(key)) {
+      const own = fileKeys ? fileKeys.has(key) : !!cur;
+      if (!own && !envNow[key.replace(/_BASE_URL$/, "_API_KEY")]) continue;
+    } else if (!cur) {
+      continue;                                  // not set: nothing to show
+    }
     const inp = el("input", { className: "ays-input", type: isSecret(key) ? "password" : "text", value: cur });
     envInputs[key] = { input: inp, original: cur };
     const label = el("label", { className: "ays-label", textContent: key });
-    // An endpoint is an address, not a secret: it goes under "LLM provider URLs".
+    // An endpoint is an address, not a secret: it goes under "Connections".
     if (isProviderUrl(key)) {
       envUrlRows.push(el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [label, inp])]));
       continue;
@@ -1811,34 +1848,92 @@ async function openAgentYSettingsModal() {
     const row = el("div", { className: "ays-row" }, [label, inp]);
     // "Remove auth key" puts a button on every key that is set; pressing it
     // marks the key, and Save takes its line out of .env.
-    if (cur) {
-      const rm = el("button", { className: "ays-btn ays-envrm", textContent: "Remove", title: `Take ${key} out of .env when you save` });
-      rm.style.display = "none";
-      rm.addEventListener("click", (e) => {
-        e.preventDefault();
-        const off = !envRemove.has(key);
-        if (off) envRemove.add(key); else envRemove.delete(key);
-        rm.textContent = off ? "Keep" : "Remove";
-        inp.disabled = off;
-        row.style.opacity = off ? "0.45" : "";
-        label.style.textDecoration = off ? "line-through" : "";
-      });
-      row.append(rm);
-    }
+    const rm = el("button", { className: "ays-btn ays-envrm", textContent: "Remove", title: `Take ${key} out of .env when you save` });
+    rm.style.display = "none";
+    rm.addEventListener("click", (e) => {
+      e.preventDefault();
+      const off = !envRemove.has(key);
+      if (off) envRemove.add(key); else envRemove.delete(key);
+      rm.textContent = off ? "Keep" : "Remove";
+      inp.disabled = off;
+      row.style.opacity = off ? "0.45" : "";
+      label.style.textDecoration = off ? "line-through" : "";
+    });
+    row.append(rm);
     envSec.append(row);
   }
-  // Add NEW .env keys (e.g. an MCP server's API key). The host appends them and
-  // applies them to the live process, so a header-auth MCP server can reference
-  // ${THE_KEY} immediately on the next agent start.
-  const addKeyRows = [];
+  // Add a key by naming the SERVICE: the host's catalogue knows each one's
+  // variables and default endpoint; "Other service..." derives them from a name.
+  // The host writes them to .env and applies them to the live process, so an MCP
+  // server that references ${THE_KEY} has it on the next agent start.
+  const services = Array.isArray(data.services) ? data.services : [];
+  const addKeyRows = [];                 // each: { collect: () => {ENV: value} }
   const addKeysWrap = el("div", {});
+  const OTHER = "__other__";
   const addAKeyRow = () => {
-    const nameInp = el("input", { className: "ays-input", placeholder: "NEW_KEY_NAME", style: { flex: "0 0 42%" } });
-    const valInp = el("input", { className: "ays-input", type: "password", placeholder: "value" });
-    addKeyRows.push({ name: nameInp, val: valInp });
-    addKeysWrap.append(el("div", { className: "ays-row" }, [nameInp, valInp]));
+    const open = services.filter((sv) => !envNow[sv.key_env]);
+    const sel = el("select", { className: "ays-input" });
+    sel.append(el("option", { value: "", textContent: "Choose a service…" }));
+    for (const sv of open) sel.append(el("option", { value: sv.id, textContent: sv.label }));
+    sel.append(el("option", { value: OTHER, textContent: "Other service…" }));
+    const detail = el("div", {});
+    const card = el("div", { className: "ays-field" }, [
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Service" }), sel]), detail]);
+    const entry = { collect: () => ({}) };
+    const field = (label, type, placeholder, value) => {
+      const inp = el("input", { className: "ays-input", type, placeholder: placeholder || "", value: value || "" });
+      detail.append(el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: label }), inp]));
+      return inp;
+    };
+    sel.addEventListener("change", () => {
+      detail.textContent = "";
+      entry.collect = () => ({});
+      const sv = services.find((x) => x.id === sel.value);
+      if (sel.value === OTHER) {
+        const nameInp = field("Service name", "text", "e.g. Mercury");
+        const keyInp = field("API key", "password", "");
+        const urlInp = field("Server URL", "text", "optional");
+        const names = el("div", { className: "ays-note" });
+        detail.append(names);
+        const derive = () => {
+          const n = serviceEnvNames(nameInp.value);
+          names.textContent = n
+            ? `Saved as ${n.key}` + (urlInp.value.trim() ? ` and ${n.url}` : ` (and ${n.url} if you give a URL)`)
+              + " - an MCP config refers to them as ${" + n.key + "}."
+            : (nameInp.value.trim() ? "The name must start with a letter."
+               : "Names the .env variables: <NAME>_API_KEY and <NAME>_BASE_URL.");
+          return n;
+        };
+        nameInp.addEventListener("input", derive); urlInp.addEventListener("input", derive); derive();
+        entry.collect = () => {
+          const n = serviceEnvNames(nameInp.value);
+          const out = {};
+          if (!n || !keyInp.value) return out;
+          out[n.key] = keyInp.value;
+          if (urlInp.value.trim()) out[n.url] = urlInp.value.trim();
+          return out;
+        };
+      } else if (sv) {
+        const keyInp = field(sv.key_env, isSecret(sv.key_env) ? "password" : "text", "");
+        const extra = (sv.fields || []).map((f) => [f, field(f.label || f.env, f.secret ? "password" : "text", "")]);
+        const urlInp = sv.url_env ? field("Server URL", "text", "", sv.default_url || "") : null;
+        const hint = [sv.hint, sv.help_url ? `Get a key: ${sv.help_url}` : ""].filter(Boolean).join(" ");
+        if (hint) detail.append(el("div", { className: "ays-note", textContent: hint }));
+        entry.collect = () => {
+          const out = {};
+          if (!keyInp.value) return out;
+          out[sv.key_env] = keyInp.value;
+          for (const [f, inp] of extra) if (inp.value) out[f.env] = inp.value;
+          const u = urlInp ? urlInp.value.trim() : "";
+          if (u && u !== (sv.default_url || "")) out[sv.url_env] = u;
+          return out;
+        };
+      }
+    });
+    addKeyRows.push(entry);
+    addKeysWrap.append(card);
   };
-  const addKeyBtn = el("button", { className: "ays-btn", textContent: "+ Add auth key" });
+  const addKeyBtn = el("button", { className: "ays-btn", textContent: "+ Add API key" });
   addKeyBtn.addEventListener("click", (e) => { e.preventDefault(); addAKeyRow(); });
   const rmKeyBtn = el("button", { className: "ays-btn", textContent: "\u2212 Remove auth key",
     title: "Show a Remove button on every key that is set. A key you mark is taken out of .env when you save." });
@@ -1895,7 +1990,7 @@ async function openAgentYSettingsModal() {
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
   MEDIA_NODES = (data.media_node_choices && typeof data.media_node_choices === "object")
     ? data.media_node_choices : {};
-  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs, envUrlRows);
+  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs, envUrlRows, deadlineRows);
 
   // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)
   // stay hidden until asked for. They are real settings, not clutter — but showing
@@ -1954,10 +2049,7 @@ async function openAgentYSettingsModal() {
       if (envRemove.has(key)) continue;
       if (input.value !== original) envChanges[key] = input.value;
     }
-    for (const { name, val } of addKeyRows) {
-      const k = (name.value || "").trim();
-      if (k) envChanges[k] = val.value;
-    }
+    for (const entry of addKeyRows) Object.assign(envChanges, entry.collect());
     const priceOut = pricing.collect();
     pricing.err.textContent = priceOut.error ? "Not saved: " + priceOut.error : "";
     const mcpOut = mcp ? mcp.collect() : null;
@@ -2003,6 +2095,8 @@ async function openAgentYSettingsModal() {
         : "✅ Saved " + parts.join(", ") + ". Model & MCP changes apply on the next agent start.";
       // Refresh originals so a second save doesn't re-send unchanged keys.
       for (const [key, o] of Object.entries(envInputs)) o.original = o.input.value;
+      addKeyRows.length = 0;
+      addKeysWrap.textContent = "";        // the keys just added are in .env; reopen Settings to see them listed
     } catch (e) {
       msg.textContent = "❌ " + e;
     } finally {

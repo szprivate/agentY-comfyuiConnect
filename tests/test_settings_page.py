@@ -17,8 +17,8 @@ class TheSections(unittest.TestCase):
 
     def test_their_names_in_order(self):
         titles = re.findall(r'^  \{ title: "([^"]+)"', SECTIONS, flags=re.M)
-        self.assertEqual(titles, ["Models", "Connections", "LLM providers", "Canvas", "Load & save nodes",
-                                  "Output checks", "Slack", "Updates", "Security", "Memory", "Files & logs"])
+        self.assertEqual(titles, ["Models", "Connections", "Canvas", "Load & save nodes",
+                                  "Output checks", "Slack", "Deadline", "Updates", "Security", "Memory", "Files & logs"])
 
     def test_prompts_and_annotation_are_not_sections(self):
         for gone in ('"Prompts"', '"Annotation"', '"Providers"'):
@@ -31,7 +31,7 @@ class TheSections(unittest.TestCase):
             self.assertIn(key, JS.split("const GROUP_LABELS = {", 1)[1].split("};", 1)[0])
 
     def test_the_local_provider_is_the_only_one_with_settings(self):
-        providers = SECTIONS.split('{ title: "LLM providers"', 1)[1].split("},", 1)[0]
+        providers = SECTIONS.split('{ title: "Connections"', 1)[1].split("},", 1)[0]
         self.assertIn('objects: [["llm", "ollama"]]', providers)
         self.assertIn("envUrls: true", providers)             # the endpoints are in the same section
         self.assertNotIn("advanced", providers)               # and it is shown without asking
