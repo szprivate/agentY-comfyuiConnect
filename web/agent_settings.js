@@ -94,6 +94,7 @@ const HIDDEN = new Set([
   "llm.vision_models", "llm.text_only_models",
   "llm.ollama.host", "llm.ollama.think",
   "llm.anthropic", "llm.dashscope", "llm.openai", "llm.google",
+  "llm.custom_providers",     // the registry: Connections shows and saves it
   "system_prompts",
 ]);
 const isHidden = (path) => HIDDEN.has(path.join("."));
@@ -106,6 +107,11 @@ const LEAF_LABELS = {
 
 // The providers' endpoints among the .env variables.
 const isProviderUrl = (key) => /_BASE_URL$/.test(key);
+
+// A service name as a provider id ("Mercury AI" -> "mercury_ai"), and the names a
+// provider may not take (data.reserved_providers, the host's list).
+const providerId = (name) => String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+let RESERVED_PROVIDERS = new Set();
 
 // The Deadline render farm's .env variables: their own section, not Authentication.
 const DEADLINE_KEYS = ["DEADLINE_PATH", "DEADLINE_REPOSITORY", "DEADLINE_WEBSERVICE_URL",
@@ -315,6 +321,19 @@ function injectStyles() {
   .ays-btnrow{display:flex;gap:8px;flex-wrap:wrap;}
   `;
   document.head.append(el("style", { id: "agentY-settings-styles", textContent: css }));
+}
+
+// The OpenAI-compatible providers the user registered (data.custom_providers): a
+// model id they did not list can still be typed in the model menus.
+let CUSTOM_PROVIDERS = [];
+function typedModelChoices(text) {
+  const t = String(text || "").trim();
+  const [head, ...rest] = t.split(",");
+  const named = CUSTOM_PROVIDERS.find((p) => p.id === head.trim().toLowerCase());
+  if (named && rest.length && rest.join(",").trim()) {
+    return [{ value: `${named.id},${rest.join(",").trim()}`, label: `${named.label}: use "${rest.join(",").trim()}"` }];
+  }
+  return CUSTOM_PROVIDERS.map((p) => ({ value: `${p.id},${t}`, label: `${p.label}: use "${t}"` }));
 }
 
 function buildModelSelect(groups, current, inheritable) {
@@ -720,7 +739,8 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
       sel.options[0].textContent = "— same as Orchestrator —";
     }
     refs.push({ path, get: () => sel.value });
-    input = searchableSelect(sel, { placeholder: "Type a model name…" });
+    input = searchableSelect(sel, { placeholder: "Type a model name…",
+                                    extraChoices: CUSTOM_PROVIDERS.length ? typedModelChoices : null });
   } else if (Array.isArray(AUX_CHOICES[path.join(".")]) && AUX_CHOICES[path.join(".")].length) {
     // A model the agent loads itself: picked from a list, like the others.
     const current = val == null ? "" : String(val);
@@ -1802,9 +1822,52 @@ async function openAgentYSettingsModal() {
   // whose endpoint is in .env. The host seeds each endpoint with its default, so
   // "set" is read from env_file_keys, not from the value.
   const envNow = data.env || {};
+  RESERVED_PROVIDERS = new Set(Array.isArray(data.reserved_providers) ? data.reserved_providers : []);
   const fileKeys = Array.isArray(data.env_file_keys) ? new Set(data.env_file_keys) : null;
   const envUrlRows = [];
   const deadlineRows = [];
+  // Registered OpenAI-compatible providers: one row each under Connections, with
+  // the URL (an .env variable), Test and Remove. Remove drops the registry entry
+  // on Save; the keys stay in .env until removed above.
+  CUSTOM_PROVIDERS = Array.isArray(data.custom_providers) ? data.custom_providers : [];
+  const customUrlEnvs = new Set(CUSTOM_PROVIDERS.map((p) => p.url_env));
+  const customRemove = new Set();
+  for (const p of CUSTOM_PROVIDERS) {
+    const cur = envNow[p.url_env] || "";
+    const inp = el("input", { className: "ays-input", type: "text", value: cur,
+                              placeholder: p.url_env });
+    envInputs[p.url_env] = { input: inp, original: cur };
+    const label = el("label", { className: "ays-label", textContent: p.label,
+                                title: `${p.id} - OpenAI-compatible; key ${p.key_env}, URL ${p.url_env}` });
+    const result = el("span", { className: "ays-note", style: { marginLeft: "6px" } });
+    const test = el("button", { className: "ays-btn", textContent: "Test",
+                                title: "GET /models with the saved key and URL" });
+    test.addEventListener("click", async (e) => {
+      e.preventDefault();
+      test.disabled = true;
+      result.textContent = "Testing…";
+      try {
+        const j = await postJson("/agentY/custom_provider/test", { id: p.id });
+        result.textContent = j.ok ? `✅ ${j.count} model(s)` : "❌ " + (j.error || "failed");
+      } catch (err) {
+        result.textContent = "❌ " + err;
+      } finally {
+        test.disabled = false;
+      }
+    });
+    const rm = el("button", { className: "ays-btn", textContent: "Remove",
+                              title: "Take this provider out of the settings when you save (its keys stay in .env)" });
+    const row = el("div", { className: "ays-row" }, [label, inp, test, rm]);
+    rm.addEventListener("click", (e) => {
+      e.preventDefault();
+      const off = !customRemove.has(p.id);
+      if (off) customRemove.add(p.id); else customRemove.delete(p.id);
+      rm.textContent = off ? "Keep" : "Remove";
+      row.style.opacity = off ? "0.45" : "";
+      label.style.textDecoration = off ? "line-through" : "";
+    });
+    envUrlRows.push(el("div", { className: "ays-field" }, [row, result]));
+  }
   for (const key of DEADLINE_KEYS) {
     const cur = envNow[key] || "";
     const inp = el("input", { className: "ays-input", type: "text", value: cur });
@@ -1814,6 +1877,7 @@ async function openAgentYSettingsModal() {
   }
   for (const key of data.env_keys || Object.keys(envNow)) {
     if (DEADLINE_KEYS.includes(key)) continue;
+    if (customUrlEnvs.has(key)) continue;          // shown with its provider, below
     const cur = envNow[key] || "";
     if (isProviderUrl(key)) {
       const own = fileKeys ? fileKeys.has(key) : !!cur;
@@ -1879,7 +1943,7 @@ async function openAgentYSettingsModal() {
     const detail = el("div", {});
     const card = el("div", { className: "ays-field" }, [
       el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Service" }), sel]), detail]);
-    const entry = { collect: () => ({}) };
+    const entry = { collect: () => ({}), provider: () => null };
     const field = (label, type, placeholder, value) => {
       const inp = el("input", { className: "ays-input", type, placeholder: placeholder || "", value: value || "" });
       detail.append(el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: label }), inp]));
@@ -1888,11 +1952,21 @@ async function openAgentYSettingsModal() {
     sel.addEventListener("change", () => {
       detail.textContent = "";
       entry.collect = () => ({});
+      entry.provider = () => null;
       const sv = services.find((x) => x.id === sel.value);
       if (sel.value === OTHER) {
         const nameInp = field("Service name", "text", "e.g. Mercury");
         const keyInp = field("API key", "password", "");
-        const urlInp = field("Server URL", "text", "optional");
+        const urlInp = field("Server URL", "text", "e.g. https://api.mercury.example/v1");
+        const asLlm = el("input", { type: "checkbox" });
+        const visionBox = el("input", { type: "checkbox" });
+        const llmRow = el("div", { className: "ays-row" }, [
+          el("label", { className: "ays-label", textContent: "LLM provider" }),
+          el("label", {}, [asLlm, " OpenAI-compatible LLM provider"])]);
+        const visRow = el("div", { className: "ays-row" }, [
+          el("label", { className: "ays-label", textContent: "" }),
+          el("label", {}, [visionBox, " can read images"])]);
+        detail.append(llmRow, visRow);
         const names = el("div", { className: "ays-note" });
         detail.append(names);
         const derive = () => {
@@ -1902,9 +1976,26 @@ async function openAgentYSettingsModal() {
               + " - an MCP config refers to them as ${" + n.key + "}."
             : (nameInp.value.trim() ? "The name must start with a letter."
                : "Names the .env variables: <NAME>_API_KEY and <NAME>_BASE_URL.");
+          const url = urlInp.value.trim();
+          llmRow.style.opacity = visRow.style.opacity = "";
+          visionBox.disabled = !asLlm.checked || !url;
+          if (visionBox.disabled) visionBox.checked = false;
+          if (asLlm.checked && n && !url) names.textContent += " A provider needs its server URL.";
+          if (asLlm.checked && n && RESERVED_PROVIDERS.has(providerId(nameInp.value))) {
+            names.textContent += ` "${providerId(nameInp.value)}" is a built-in provider name: use another service name.`;
+          }
           return n;
         };
-        nameInp.addEventListener("input", derive); urlInp.addEventListener("input", derive); derive();
+        for (const x of [nameInp, urlInp, asLlm]) { x.addEventListener("input", derive); x.addEventListener("change", derive); }
+        derive();
+        entry.provider = () => {
+          const n = serviceEnvNames(nameInp.value);
+          const url = urlInp.value.trim();
+          if (!asLlm.checked || !n || !url || !keyInp.value) return null;
+          const id = providerId(nameInp.value);
+          if (RESERVED_PROVIDERS.has(id)) return { error: `"${id}" is a built-in provider name` };
+          return { id, entry: { label: nameInp.value.trim(), key_env: n.key, url_env: n.url, vision: !!visionBox.checked } };
+        };
         entry.collect = () => {
           const n = serviceEnvNames(nameInp.value);
           const out = {};
@@ -2050,6 +2141,12 @@ async function openAgentYSettingsModal() {
       if (input.value !== original) envChanges[key] = input.value;
     }
     for (const entry of addKeyRows) Object.assign(envChanges, entry.collect());
+    const cpAdd = {};
+    for (const entry of addKeyRows) {
+      const pr = entry.provider();
+      if (pr && pr.error) { msg.textContent = "❌ " + pr.error; saveBtn.disabled = false; return; }
+      if (pr) cpAdd[pr.id] = pr.entry;
+    }
     const priceOut = pricing.collect();
     pricing.err.textContent = priceOut.error ? "Not saved: " + priceOut.error : "";
     const mcpOut = mcp ? mcp.collect() : null;
@@ -2059,6 +2156,9 @@ async function openAgentYSettingsModal() {
     if (mcpOut && !mcpOut.error) Object.assign(envChanges, mcpOut.secrets);
     const payload = { env: envChanges, settings: collectSettings(refs) };
     if (envRemove.size) payload.env_remove = [...envRemove];
+    if (Object.keys(cpAdd).length || customRemove.size) {
+      payload.custom_providers = { add: cpAdd, remove: [...customRemove] };
+    }
     if (priceOut.payload && priceOut.changed) payload.pricing = priceOut.payload;
     try {
       // Offline, the MCP config rides in the same save: one process writes all
@@ -2087,6 +2187,11 @@ async function openAgentYSettingsModal() {
       }
       const parts = [];
       if (j.env_updated && j.env_updated.length) parts.push(`${j.env_updated.length} auth key(s)`);
+      if (j.custom_providers_added && j.custom_providers_added.length) parts.push(`provider ${j.custom_providers_added.join(", ")}`);
+      if (j.custom_providers_removed && j.custom_providers_removed.length) parts.push(`removed provider ${j.custom_providers_removed.join(", ")}`);
+      if (j.custom_providers_rejected) {
+        throw new Error(Object.entries(j.custom_providers_rejected).map(([k, v]) => `${k}: ${v}`).join("; "));
+      }
       if (j.settings_updated && j.settings_updated.length) parts.push(`${j.settings_updated.length} setting(s)`);
       if (j.pricing_updated) parts.push("pricing");
       if (mcpSaved) parts.push("MCP servers");

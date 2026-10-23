@@ -41,5 +41,26 @@ class DeadlineSection(unittest.TestCase):
         self.assertIn("docs/deadline.md", js)
 
 
+class CustomProviderUi(unittest.TestCase):
+    """Read from the source: the page has no engine to run in here."""
+
+    def setUp(self):
+        self.js = (WEB / "agent_settings.js").read_text(encoding="utf-8")
+
+    def test_the_registry_is_kept_off_the_generic_form_and_saved_explicitly(self):
+        self.assertIn('"llm.custom_providers"', self.js.split("const HIDDEN = new Set([", 1)[1].split("]);", 1)[0])
+        self.assertIn("payload.custom_providers = { add: cpAdd, remove: [...customRemove] };", self.js)
+
+    def test_connections_rows_have_test_and_remove(self):
+        self.assertIn("/agentY/custom_provider/test", self.js)
+        self.assertIn("OpenAI-compatible LLM provider", self.js)
+        self.assertIn("can read images", self.js)
+
+    def test_typed_model_ids_are_offered(self):
+        self.assertIn("extraChoices: CUSTOM_PROVIDERS.length ? typedModelChoices : null", self.js)
+        combo = (WEB / "agent_combo.js").read_text(encoding="utf-8")
+        self.assertIn("extraChoices", combo)
+
+
 if __name__ == "__main__":
     unittest.main()

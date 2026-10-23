@@ -77,7 +77,7 @@ function highlight(label, words) {
  * select's classes, so the field styling that applied to the select applies to
  * the box. `placeholder` is what an empty search box says.
  */
-export function searchableSelect(select, { placeholder = "Type to filter…" } = {}) {
+export function searchableSelect(select, { placeholder = "Type to filter…", extraChoices = null } = {}) {
   const doc = select.ownerDocument || document;
   injectStyles(doc);
   const wrap = doc.createElement("span");
@@ -162,6 +162,20 @@ export function searchableSelect(select, { placeholder = "Type to filter…" } =
       items.push(entry);
       list.append(it);
     }
+    // Choices made from what was typed (a model id the provider's list lacks).
+    const typed = input.value.trim();
+    if (extraChoices && typed) {
+      for (const c of extraChoices(typed) || []) {
+        const it = doc.createElement("div");
+        it.className = "ay-combo-item";
+        it.textContent = c.label;
+        it.title = c.value;
+        it.addEventListener("mousedown", (e) => { e.preventDefault(); pick(c.value); });
+        const entry = { el: it, value: c.value };
+        items.push(entry);
+        list.append(it);
+      }
+    }
     if (!items.length) {
       const none = doc.createElement("div");
       none.className = "ay-combo-none";
@@ -213,6 +227,12 @@ export function searchableSelect(select, { placeholder = "Type to filter…" } =
   };
   const pick = (value) => {
     const changed = select.value !== value;
+    if (value && ![...select.options].some((o) => o.value === value)) {
+      const o = doc.createElement("option");
+      o.value = value;
+      o.textContent = value;
+      select.append(o);
+    }
     select.value = value;
     close();
     input.blur();
