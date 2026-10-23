@@ -132,5 +132,26 @@ class SlackSection(unittest.TestCase):
         self.assertIn("in the fields right here", note)
 
 
+class TheModelRouting(unittest.TestCase):
+    """llm.routing: the auto-switch switch and the rules table, drawn under Models."""
+
+    def test_models_draws_it_and_the_generic_form_does_not(self):
+        models = SECTIONS.split('{ title: "Models"', 1)[1].split('{ title: "Connections"', 1)[0]
+        self.assertIn("routing: true", models)
+        self.assertIn('"llm.routing"', HIDDEN)
+
+    def test_the_switch_is_off_by_default_and_saves_to_its_setting(self):
+        self.assertIn("Auto-switch suggested models", JS)
+        self.assertIn('path: ["llm", "routing", "auto_switch"]', JS)
+        self.assertIn('path: ["llm", "routing", "rules"]', JS)
+
+    def test_a_rule_is_when_role_model_why(self):
+        body = JS.split("function routingRows(", 1)[1].split("\n}\n", 1)[0]
+        for part in ("kindSel", "roleSel", "modelSel", "whyInp", "buildModelSelect(modelGroups"):
+            self.assertIn(part, body)
+        for kind in ('"skill"', '"tool_pack"', '"tool"'):
+            self.assertIn(kind, JS.split("const ROUTING_KINDS", 1)[1].split("];", 1)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

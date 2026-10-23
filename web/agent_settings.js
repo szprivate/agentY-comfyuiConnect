@@ -51,7 +51,7 @@ const SECTIONS = [
   // Models first and OPEN. It is the setting people come here to change, and it
   // used to be two collapsed levels down ("Models & providers" -> "Model tiers").
   { title: "Models", open: true, inline: ["llm", "tiers"],
-    objects: [["llm", "pipeline"]], extra: "memoryEmbedder",
+    objects: [["llm", "pipeline"]], extra: "memoryEmbedder", routing: true,
     // The models the agent loads itself, beside the language models: each does
     // one job, and each is a choice of model like the ones above.
     aux: { title: "Auxiliary models", objects: [["decision"], ["annotate"], ["likeness"]] } },
@@ -97,6 +97,7 @@ const HIDDEN = new Set([
   "llm.ollama.host", "llm.ollama.think",
   "llm.anthropic", "llm.dashscope", "llm.openai", "llm.google",
   "llm.custom_providers",     // the registry: Connections shows and saves it
+  "llm.routing",              // Models draws it: the auto-switch switch and the rules table
   "system_prompts",
 ]);
 const isHidden = (path) => HIDDEN.has(path.join("."));
@@ -431,6 +432,97 @@ function memoryEmbedderRow(container, settings, refs) {
                            title: "memory.embedder.preset" }), sel);
   field.append(row, el("div", { className: "ays-note ays-keynote", textContent: EMBEDDER_NOTE }));
   container.append(field);
+  return true;
+}
+
+// ── model routing: auto-switch and the rules table (llm.routing) ──────────
+// The agent can list and switch models (list_models / switch_model). A rule says
+// WHEN to suggest a switch: "when this skill / tool pack / tool is used, model M is
+// the better seat". The host checks the rules on tool calls it already makes -
+// no extra model call - and adds one line to the result, once per conversation.
+// With the switch on, a rule moves the conversation without asking.
+const ROUTING_KINDS = [["skill", "skill"], ["tool_pack", "tool pack"], ["tool", "tool"]];
+const ROUTING_AUTO_NOTE = "When a rule below fires, the agent suggests the model and asks you first. "
+  + "On: it switches this conversation by itself and tells you (any other switch is still asked). "
+  + "It never picks a model that is not available, and never moves a conversation holding images "
+  + "to a model that cannot read them.";
+const ROUTING_RULES_NOTE = "When the agent loads a skill or tool pack, or calls a tool, that matches "
+  + "a rule, it is told which model is recommended for the job. A rule whose model is not available "
+  + "right now stays silent.";
+
+const ruleWhen = (rule) => {
+  const when = (rule && rule.when) || {};
+  for (const [k] of ROUTING_KINDS) if (when[k]) return [k, String(when[k])];
+  return ["skill", ""];
+};
+
+function routingRows(container, settings, modelGroups, refs) {
+  const routing = (((settings || {}).llm) || {}).routing;
+  if (!routing || typeof routing !== "object") return false;
+
+  // The switch.
+  const autoField = el("div", { className: "ays-field ays-hasnote" });
+  const autoRow = el("div", { className: "ays-row" });
+  const autoBox = el("input", { type: "checkbox", className: "ays-input" });
+  autoBox.checked = routing.auto_switch === true;
+  autoRow.append(el("label", { className: "ays-label", textContent: "Auto-switch suggested models",
+                               title: "llm.routing.auto_switch" }), autoBox);
+  autoField.append(autoRow, el("div", { className: "ays-note ays-keynote", textContent: ROUTING_AUTO_NOTE }));
+  refs.push({ path: ["llm", "routing", "auto_switch"], get: () => autoBox.checked });
+  container.append(autoField);
+
+  // The rules.
+  const original = Array.isArray(routing.rules) ? routing.rules : [];
+  const { group, body } = makeCollapsibleGroup("routing rules", `  (${original.length})`, false);
+  body.append(el("div", { className: "ays-note", textContent: ROUTING_RULES_NOTE }));
+  const roles = ["orchestrator", ...Object.keys(TIER_LABELS).filter((t) => t !== "orchestrator")];
+  const rows = [];
+  const list = el("div");
+  const addRule = (rule) => {
+    const [kind, name] = ruleWhen(rule);
+    const suggest = Array.isArray(rule && rule.suggest) ? rule.suggest : (rule && rule.suggest ? [rule.suggest] : []);
+    const kindSel = el("select", { className: "ays-input" },
+      ROUTING_KINDS.map(([v, l]) => el("option", { value: v, textContent: l })));
+    kindSel.value = kind;
+    const nameInp = el("input", { type: "text", className: "ays-input", value: name,
+                                  placeholder: "name, e.g. model-from-reference or dcc" });
+    const roleSel = el("select", { className: "ays-input", title: "The tier or role the rule is about" },
+      roles.map((r) => el("option", { value: r, textContent: r, title: TIER_LABELS[r] || r })));
+    roleSel.value = (rule && rule.role) || "orchestrator";
+    const modelSel = buildModelSelect(modelGroups, suggest[0] || "", true);
+    modelSel.options[0].textContent = "— choose a model —";
+    const modelBox = searchableSelect(modelSel, { placeholder: "Type a model name…",
+      extraChoices: CUSTOM_PROVIDERS.length ? typedModelChoices : null });
+    const whyInp = el("input", { type: "text", className: "ays-input", value: (rule && rule.why) || "",
+                                 placeholder: "why this model suits the task" });
+    const del = el("button", { className: "ays-btn ays-x", textContent: "✕", title: "Remove this rule" });
+    const field = el("div", { className: "ays-field" }, [
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "when" }), kindSel, nameInp]),
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "suggest" }), roleSel, modelBox]),
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "why" }), whyInp, del]),
+    ]);
+    const entry = { rule: rule || {}, kindSel, nameInp, roleSel, modelSel, whyInp, suggest, firstModel: suggest[0] || "" };
+    del.addEventListener("click", (e) => { e.preventDefault(); field.remove(); rows.splice(rows.indexOf(entry), 1); });
+    rows.push(entry);
+    list.append(field);
+  };
+  original.forEach((r) => addRule(r));
+  const addBtn = el("button", { className: "ays-btn", textContent: "+ Add rule" });
+  addBtn.addEventListener("click", (e) => { e.preventDefault(); addRule(null); });
+  body.append(list, addBtn);
+  container.append(group);
+
+  // A rule with no name or no model is dropped; an untouched model keeps a
+  // preference list (suggest: [a, b]) exactly as the file has it.
+  refs.push({ path: ["llm", "routing", "rules"], get: () => rows
+    .filter((r) => r.nameInp.value.trim() && (r.modelSel.value || r.suggest.length))
+    .map((r) => ({
+      ...r.rule,
+      when: { [r.kindSel.value]: r.nameInp.value.trim() },
+      role: r.roleSel.value,
+      suggest: r.modelSel.value === r.firstModel && r.suggest.length > 1 ? r.suggest : r.modelSel.value,
+      why: r.whyInp.value.trim(),
+    })) });
   return true;
 }
 
@@ -906,6 +998,7 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
     }
 
     if (section.extra === "memoryEmbedder" && memoryEmbedderRow(body, settings, refs)) wrote = true;
+    if (section.routing && routingRows(body, settings, modelGroups, refs)) wrote = true;
 
     // A group of groups: the models the agent loads besides the language models.
     if (section.aux) {
