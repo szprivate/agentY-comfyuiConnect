@@ -43,6 +43,7 @@ function isSecret(key) {
 //   aux      a sub-group of sub-groups: { title, objects } - "Auxiliary models"
 //   envUrls  the providers' endpoint variables of .env, shown here as fields
 //   deadline the DEADLINE_* variables of .env, shown here as fields
+//   slackEnv the SLACK_* variables of .env, shown here as fields (always, even empty)
 //
 // Anything not claimed by a section still appears, under "Other" — a new setting
 // must never become unreachable just because this list was not updated.
@@ -69,7 +70,8 @@ const SECTIONS = [
                             "comfyui_console_lines"] },
   { title: "Load & save nodes", extra: "mediaNodes" },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
-  { title: "Slack", inline: ["slack"] },
+  // Its tokens and allow-list are .env variables, shown here as fields.
+  { title: "Slack", inline: ["slack"], slackEnv: true },
   // The render farm's variables are .env values, not settings.json ones.
   { title: "Deadline", deadline: true },
   { title: "Updates", keys: ["auto_update", "update_channel"] },
@@ -116,6 +118,9 @@ let RESERVED_PROVIDERS = new Set();
 // The Deadline render farm's .env variables: their own section, not Authentication.
 const DEADLINE_KEYS = ["DEADLINE_PATH", "DEADLINE_REPOSITORY", "DEADLINE_WEBSERVICE_URL",
   "DEADLINE_COMFYUI_PATH", "DEADLINE_COMFYUI_POOL", "DEADLINE_GROUP", "DEADLINE_OUTPUT_DIR"];
+
+// The Slack bridge's .env variables: their own section, not Authentication.
+const SLACK_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"];
 
 // What a path setting comes to on this machine, in full (/agentY/settings ->
 // setting_defaults): a blank one resolved to where things really go, a relative
@@ -642,7 +647,8 @@ const GROUP_NOTES = {
     + "so you can queue a render at the desk and watch it finish from a phone; a DM "
     + "back drives the same conversation this panel is in. Needs a Slack app of your "
     + "own: put its bot token (xoxb-…), an app-level token with connections:write "
-    + "(xapp-…) and your Slack member id in Authentication above (+ Add API key > Slack), then turn `enabled` "
+    + "(xapp-…) and your Slack member id in the fields right here (SLACK_BOT_TOKEN, SLACK_APP_TOKEN, "
+    + "SLACK_ALLOWED_USERS), then turn `enabled` "
     + "on — it takes effect on the next agent start. The connection is outbound "
     + "(Socket Mode), so nothing here has to be reachable from the internet. "
     + "SLACK_ALLOWED_USERS is not optional: empty means every message is refused, "
@@ -811,7 +817,7 @@ function pathValue(settings, path) {
   return node && typeof node === "object" && !Array.isArray(node) ? node : null;
 }
 
-function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRows, deadlineRows) {
+function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRows, deadlineRows, slackRows) {
   const claimedScalars = new Set();
   const claimedObjects = new Set();      // joined settings paths, e.g. "llm.tiers"
   // What the page does not show is not a leftover either.
@@ -928,6 +934,10 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
     }
     if (section.deadline && deadlineRows && deadlineRows.length) {
       for (const row of deadlineRows) body.append(row);
+      wrote = true;
+    }
+    if (section.slackEnv && slackRows && slackRows.length) {
+      for (const row of slackRows) body.append(row);
       wrote = true;
     }
     if (section.extra === "mediaNodes" && mediaNodesRows(body, settings, refs)) {
@@ -1826,6 +1836,7 @@ async function openAgentYSettingsModal() {
   const fileKeys = Array.isArray(data.env_file_keys) ? new Set(data.env_file_keys) : null;
   const envUrlRows = [];
   const deadlineRows = [];
+  const slackRows = [];
   // Registered OpenAI-compatible providers: one row each under Connections, with
   // the URL (an .env variable), Test and Remove. Remove drops the registry entry
   // on Save; the keys stay in .env until removed above.
@@ -1868,31 +1879,14 @@ async function openAgentYSettingsModal() {
     });
     envUrlRows.push(el("div", { className: "ays-field" }, [row, result]));
   }
-  for (const key of DEADLINE_KEYS) {
-    const cur = envNow[key] || "";
-    const inp = el("input", { className: "ays-input", type: "text", value: cur });
-    envInputs[key] = { input: inp, original: cur };
-    deadlineRows.push(el("div", { className: "ays-field" }, [
-      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: key }), inp])]));
-  }
-  for (const key of data.env_keys || Object.keys(envNow)) {
-    if (DEADLINE_KEYS.includes(key)) continue;
-    if (customUrlEnvs.has(key)) continue;          // shown with its provider, below
-    const cur = envNow[key] || "";
-    if (isProviderUrl(key)) {
-      const own = fileKeys ? fileKeys.has(key) : !!cur;
-      if (!own && !envNow[key.replace(/_BASE_URL$/, "_API_KEY")]) continue;
-    } else if (!cur) {
-      continue;                                  // not set: nothing to show
-    }
+  // One .env field: its label (with the key's age once watched), its input, and a
+  // Remove button that the "− Remove auth key" toggle shows. Authentication and the
+  // Slack section take the same variables, so they share it.
+  const envRmButtons = [];                // every Remove button here, toggled together
+  const envField = (key, cur) => {
     const inp = el("input", { className: "ays-input", type: isSecret(key) ? "password" : "text", value: cur });
     envInputs[key] = { input: inp, original: cur };
     const label = el("label", { className: "ays-label", textContent: key });
-    // An endpoint is an address, not a secret: it goes under "Connections".
-    if (isProviderUrl(key)) {
-      envUrlRows.push(el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [label, inp])]));
-      continue;
-    }
     const age = ages.get(key);
     if (age) {
       const days = Math.floor(age.age_days);
@@ -1924,7 +1918,34 @@ async function openAgentYSettingsModal() {
       label.style.textDecoration = off ? "line-through" : "";
     });
     row.append(rm);
-    envSec.append(row);
+    envRmButtons.push(rm);
+    return row;
+  };
+  // The Slack bridge's variables: their own section, shown even when empty.
+  for (const key of SLACK_KEYS) slackRows.push(envField(key, envNow[key] || ""));
+  for (const key of DEADLINE_KEYS) {
+    const cur = envNow[key] || "";
+    const inp = el("input", { className: "ays-input", type: "text", value: cur });
+    envInputs[key] = { input: inp, original: cur };
+    deadlineRows.push(el("div", { className: "ays-field" }, [
+      el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: key }), inp])]));
+  }
+  for (const key of data.env_keys || Object.keys(envNow)) {
+    if (DEADLINE_KEYS.includes(key) || SLACK_KEYS.includes(key)) continue;
+    if (customUrlEnvs.has(key)) continue;          // shown with its provider, below
+    const cur = envNow[key] || "";
+    if (isProviderUrl(key)) {
+      const own = fileKeys ? fileKeys.has(key) : !!cur;
+      if (!own && !envNow[key.replace(/_BASE_URL$/, "_API_KEY")]) continue;
+      // An endpoint is an address, not a secret: it goes under "Connections".
+      const inp = el("input", { className: "ays-input", type: "text", value: cur });
+      envInputs[key] = { input: inp, original: cur };
+      envUrlRows.push(el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [
+        el("label", { className: "ays-label", textContent: key }), inp])]));
+      continue;
+    }
+    if (!cur) continue;                            // not set: nothing to show
+    envSec.append(envField(key, cur));
   }
   // Add a key by naming the SERVICE: the host's catalogue knows each one's
   // variables and default endpoint; "Other service..." derives them from a name.
@@ -1935,7 +1956,8 @@ async function openAgentYSettingsModal() {
   const addKeysWrap = el("div", {});
   const OTHER = "__other__";
   const addAKeyRow = () => {
-    const open = services.filter((sv) => !envNow[sv.key_env]);
+    // Slack has its own section (below), so it is not offered as a service here.
+    const open = services.filter((sv) => sv.id !== "slack" && !envNow[sv.key_env]);
     const sel = el("select", { className: "ays-input" });
     sel.append(el("option", { value: "", textContent: "Choose a service…" }));
     for (const sv of open) sel.append(el("option", { value: sv.id, textContent: sv.label }));
@@ -2033,7 +2055,7 @@ async function openAgentYSettingsModal() {
     e.preventDefault();
     const show = !rmKeyBtn.classList.contains("primary");
     rmKeyBtn.classList.toggle("primary", show);
-    for (const b of envSec.querySelectorAll(".ays-envrm")) b.style.display = show ? "" : "none";
+    for (const b of envRmButtons) b.style.display = show ? "" : "none";
   });
   envSec.append(addKeysWrap, addKeyBtn, rmKeyBtn);
   body.append(envSec);
@@ -2081,7 +2103,7 @@ async function openAgentYSettingsModal() {
   EMBEDDERS = Array.isArray(data.memory_embedders) ? data.memory_embedders : [];
   MEDIA_NODES = (data.media_node_choices && typeof data.media_node_choices === "object")
     ? data.media_node_choices : {};
-  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs, envUrlRows, deadlineRows);
+  buildTopLevelSettings(setForm, data.settings || {}, data.model_groups || {}, refs, envUrlRows, deadlineRows, slackRows);
 
   // Advanced groups (prompt-file pointers, per-provider tuning, embedder internals)
   // stay hidden until asked for. They are real settings, not clutter — but showing

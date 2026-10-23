@@ -101,5 +101,36 @@ class HowRowsAreNamed(unittest.TestCase):
         self.assertIn("envInputs[key] = { input: inp, original: cur };", JS)
 
 
+class SlackSection(unittest.TestCase):
+    """The Slack .env variables live in the Slack section, not under Authentication."""
+
+    def test_its_section_takes_the_slack_variables(self):
+        self.assertIn('{ title: "Slack", inline: ["slack"], slackEnv: true }', SECTIONS)
+        self.assertIn('const SLACK_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"];', JS)
+
+    def test_all_three_are_shown_even_when_empty(self):
+        self.assertIn('for (const key of SLACK_KEYS) slackRows.push(envField(key, envNow[key] || ""));', JS)
+        self.assertIn("if (section.slackEnv && slackRows && slackRows.length) {", JS)
+
+    def test_authentication_leaves_them_out(self):
+        self.assertIn("if (DEADLINE_KEYS.includes(key) || SLACK_KEYS.includes(key)) continue;", JS)
+
+    def test_the_tokens_are_masked_and_the_same_field_as_before(self):
+        field = JS.split("const envField = (key, cur) => {", 1)[1].split("const row = el(", 1)[0]
+        self.assertIn("type: isSecret(key) ? \"password\" : \"text\"", field)
+        self.assertIn("const age = ages.get(key);", field)                 # the key-age badge
+        self.assertIn("envRmButtons.push(rm);", JS)                        # the Remove button
+        self.assertIn("for (const b of envRmButtons) b.style.display", JS)  # and the toggle reaches it
+
+    def test_the_service_list_does_not_offer_slack(self):
+        self.assertIn('sv.id !== "slack"', JS)
+
+    def test_the_help_text_says_the_fields_are_right_here(self):
+        note = JS.split('  slack: "A SECOND way in', 1)[1].split("};", 1)[0]
+        self.assertNotIn("Authentication above", note)
+        self.assertNotIn("Add API key", note)
+        self.assertIn("in the fields right here", note)
+
+
 if __name__ == "__main__":
     unittest.main()
