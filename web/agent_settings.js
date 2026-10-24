@@ -1238,6 +1238,25 @@ async function postJson(path, payload) {
   }
 }
 
+// A preset's setup runs on the host as a job (downloads, an app starting can take minutes): start it,
+// poll for the steps done so far, resolve with the final answer. `onSteps(rows)` paints the progress.
+const SETUP_ICON = { done: "✅", skipped: "➖", needs_user: "👉", failed: "❌", planned: "📝" };
+function setupLines(steps) {
+  return (steps || []).map((s) => `${SETUP_ICON[s.status] || "•"} ${s.id}: ${s.message || s.status}`);
+}
+async function runPresetJob(payload, onSteps) {
+  const j = await postJson("/agentY/mcp/presets/install", payload);
+  if (!j.ok || !j.job) return j;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1500));
+    let s;
+    try { s = await (await fetch(backendBase() + "/agentY/mcp/presets/jobs/" + j.job)).json(); }
+    catch (_) { continue; }
+    if (onSteps) onSteps(s.steps || []);
+    if (!s.running) return { ...(s.result || { ok: false, error: "the job ended without a result" }), _steps: s.steps };
+  }
+}
+
 function buildMcpCard(mcpData, envSet) {
   const servers = (mcpData.config && mcpData.config.servers) || {};
   const status = mcpData.status || {};
@@ -1269,10 +1288,14 @@ function buildMcpCard(mcpData, envSet) {
     const state = el("span", { className: "ays-chip" });
     const testBtn = el("button", { className: "ays-btn ays-sm", textContent: "Test" });
     const authBtn = el("button", { className: "ays-btn ays-sm", textContent: "Authorize…" });
+    // Shown for a server that came from a preset with a setup recipe (see showSetup below).
+    const setupBtn = el("button", { className: "ays-btn ays-sm", textContent: "Run setup",
+      title: "Check everything the preset needs (app add-on, preferences, connection) and fix what is missing." });
+    setupBtn.hidden = true;
     const editBtn = el("button", { className: "ays-btn ays-sm", textContent: isNew ? "Hide" : "Edit" });
     const delBtn = el("button", { className: "ays-btn ays-sm ays-x", textContent: "✕", title: "Remove this server" });
     const head = el("div", { className: "ays-mcphead" },
-      [enabled, nameEl, summary, state, testBtn, authBtn, editBtn, delBtn]);
+      [enabled, nameEl, summary, state, testBtn, authBtn, setupBtn, editBtn, delBtn]);
 
     const typeSel = el("select", { className: "ays-input" }, [
       el("option", { value: "http", textContent: "HTTP (streamable)" }),
@@ -1462,8 +1485,32 @@ function buildMcpCard(mcpData, envSet) {
       }
     });
 
+    setupBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      if (isNew) { details.hidden = false; result.textContent = "Save first, then run the setup."; return; }
+      setupBtn.disabled = true;
+      details.hidden = false;
+      result.style.whiteSpace = "pre-wrap";
+      result.textContent = "Checking…";
+      try {
+        const j = await runPresetJob({ id: name, secrets: {}, recheck: true },
+          (steps) => { result.textContent = "Running the setup…\n" + setupLines(steps).join("\n"); });
+        if (!j.ok) { result.textContent = "❌ " + (j.error || "the host refused it"); return; }
+        const rep = j.report || { steps: j._steps || [], needs_user: j.needs_user || [] };
+        const lines = [j.status === "done" ? "✅ Everything is in place." : j.status === "failed" ? "⚠️ Some steps failed." : "👉 Done, with something left for you."];
+        lines.push(...setupLines(rep.steps));
+        if (j.turn_id) lines.push("🤖 agentY is looking into the failed steps in the chat (\"MCP preset\" conversation).");
+        result.textContent = lines.join("\n");
+      } catch (err2) {
+        result.textContent = "❌ " + err2;
+      } finally {
+        setupBtn.disabled = false;
+      }
+    });
+
     const row = {
       currentName, build,
+      showSetup: (p) => { setupBtn.hidden = !(p && p.has_setup); },
       remove: () => { card.remove(); const i = rows.indexOf(row); if (i >= 0) rows.splice(i, 1); },
       markSaved: () => {
         const b = build();
@@ -1719,7 +1766,11 @@ function buildMcpCard(mcpData, envSet) {
       ]),
       el("div", { className: "ays-note", textContent: p.description || "" }),
     ];
-    if (p.needs_bundle || p.setup_steps) {
+    if (p.has_setup) {
+      parts.push(el("div", { className: "ays-note ays-warn", textContent: "This one needs more than a config entry: "
+        + "Install runs its setup for you (downloads, the add-on inside the app, its preferences, a connection test). "
+        + "What only you can do (start the app, a licence, a key) is listed afterwards. Nothing is started or installed system-wide." }));
+    } else if (p.needs_bundle || p.setup_steps) {
       parts.push(el("div", { className: "ays-note ays-warn", textContent: "This one needs more than a config entry"
         + (p.needs_bundle ? " (its .mcpb bundle is not installed)" : "")
         + ". After Install, agentY finishes the setup for you in the chat." }));
@@ -1750,11 +1801,24 @@ function buildMcpCard(mcpData, envSet) {
       go.disabled = true; cancel.disabled = true;
       msg.textContent = "Installing and testing…";
       try {
-        const j = await postJson("/agentY/mcp/presets/install", { id: p.id, secrets });
-        if (!j.ok) { msg.textContent = "❌ " + (j.error || "the host refused it"); return; }
+        msg.style.whiteSpace = "pre-wrap";
+        const j = await runPresetJob({ id: p.id, secrets },
+          (steps) => { msg.textContent = "Setting it up…\n" + setupLines(steps).join("\n"); });
+        if (!j.ok) {
+          msg.textContent = "❌ " + (j.error || "the host refused it")
+            + ((j.needs_user || []).length ? "\n👉 " + j.needs_user.join("\n👉 ") : "");
+          return;
+        }
         for (const k of Object.keys(secrets)) envSet.add(k);
         const lines = [];
-        if (j.state === "needs_bundle") lines.push("⏳ Not added yet: the server's .mcpb bundle is not installed.");
+        if (j.report) {
+          const done = j.status === "done";
+          lines.push(done ? `✅ ${p.name} is set up and connected (${(j.test && j.test.tools) || 0} tools).`
+            : j.status === "failed" ? `⚠️ ${p.name}: some steps failed.`
+            : `✅ ${p.name} is added. Left for you:`);
+          lines.push(...setupLines(j.report.steps));
+          for (const t of j.needs_user || []) lines.push("👉 " + t);
+        } else if (j.state === "needs_bundle") lines.push("⏳ Not added yet: the server's .mcpb bundle is not installed.");
         else if (j.test && j.test.ok) lines.push(`✅ ${p.name} added and connected (${j.test.tools} tools).`);
         else if (j.test && j.test.needs_auth) lines.push(`✅ ${p.name} added. It signs in through the browser: press Authorize… on its card.`);
         else lines.push(`⚠️ ${p.name} added, but the test failed: ${(j.test && j.test.error) || "unknown error"}`);
@@ -1770,6 +1834,7 @@ function buildMcpCard(mcpData, envSet) {
             const sc = cfg && cfg.config && cfg.config.servers && cfg.config.servers[p.id];
             if (sc) {
               addRow(p.id, sc);
+              rows[rows.length - 1].showSetup(p);
               // Written by the host already: it is not an unsaved change of this form.
               savedServers = JSON.stringify({ ...JSON.parse(savedServers || "{}"), [p.id]: rows[rows.length - 1].build().sc });
             }
@@ -1794,7 +1859,10 @@ function buildMcpCard(mcpData, envSet) {
       const r = await fetch(backendBase() + "/agentY/mcp/presets");
       if (!r.ok) return;
       const j = await r.json();
-      if (j && j.ok) { presets = j.presets || []; fillPresets(); }
+      if (j && j.ok) {
+        presets = j.presets || []; fillPresets();
+        for (const r of rows) r.showSetup(presets.find((x) => x.id === r.currentName()));
+      }
     } catch (_) { /* a host from before presets: no dropdown */ }
   })();
 
