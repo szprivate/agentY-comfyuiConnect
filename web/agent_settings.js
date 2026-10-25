@@ -160,8 +160,8 @@ const ENUM_CHOICES = {
 const KEY_NOTES = {
   "execution.mode":
     "Where OPEN-WEIGHT models (SDXL, Flux, Wan ...) run. Partner API nodes (Seedance, GPT Image, "
-    + "Kling ...) are not affected: they run through your local ComfyUI in every mode, under the "
-    + "usual credit checks. Hybrid and Cloud need the Comfy API key (Authentication). Saying \"run this "
+    + "Kling ...) are not affected: their models run on the providers' servers, sent from your "
+    + "ComfyUI in every mode, under the usual credit checks. Hybrid and Cloud need the Comfy API key (Authentication). Saying \"run this "
     + "in the cloud\" or \"keep it local\" in a message overrides it for that turn. See docs/execution_modes.md.",
   canvas_full_graph:
     "Lets the agent see and edit EVERY node on the workflow you have open, not "
@@ -700,8 +700,8 @@ function thinkingControl(path, key, refs) {
 // section is FOR — the TOML comments never reach the browser.
 const GROUP_NOTES = {
   execution: "Where open-weight models run: this machine's GPU, Comfy Cloud, or locally when "
-    + "they fit and on the cloud when they do not. Partner API nodes always run through your "
-    + "local ComfyUI. The installer picked a starting point from your hardware.",
+    + "they fit and on the cloud when they do not. Partner API models (Seedance, GPT Image, "
+    + "Kling ...) run on the providers' servers in every mode. The installer picked a starting point from your hardware.",
   pricing: "What each model costs, in USD per million tokens, so Token usage matches "
     + "your bill. Pick the model from the list your providers report; a blank price "
     + "uses the built-in one shown greyed out. Saved to config/pricing.json.",
