@@ -18,7 +18,7 @@ class TheSections(unittest.TestCase):
     def test_their_names_in_order(self):
         titles = re.findall(r'^  \{ title: "([^"]+)"', SECTIONS, flags=re.M)
         self.assertEqual(titles, ["Models", "Connections", "Canvas", "Load & save nodes",
-                                  "Output checks", "Slack", "Deadline", "Updates", "Security", "Memory", "Files & logs"])
+                                  "Output checks", "Execution", "Slack", "Deadline", "Updates", "Security", "Memory", "Files & logs"])
 
     def test_prompts_and_annotation_are_not_sections(self):
         for gone in ('"Prompts"', '"Annotation"', '"Providers"'):

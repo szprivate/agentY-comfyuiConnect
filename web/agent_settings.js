@@ -70,6 +70,8 @@ const SECTIONS = [
                             "comfyui_console_lines"] },
   { title: "Load & save nodes", extra: "mediaNodes" },
   { title: "Output checks", objects: [["qa"], ["refine"]] },
+  // Where open-weight models run: this GPU, or Comfy Cloud. Partner API nodes are not affected.
+  { title: "Execution", inline: ["execution"] },
   // Its tokens and allow-list are .env variables, shown here as fields.
   { title: "Slack", inline: ["slack"], slackEnv: true },
   // The render farm's variables are .env values, not settings.json ones.
@@ -146,7 +148,21 @@ let EXTRA_MODEL_DIRS = [];
 // Per-key notes, for the few settings whose name does not carry the trade-off.
 // The TOML comments never reach the browser, and this is the only place a switch
 // can say what turning it on costs.
+// String settings that are a pick from a fixed list, drawn as a menu: path -> [[value, label], ...].
+const ENUM_CHOICES = {
+  "execution.mode": [
+    ["local", "Local - this machine's GPU (default)"],
+    ["hybrid", "Hybrid - local when the models fit, else Comfy Cloud"],
+    ["cloud", "Cloud - open-weight models run on Comfy Cloud"],
+  ],
+};
+
 const KEY_NOTES = {
+  "execution.mode":
+    "Where OPEN-WEIGHT models (SDXL, Flux, Wan ...) run. Partner API nodes (Seedance, GPT Image, "
+    + "Kling ...) are not affected: they run through your local ComfyUI in every mode, under the "
+    + "usual credit checks. Hybrid and Cloud need the Comfy API key (Authentication). Saying \"run this "
+    + "in the cloud\" or \"keep it local\" in a message overrides it for that turn. See docs/execution_modes.md.",
   canvas_full_graph:
     "Lets the agent see and edit EVERY node on the workflow you have open, not "
     + "just the ones you have selected — so \"set the sampler to 30 steps\" works "
@@ -683,6 +699,9 @@ function thinkingControl(path, key, refs) {
 // is generated from the settings file, so there is nowhere else to say what a
 // section is FOR — the TOML comments never reach the browser.
 const GROUP_NOTES = {
+  execution: "Where open-weight models run: this machine's GPU, Comfy Cloud, or locally when "
+    + "they fit and on the cloud when they do not. Partner API nodes always run through your "
+    + "local ComfyUI. The installer picked a starting point from your hardware.",
   pricing: "What each model costs, in USD per million tokens, so Token usage matches "
     + "your bill. Pick the model from the list your providers report; a blank price "
     + "uses the built-in one shown greyed out. Saved to config/pricing.json.",
@@ -761,7 +780,7 @@ const GROUP_FAMILY = {
   system_prompts: "connections",
   canvas: "canvas", annotation: "canvas", annotate: "canvas",
   "output checks": "checks", qa: "checks", refine: "checks",
-  slack: "integrations", mcp: "integrations", deadline: "integrations",
+  slack: "integrations", mcp: "integrations", deadline: "integrations", execution: "integrations",
   memory: "memory", embedder: "memory", llm: "memory",   // memory.llm = the memory writer
   security: "safety", updates: "safety",
 };
@@ -826,6 +845,15 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
       if (input.value === "" || Number.isNaN(n)) return val;
       return n === shown ? val : n;
     } });
+  } else if (ENUM_CHOICES[path.join(".")]) {
+    const sel = el("select", { className: "ays-input" });
+    const choices = ENUM_CHOICES[path.join(".")];
+    const current = val == null ? "" : String(val);
+    if (!choices.some(([v]) => v === current)) sel.append(el("option", { value: current, textContent: current || "(not set)" }));
+    for (const [v, label] of choices) sel.append(el("option", { value: v, textContent: label }));
+    sel.value = current;
+    refs.push({ path, get: () => sel.value });
+    input = sel;
   } else if (Array.isArray(val)) {
     input = el("input", { type: "text", className: "ays-input", value: JSON.stringify(val) });
     refs.push({ path, get: () => { try { return JSON.parse(input.value); } catch (_) { return val; } } });
