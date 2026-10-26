@@ -38,6 +38,14 @@ from pathlib import Path as _Path
 
 from aiohttp import web
 
+# Windows: keep the :8188 listening socket alive when one client resets mid-accept
+# (WinError 64). Must run before ComfyUI starts serving; see _proactor_accept.py.
+try:
+    from . import _proactor_accept as _proactor_accept
+    _proactor_accept.install()
+except Exception:  # a mitigation must never stop ComfyUI from loading this extension
+    pass
+
 # Where this extension records the agentY host's location, so the sidebar's
 # "Start server" button can relaunch ``run_agent.ps1`` when the host on :5000 is
 # down (a browser can't spawn a process, but this ComfyUI-side route can). The
