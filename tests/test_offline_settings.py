@@ -14,7 +14,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_platform import _load_head
+try:
+    from tests.test_platform import _load_head
+except ImportError:  # run from inside tests/
+    from test_platform import _load_head
 
 _HELPER = '''
 import json, sys
