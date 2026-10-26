@@ -242,5 +242,30 @@ class AFreshTabCanStillAuthenticate(unittest.TestCase):
         self.assertIn("REFRESH_MS", self.source())
 
 
+
+class CanvasPatchAckTest(unittest.TestCase):
+    """The panel must say what became of a canvas patch (source-level: there is no
+    JavaScript engine in the test setup, so this reads the file)."""
+
+    SRC = (WEB / "agent_chat.js").read_text(encoding="utf-8")
+
+    def test_every_confirmed_op_hands_its_result_to_the_ack(self):
+        for op, fn in (("edit_graph", "_editGraph"), ("layout", "_layoutCanvas")):
+            self.assertIn(f'ev.op === "{op}") applied = this.{fn}(ev)', self.SRC)
+        self.assertIn("if (ev.patch_id) this._ackPatch(ev, applied, patchErr);", self.SRC)
+
+    def test_the_ack_posts_the_patch_id_and_outcome_to_the_host(self):
+        body = self.SRC.split("async _ackPatch(ev, res, err) {", 1)[1][:700]
+        self.assertIn("/agentY/canvas_ack", body)
+        for field in ("patch_id: ev.patch_id", "ok", "missed"):
+            self.assertIn(field, body)
+        self.assertIn("!err", body)             # an exception is never an "ok"
+
+    def test_no_open_workflow_is_a_failed_ack_not_silence(self):
+        for fn in ("_editGraph(ev) {", "_layoutCanvas(ev) {"):
+            head = self.SRC.split(fn, 1)[1][:400]
+            self.assertIn("ok: false", head)
+
+
 if __name__ == "__main__":
     unittest.main()

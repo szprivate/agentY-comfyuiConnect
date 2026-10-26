@@ -3045,7 +3045,7 @@ class AgentChat {
         else if (ev.op === "set_mode") this._setNodeMode(ev);
         else if (ev.op === "flow_state") this._flowState(ev);
         else if (ev.op === "edit_graph") applied = this._editGraph(ev);
-        else if (ev.op === "layout") this._layoutCanvas(ev);
+        else if (ev.op === "layout") applied = this._layoutCanvas(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
         else applied = this._applyCanvasPatch(ev);
         } catch (e) { patchErr = e; console.error("[agentY] canvas patch failed:", e); }
@@ -4387,7 +4387,7 @@ class AgentChat {
   // rectangle. One undo step. Geometry is agent_layout.js's flowArrange.
   _layoutCanvas(ev) {
     const graph = this._targetGraph();
-    if (!graph) return;
+    if (!graph) return { ok: false, missed: ["no workflow is open on this page"] };
     const nodeOf = (id) => (graph.getNodeById ? graph.getNodeById(Number(id))
       : (graph._nodes || []).find((n) => n && String(n.id) === String(id)));
     const live = (n) => n && isXY(n.pos) && isXY(n.size);
@@ -4499,6 +4499,8 @@ class AgentChat {
     const why = ev.reason ? ` — ${ev.reason}` : "";
     this._sys("🧭 Canvas layout" + why + ": " + (said.join("; ") || "nothing to change")
       + (missed.length ? `. ⚠️ Skipped: ${missed.join("; ")}` : "") + ". **Ctrl+Z** undoes it.");
+    // Nothing done and something skipped: it did not land.
+    return { ok: !(missed.length && !said.length), applied: said.length, missed };
   }
 
   // ── where the agent's additions go (geometry in agent_layout.js) ──────────
