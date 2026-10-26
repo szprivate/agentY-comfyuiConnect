@@ -38,7 +38,7 @@ class DeadlineSection(unittest.TestCase):
         for k in ("DEADLINE_PATH", "DEADLINE_REPOSITORY", "DEADLINE_WEBSERVICE_URL", "DEADLINE_COMFYUI_PATH",
                   "DEADLINE_COMFYUI_POOL", "DEADLINE_GROUP", "DEADLINE_OUTPUT_DIR"):
             self.assertIn('"%s"' % k, js)
-        self.assertIn("docs/deadline.md", js)
+        self.assertIn("docs/setup/deadline.md", js)
 
 
 class CustomProviderUi(unittest.TestCase):

@@ -753,7 +753,7 @@ const GROUP_NOTES = {
     + "region or a gateway of your own. Below: ComfyUI's and Ollama's addresses, and how "
     + "local models are run.",
   Deadline: "Optional: render on a Thinkbox Deadline 10 farm instead of the local ComfyUI. "
-    + "Empty fields use the defaults; saved to .env (see docs/deadline.md).",
+    + "Empty fields use the defaults; saved to .env (see docs/setup/deadline.md).",
   ollama: "How local models are run. The window is the model's whole memory of a "
     + "call - what goes in and what comes out; the output allowance is taken from "
     + "it. Which model, and whether it reasons, is set on its row under Models.",
@@ -771,7 +771,7 @@ const GROUP_NOTES = {
     + "(Socket Mode), so nothing here has to be reachable from the internet. "
     + "SLACK_ALLOWED_USERS is not optional: empty means every message is refused, "
     + "because anyone who can DM the bot could otherwise run generations and tools "
-    + "on this machine. Full walkthrough in docs/slack.md.",
+    + "on this machine. Full walkthrough in docs/setup/slack.md.",
 };
 
 // What a section is ABOUT, which decides its edge colour. Sections that mean the
