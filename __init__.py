@@ -283,9 +283,21 @@ try:
         graph = data.get("workflow", data) if isinstance(data, dict) else None
         if not isinstance(graph, dict) or "nodes" not in graph:
             return web.json_response({"ok": False, "error": "not a graph workflow"}, status=400)
-        # Broadcast to every connected ComfyUI frontend (sid=None => all).
-        PromptServer.instance.send_sync("agent.load_workflow", graph)
+        # Aimed at one page when the caller names it (``client_id`` = that page's
+        # websocket id): a turn nobody is streaming must not swap the graph open in
+        # somebody else's tab. Without one, every connected frontend gets it.
+        sid = str(data.get("client_id") or "") if isinstance(data, dict) else ""
+        if sid and not _page_connected(sid):
+            return web.json_response({"ok": False, "error": "that ComfyUI page is not connected"})
+        PromptServer.instance.send_sync("agent.load_workflow", graph, sid or None)
         return web.json_response({"ok": True, "nodes": len(graph.get("nodes", []))})
+
+    def _page_connected(sid: str) -> bool:
+        """Is *sid* an open ComfyUI page? (send_sync to a gone one is silent.)"""
+        try:
+            return str(sid) in PromptServer.instance.sockets
+        except Exception:  # noqa: BLE001
+            return True
 
     @_routes.post("/agent/register_host")
     async def _agent_register_host(request):  # noqa: ANN001
@@ -612,8 +624,9 @@ try:
     _pending_replies: dict = {}   # req_id -> asyncio.Future awaiting the frontend
     _REPLY_TIMEOUT = 3.0          # seconds; a backgrounded tab still answers this fast
 
-    async def _ask_frontend(event: str, payload: dict, timeout: float):
-        """Broadcast ``event`` to every open ComfyUI page and wait for one reply.
+    async def _ask_frontend(event: str, payload: dict, timeout: float, sid: str = ""):
+        """Broadcast ``event`` to every open ComfyUI page (or just *sid*, when the
+        caller names one) and wait for one reply.
 
         Returns the reply dict, or None if nobody answered in time (no page open,
         or an old extension build with no listener for this event)."""
@@ -621,7 +634,9 @@ try:
         fut = _asyncio.get_running_loop().create_future()
         _pending_replies[req_id] = fut
         try:
-            PromptServer.instance.send_sync(event, dict(payload, req_id=req_id))
+            if sid and not _page_connected(sid):
+                return None
+            PromptServer.instance.send_sync(event, dict(payload, req_id=req_id), sid or None)
             return await _asyncio.wait_for(fut, timeout)
         except _asyncio.TimeoutError:
             return None
@@ -655,7 +670,8 @@ try:
         Answers 200 with ``ok: false`` when no page replies — that is a state of
         the world (ComfyUI not open), not a server fault, and callers using a
         raise-on-status HTTP client need to read the reason."""
-        reply = await _ask_frontend("agent.request_selection", {}, _clamp_timeout(request))
+        reply = await _ask_frontend("agent.request_selection", {}, _clamp_timeout(request),
+                                    sid=str(request.query.get("client_id", "")))
         if reply is None:
             return web.json_response({
                 "ok": False, "nodes": [], "count": 0,
@@ -687,7 +703,8 @@ try:
                 status=400)
         reply = await _ask_frontend("agent.set_node_params",
                                     {"node_id": node_id, "params": params},
-                                    _clamp_timeout(request))
+                                    _clamp_timeout(request),
+                                    sid=str((data or {}).get("client_id") or ""))
         if reply is None:
             return web.json_response({
                 "ok": False, "applied": [],

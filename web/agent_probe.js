@@ -463,9 +463,11 @@ export class ProbeLoop {
   async _loop() {
     while (!this._stopped) {
       let probe = null;
+      let cid = "";
+      try { cid = String((window.__agentyClientId && window.__agentyClientId()) || ""); } catch (_) {}
       try {
         const r = await fetch(
-          `${this._base()}/agentY/canvas_probe?wait=${POLL_WAIT}`,
+          `${this._base()}/agentY/canvas_probe?wait=${POLL_WAIT}` + (cid ? `&client=${encodeURIComponent(cid)}` : ""),
           { cache: "no-store" });
         if (!r.ok) { await this._pause(); continue; }
         probe = (await r.json()).probe;

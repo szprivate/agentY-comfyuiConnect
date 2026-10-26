@@ -28,6 +28,17 @@ import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrig
 
 // The node classes the execution wire runs through; their `exec` input is taken
 // out of a captured graph (see _captureCanvasGraph).
+
+// This page's id for the host: ComfyUI's own websocket id. It names the page in the
+// heartbeat, in the canvas snapshot and with every message, so a turn nobody
+// streams (the turn API, Slack) can find the page that shows ITS conversation and
+// edit that canvas only - never whichever tab happens to be open. The same id is
+// what the extension aims `agent.load_workflow` and friends at.
+function panelClientId() {
+  try { return String(api.clientId || api.initialClientId || ""); } catch (_) { return ""; }
+}
+try { window.__agentyClientId = panelClientId; } catch (_) {}
+
 const EXEC_CLASSES = ["AgentYHook", "AgentYReview", "AgentYLoopStart", "AgentYLoopBreak", "AgentYCondition",
                       "AgentYJoin", "AgentYEdit"];
 
@@ -567,7 +578,10 @@ class AgentChat {
     // settle into showing a healthy agent as offline. Resolves once, then free.
     await backendReady;
     try {
-      const r = await fetch(backendBase() + "/agentY/health", { cache: "no-store" });
+      const cid = panelClientId();
+      const r = await fetch(backendBase() + "/agentY/health" + (cid
+        ? "?client=" + encodeURIComponent(cid) + "&thread=" + encodeURIComponent(this.threadId || "")
+        : ""), { cache: "no-store" });
       if (!r.ok) return false;
       try { this._lastHealth = await r.json(); } catch (_) { this._lastHealth = null; }
       return true;
@@ -961,6 +975,8 @@ class AgentChat {
         canvas_prompt: await this._captureCanvasGraph(),
         canvas_hooks: this._collectCanvasHooks(),
         canvas_selection: this._collectCanvasSelection(),
+        client: panelClientId(),
+        thread_id: this.threadId || "",
       };
       await fetch(backendBase() + "/agentY/canvas", {
         method: "POST",
@@ -3016,6 +3032,8 @@ class AgentChat {
         if (ev.op !== "review_released" && ev.op !== "review_text"
             && ev.op !== "prompt_version" && ev.op !== "flow_state"
             && !(ev.op === "place_text" && ev.place === false)) this._noteOffscreenDrop();
+        let applied = null, patchErr = null;
+        try {
         if (ev.op === "place_text") this._placeCanvasText(ev);
         // A prompt version is a strip entry, not a node placement: the widget write
         // travels as its own ordinary patch beside it.
@@ -3026,10 +3044,13 @@ class AgentChat {
         else if (ev.op === "delete_nodes") this._deleteNodes(ev);
         else if (ev.op === "set_mode") this._setNodeMode(ev);
         else if (ev.op === "flow_state") this._flowState(ev);
-        else if (ev.op === "edit_graph") this._editGraph(ev);
+        else if (ev.op === "edit_graph") applied = this._editGraph(ev);
         else if (ev.op === "layout") this._layoutCanvas(ev);
         else if (ev.op === "place_python") this._placePythonNode(ev);
-        else this._applyCanvasPatch(ev);
+        else applied = this._applyCanvasPatch(ev);
+        } catch (e) { patchErr = e; console.error("[agentY] canvas patch failed:", e); }
+        // The host waits for this before it tells the agent the edit is on a canvas.
+        if (ev.patch_id) this._ackPatch(ev, applied, patchErr);
         break;
       case "system":
         this.curAssistant = null;
@@ -3472,7 +3493,7 @@ class AgentChat {
       const resp = await fetch(backendBase() + "/agentY/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ client_id: panelClientId(), ...body }),
         signal,
       });
       if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
@@ -3575,7 +3596,8 @@ class AgentChat {
     let opened = false;
     try {
       const resp = await fetch(backendBase() + "/agentY/runs/"
-        + encodeURIComponent(run_.request_id) + "/stream", { cache: "no-store", signal });
+        + encodeURIComponent(run_.request_id) + "/stream?client=" + encodeURIComponent(panelClientId()),
+        { cache: "no-store", signal });
       if (!resp.ok || !resp.body) return false;
       opened = true;
       await this._readSse(resp, ctx, run);
@@ -4079,6 +4101,21 @@ class AgentChat {
   }
 
   // Apply an agent-initiated node edit to the live graph (no refresh, no re-queue).
+  // Tell the host what became of a canvas patch: it is fire-and-forget otherwise,
+  // and the agent was told "applied" whether or not any page drew it.
+  async _ackPatch(ev, res, err) {
+    const missed = (res && res.missed) || [];
+    const ok = !err && (res == null ? true : !!res.ok);
+    try {
+      await fetch(backendBase() + "/agentY/canvas_ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patch_id: ev.patch_id, ok, applied: res && res.applied,
+                               missed, error: err ? String(err) : "" }),
+      });
+    } catch (_) {}
+  }
+
   _applyCanvasPatch(ev) {
     const graph = this._targetGraph();
     const nid = Number(ev.node_id);
@@ -4087,7 +4124,7 @@ class AgentChat {
       : (graph._nodes || []).find((n) => Number(n.id) === nid));
     if (!node) {
       this._sys(`⚠️ Could not apply edit — node #${ev.node_id} is no longer on the canvas.`);
-      return;
+      return { ok: false, missed: [`node #${ev.node_id} is not on the canvas`] };
     }
     const params = ev.params || {};
     const applied = [];
@@ -4112,6 +4149,8 @@ class AgentChat {
     } else {
       this._sys(`⚠️ No matching widget on **${title}** to update.`);
     }
+    return { ok: applied.length > 0, applied: applied.length,
+             missed: applied.length ? [] : [`no matching widget on ${title}`] };
   }
 
   // A `review` hook stopped the chain. Put what the stage produced into an
@@ -4248,7 +4287,7 @@ class AgentChat {
   _editGraph(ev) {
     const LG = window.LiteGraph;
     const graph = this._targetGraph();
-    if (!graph || !LG) return;
+    if (!graph || !LG) return { ok: false, missed: ["no workflow is open on this page"] };
     const byId = (id) => (graph.getNodeById && graph.getNodeById(Number(id)))
       || (graph._nodes || []).find((n) => n && String(n.id) === String(id));
     const made = {};
@@ -4339,6 +4378,8 @@ class AgentChat {
         .filter(Boolean).join("; ")
       + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
       + " **Ctrl+Z** undoes it.");
+    const n = added.length + wired.length + replaced.length;
+    return { ok: n > 0 || !(ev.ops || []).length, applied: n, missed };   // partly applied still counts: the panel says what it missed
   }
 
   // arrange_canvas / group_canvas_nodes / auto_group_canvas: groups drawn, renamed
