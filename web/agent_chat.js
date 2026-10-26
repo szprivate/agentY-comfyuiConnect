@@ -1036,7 +1036,7 @@ class AgentChat {
     }
     .ay-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--ay-border);flex-shrink:0;}
     .ay-bar{background:var(--ay-surface);}
-    .ay-bar select{flex:1;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
+    .ay-bar select{flex:1;min-width:60px;text-overflow:ellipsis;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
     .ay-btn{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
     /* Toggle button in its ON state (e.g. auto-graph enabled). */
     .ay-btn.ay-on{background:var(--ay-accent);color:#fff;border-color:var(--ay-accent);}
@@ -1190,14 +1190,19 @@ class AgentChat {
     .ay-input{flex:1;resize:none;min-height:var(--ay-composer-h);max-height:150px;box-sizing:border-box;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13.5px;line-height:1.5;outline:none;transition:border-color .12s;}
     .ay-input:focus{border-color:rgba(111,151,255,.55);}
     .ay-input::placeholder{color:var(--ay-muted);}
-    .ay-modelbar{display:flex;align-items:center;gap:7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
+    .ay-modelbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 7px;padding:8px 12px 10px;border-top:1px solid var(--ay-border);flex-shrink:0;background:var(--ay-bg);}
     .ay-mlabel{color:var(--ay-muted);font-size:11.5px;flex-shrink:0;}
-    .ay-modelbar select{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
+    .ay-modelbar select{min-width:0;max-width:100%;text-overflow:ellipsis;background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;cursor:pointer;transition:border-color .12s;}
     .ay-modelbar select:hover{border-color:rgba(111,151,255,.45);}
     .ay-modelbar select:disabled{opacity:.45;cursor:not-allowed;}
     .ay-modelbar .ay-combo{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12px;transition:border-color .12s;}
     .ay-modelbar .ay-combo:hover,.ay-modelbar .ay-combo:focus-within{border-color:rgba(111,151,255,.45);}
-    .ay-mmodel{flex:1;min-width:0;}
+    /* Both pickers keep a usable floor and shrink in proportion (the model name gets
+       the larger share); when the two floors no longer fit beside the label, the
+       target drops to its own line instead of squeezing the model picker to a sliver. */
+    .ay-mmodel{flex:2 1 150px;min-width:110px;}
+    .ay-modelbar .ay-mtarget{flex:1 1 110px;min-width:96px;}
+    .ay-modelbar .ay-combo,.ay-modelbar select{box-sizing:border-box;}
     .ay-pop{position:absolute;bottom:100%;left:12px;right:12px;margin-bottom:6px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;max-height:280px;overflow:auto;display:none;}
     .ay-pop-item{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;}
     .ay-pop-item:hover,.ay-pop-item.sel{background:var(--ay-surface2);}

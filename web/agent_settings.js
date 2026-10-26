@@ -282,6 +282,13 @@ function injectStyles() {
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#c3c8d0;word-break:break-word;font-family:ui-monospace,monospace;}
   .ays-input{flex:1;min-width:0;background:#161a20;color:#e6e8ec;border:1px solid #2c313b;
     border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;}
+  select.ays-input,.ays-input.ay-combo{min-width:96px;text-overflow:ellipsis;}
+  /* A narrow window: the label goes above its control instead of taking 42% of the row. */
+  @media (max-width:560px){
+    .ays-row{flex-wrap:wrap;}
+    .ays-label{flex:1 1 100%;}
+    .ays-field .ays-keynote,.ays-fieldnote{margin-left:0;}
+  }
   .ays-input:focus,.ays-input.ay-combo:focus-within{border-color:#6f97ff;}
   input.ays-input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#6f97ff;}
   .ays-group{background:#1e2128;border:1px solid #2c313b;border-left:4px solid #6f97ff;border-radius:9px;margin:8px 0;overflow:hidden;}
