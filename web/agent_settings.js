@@ -1262,6 +1262,40 @@ const formatSize = (bytes) => {
 
 const mcpKeyVar = (name) => `MCP_${String(name || "SERVER").toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
 
+// DashScope: the keys and endpoints of the three kinds of access (pay-as-you-go, Token Plan,
+// Coding Plan) are isolated per plan and region. This adds a plan/region picker (fills the URL
+// input) and a Detect button (POST /agentY/dashscope/detect: one free GET /models per documented
+// endpoint) beside a URL input; `getKey()` returns the key typed, "" to use the saved one.
+function dashscopeEndpointTools(urlInp, endpoints, getKey, payg) {
+  const result = el("div", { className: "ays-note" });
+  const sel = el("select", { className: "ays-input" });
+  sel.append(el("option", { value: "", textContent: "Plan and region..." }));
+  for (const e of endpoints || []) sel.append(el("option", { value: e.url, textContent: e.label }));
+  sel.addEventListener("change", () => { if (sel.value) { urlInp.value = sel.value; urlInp.dispatchEvent(new Event("input")); } });
+  const btn = el("button", { className: "ays-btn", textContent: "Detect",
+    title: "Find the endpoint that accepts this key (one free GET /models per documented endpoint)" });
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    result.textContent = "Detecting...";
+    try {
+      const j = await postJson("/agentY/dashscope/detect", { key: getKey(), payg: !!payg });
+      if (j.ok) {
+        urlInp.value = j.url;
+        urlInp.dispatchEvent(new Event("input"));
+        result.textContent = `✅ ${j.label}: ${j.url}` + (j.warning ? "  ⚠ " + j.warning : "");
+      } else {
+        result.textContent = "❌ " + (j.error || "failed");
+      }
+    } catch (err) {
+      result.textContent = "❌ " + err;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return [el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Endpoint" }), sel, btn]), result];
+}
+
 async function postJson(path, payload) {
   const r = await fetch(backendBase() + path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
@@ -2136,8 +2170,15 @@ async function openAgentYSettingsModal() {
       // An endpoint is an address, not a secret: it goes under "Connections".
       const inp = el("input", { className: "ays-input", type: "text", value: cur });
       envInputs[key] = { input: inp, original: cur };
-      envUrlRows.push(el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [
-        el("label", { className: "ays-label", textContent: key }), inp])]));
+      const urlField = el("div", { className: "ays-field" }, [el("div", { className: "ays-row" }, [
+        el("label", { className: "ays-label", textContent: key }), inp])]);
+      if (/^DASHSCOPE(_PAYG)?_BASE_URL$/.test(key)) {
+        const ds = (Array.isArray(data.services) ? data.services : []).find((x) => x.id === "dashscope");
+        const keyEnv = key === "DASHSCOPE_BASE_URL" ? "DASHSCOPE_API_KEY" : "DASHSCOPE_PAYG_API_KEY";
+        urlField.append(...dashscopeEndpointTools(inp, ds ? ds.endpoints : [],
+          () => { const k = envInputs[keyEnv]; return k && k.input.value !== k.original ? k.input.value : ""; }, key === "DASHSCOPE_PAYG_BASE_URL"));
+      }
+      envUrlRows.push(urlField);
       continue;
     }
     if (!cur) continue;                            // not set: nothing to show
@@ -2228,6 +2269,9 @@ async function openAgentYSettingsModal() {
         const urlInp = sv.url_env ? field("Server URL", "text", "", sv.default_url || "") : null;
         const hint = [sv.hint, sv.help_url ? `Get a key: ${sv.help_url}` : ""].filter(Boolean).join(" ");
         if (hint) detail.append(el("div", { className: "ays-note", textContent: hint }));
+        if (urlInp && (sv.endpoints || []).length) {
+          detail.append(...dashscopeEndpointTools(urlInp, sv.endpoints, () => keyInp.value));
+        }
         entry.collect = () => {
           const out = {};
           if (!keyInp.value) return out;
