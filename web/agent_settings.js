@@ -61,7 +61,7 @@ const SECTIONS = [
   // whose key (or endpoint) is set.
   { title: "Connections", envUrls: true,
     keys: ["comfyui_url", "agent_server_url", "ollama_server_url"],
-    objects: [["llm", "ollama"]],
+    objects: [["llm", "ollama"], ["llm", "strata"]],
     inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
@@ -108,6 +108,8 @@ const isHidden = (path) => HIDDEN.has(path.join("."));
 const LEAF_LABELS = {
   "llm.ollama.num_ctx": "Context Window Size",
   "llm.ollama.max_tokens": "Max Output Tokens",
+  "llm.strata.base_url": "Server URL",
+  "llm.strata.gpu_sharing": "Share the GPU with ComfyUI",
 };
 
 // The providers' endpoints among the .env variables.
@@ -158,6 +160,15 @@ const ENUM_CHOICES = {
 };
 
 const KEY_NOTES = {
+  "llm.strata.gpu_sharing":
+    "Strata takes the whole graphics card, and so does a ComfyUI render: both at once starve each other. "
+    + "On, Strata is stopped just before a graph that needs the card is queued, and started again with the "
+    + "next agent call once ComfyUI's queue is empty (30 s to a few minutes; the panel says so). Only when a "
+    + "model under Models runs on Strata. Off: it keeps running - for a machine with a second card.",
+  "llm.strata.launcher":
+    "The strata command, or a wrapper that sets its data folders (see docs/setup/strata.md). Blank = strata on PATH.",
+  "llm.strata.launch_args":
+    "What Strata is started with: strata <these>. --parallel 1 on a 32 GB card; --context 64k is faster, 128k holds longer turns.",
   "execution.mode":
     "Where OPEN-WEIGHT models (SDXL, Flux, Wan ...) run. Partner API nodes (Seedance, GPT Image, "
     + "Kling ...) are not affected: their models run on the providers' servers, sent from your "
@@ -404,6 +415,7 @@ const GROUP_LABELS = {
   refine: "Refine loops",
   embedder: "Embedder",
   ollama: "Ollama",
+  strata: "Strata (local model server)",
   anthropic: "Anthropic",
   dashscope: "DashScope (Qwen)",
   llm: "Memory writer",   // memory.llm — the only `llm` still shown as a group
@@ -754,6 +766,9 @@ const GROUP_NOTES = {
     + "local models are run.",
   Deadline: "Optional: render on a Thinkbox Deadline 10 farm instead of the local ComfyUI. "
     + "Empty fields use the defaults; saved to .env (see docs/setup/deadline.md).",
+  strata: "A local model server with an OpenAI-compatible API (github.com/Niko1221/Strata). Pick its "
+    + "model for a tier under Models (\"Strata (local)\"). No API key on this machine; STRATA_API_KEY in "
+    + ".env if yours wants one. Costs nothing per token.",
   ollama: "How local models are run. The window is the model's whole memory of a "
     + "call - what goes in and what comes out; the output allowance is taken from "
     + "it. Which model, and whether it reasons, is set on its row under Models.",
@@ -782,7 +797,7 @@ const GROUP_NOTES = {
 const GROUP_FAMILY = {
   models: "models", "per-role overrides": "models", providers: "models", pipeline: "models",
   "auxiliary models": "models", decision: "models", likeness: "models",
-  ollama: "models", anthropic: "models", dashscope: "models", pricing: "models",
+  ollama: "models", strata: "models", anthropic: "models", dashscope: "models", pricing: "models",
   connections: "connections", "files & logs": "connections", prompts: "connections",
   system_prompts: "connections",
   canvas: "canvas", annotation: "canvas", annotate: "canvas",
@@ -1028,6 +1043,7 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
       const sub = makeCollapsibleGroup(key, suffix, false);
       body.append(sub.group);
       buildSettingsForm(sub.body, obj, modelGroups, objPath, refs);
+      if (objPath.join(".") === "llm.strata") sub.body.append(...strataRows());
       claimedObjects.add(objPath.join("."));
       wrote = true;
     }
@@ -1127,10 +1143,10 @@ function buildPricingCard(data) {
     ? data.pricing : {};
   const saved = current.models && typeof current.models === "object" ? current.models : {};
   const builtin = data.pricing_builtin || {};
-  // The LLMs the agent runs on, as each cloud provider lists them. Ollama is left
-  // out: a local model costs nothing per token.
+  // The LLMs the agent runs on, as each cloud provider lists them. Ollama and
+  // Strata are left out: a local model costs nothing per token.
   const groups = Object.fromEntries(Object.entries(data.model_groups || {})
-    .filter(([vendor]) => !/ollama/i.test(vendor)));
+    .filter(([vendor]) => !/ollama|strata/i.test(vendor)));
   const { group, body } = makeCollapsibleGroup("pricing", "", false);
   const listed = new Set();
   for (const models of Object.values(groups)) {
@@ -1294,6 +1310,62 @@ function dashscopeEndpointTools(urlInp, endpoints, getKey, payg) {
     }
   });
   return [el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Endpoint" }), sel, btn]), result];
+}
+
+// Strata's own row under Connections: Test (GET /v1/models: is it running, which
+// model), and Start / Stop. A start runs in the background on the host - it waits
+// for ComfyUI's queue and can take minutes - so the row polls Test until it ends.
+function strataRows() {
+  const result = el("div", { className: "ays-note", style: { margin: "4px 0 6px" } });
+  const show = (j) => {
+    const list = (j.models || []).map((m) => `${m.id}${m.n_ctx ? ` (${Math.round(m.n_ctx / 1024)}k`
+      + `${m.vision ? ", images" : ""})` : ""}`).join(", ");
+    let text = j.ok ? `✅ running at ${j.url} — ${list || "no model listed"}` : `⏹ not running (${j.url})`;
+    if (j.busy) text = (j.busy === "start" ? "⏳ starting… " : "⏳ stopping… ") + text;
+    if (j.control_error) text += `
+❌ ${j.control_error}`;
+    result.textContent = text;
+    result.style.whiteSpace = "pre-wrap";
+  };
+  const test = el("button", { className: "ays-btn", textContent: "Test", title: "GET /v1/models of the Strata server" });
+  const start = el("button", { className: "ays-btn", textContent: "Start",
+                               title: "Start Strata with the launcher and arguments above (waits for ComfyUI's queue first)" });
+  const stop = el("button", { className: "ays-btn", textContent: "Stop", title: "strata launch --stop" });
+  const buttons = [test, start, stop];
+  const check = async () => {
+    const j = await postJson("/agentY/strata/test", {});
+    show(j);
+    return j;
+  };
+  test.addEventListener("click", async (e) => {
+    e.preventDefault();
+    test.disabled = true;
+    result.textContent = "Testing…";
+    try { await check(); } catch (err) { result.textContent = "❌ " + err; } finally { test.disabled = false; }
+  });
+  const run = (action) => async (e) => {
+    e.preventDefault();
+    buttons.forEach((b) => { b.disabled = true; });
+    result.textContent = action === "start" ? "⏳ starting… (save first if you changed the fields above)" : "⏳ stopping…";
+    try {
+      const j = await postJson("/agentY/strata/control", { action });
+      if (!j.ok) throw new Error(j.error || "failed");
+      // A first load can take minutes: poll for up to ten.
+      for (let i = 0; i < 200; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const t = await check();
+        if (!t.busy) break;
+      }
+    } catch (err) {
+      result.textContent = "❌ " + err;
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  };
+  start.addEventListener("click", run("start"));
+  stop.addEventListener("click", run("stop"));
+  return [el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Server" }),
+                                               el("div", { className: "ays-btnrow" }, buttons)]), result];
 }
 
 async function postJson(path, payload) {

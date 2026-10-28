@@ -30,9 +30,9 @@ class TheSections(unittest.TestCase):
         for key in ("decision:", "annotate:", "likeness:"):
             self.assertIn(key, JS.split("const GROUP_LABELS = {", 1)[1].split("};", 1)[0])
 
-    def test_the_local_provider_is_the_only_one_with_settings(self):
+    def test_the_local_providers_are_the_only_ones_with_settings(self):
         providers = SECTIONS.split('{ title: "Connections"', 1)[1].split("},", 1)[0]
-        self.assertIn('objects: [["llm", "ollama"]]', providers)
+        self.assertIn('objects: [["llm", "ollama"], ["llm", "strata"]]', providers)
         self.assertIn("envUrls: true", providers)             # the endpoints are in the same section
         self.assertNotIn("advanced", providers)               # and it is shown without asking
         self.assertNotIn("anthropic", providers)
@@ -151,6 +151,31 @@ class TheModelRouting(unittest.TestCase):
             self.assertIn(part, body)
         for kind in ('"skill"', '"tool_pack"', '"tool"'):
             self.assertIn(kind, JS.split("const ROUTING_KINDS", 1)[1].split("];", 1)[0])
+
+
+
+
+class TheStrataRow(unittest.TestCase):
+
+    def test_the_strata_group_gets_test_start_and_stop(self):
+        self.assertIn('if (objPath.join(".") === "llm.strata") sub.body.append(...strataRows());', JS)
+        rows = JS.split("function strataRows()", 1)[1].split("async function postJson", 1)[0]
+        for route in ("/agentY/strata/test", "/agentY/strata/control"):
+            self.assertIn(route, rows)
+        for label in ('"Test"', '"Start"', '"Stop"'):
+            self.assertIn(label, rows)
+
+    def test_a_local_model_is_not_priced(self):
+        self.assertIn("!/ollama|strata/i.test(vendor)", JS)
+
+
+class TheQueueHook(unittest.TestCase):
+
+    def test_the_page_asks_the_host_before_it_queues(self):
+        src = (ROOT / "web" / "agent_gpu_share.js").read_text(encoding="utf-8")
+        self.assertIn("/agentY/strata/yield", src)
+        self.assertIn("app.queuePrompt = wrapped", src)
+        self.assertIn("STOP_WAIT_MS", src)          # never blocks the queue for good
 
 
 if __name__ == "__main__":
