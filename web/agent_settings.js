@@ -268,7 +268,8 @@ function injectStyles() {
   const css = `
   /* The long-term memory viewer's dark palette and cards, as in the side panel
      (agent_chat.js): a surface, a hairline border, a 4px accent edge on each group. */
-  .ays-overlay{position:fixed;inset:0;background:rgba(8,9,12,.6);z-index:10000;display:flex;
+  /* pointer-events:auto - a modal ComfyUI dialog sets none on <body>, which this inherits. */
+  .ays-overlay{position:fixed;inset:0;background:rgba(8,9,12,.6);z-index:10000;display:flex;pointer-events:auto;
     align-items:center;justify-content:center;font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif;}
   .ays-card{background:#15171c;color:#e6e8ec;border:1px solid #2c313b;border-radius:9px;
     width:min(720px,92vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;}
@@ -2034,8 +2035,29 @@ function buildMcpCard(mcpData, envSet) {
   return { group, err, collect, markSaved };
 }
 
+// ComfyUI's own Settings dialog (where "Open agentY Settings…" sits) is a modal
+// Reka UI dialog in current frontends: while it is open it sets
+// pointer-events:none on <body> and keeps the focus inside itself. A modal of ours
+// appended to <body> inherited that - it showed, and nothing in it could be clicked
+// or typed into (clicks fell through to the dialog underneath). So it is closed
+// first (Escape, which its dismissable layer listens for on the document), and the
+// overlay sets pointer-events:auto itself in case another such dialog is open.
+const OPEN_DIALOG = '[role="dialog"][data-state="open"]';
+
+export async function closeHostDialogs(doc = document, waitMs = 600) {
+  if (!doc.querySelector(OPEN_DIALOG)) return true;
+  const target = doc.activeElement || doc.body;
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+  const t0 = Date.now();
+  while (doc.querySelector(OPEN_DIALOG) && Date.now() - t0 < waitMs) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return !doc.querySelector(OPEN_DIALOG);
+}
+
 async function openAgentYSettingsModal() {
   injectStyles();
+  await closeHostDialogs();
   let data;
   // Set when the host did not answer and the settings were read from its files
   // instead (ComfyUI's /agent/offline_settings runs the checkout's own reader).

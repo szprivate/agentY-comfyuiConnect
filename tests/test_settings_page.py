@@ -169,6 +169,42 @@ class TheStrataRow(unittest.TestCase):
         self.assertIn("!/ollama|strata/i.test(vendor)", JS)
 
 
+class TheModalOverComfyUIsSettingsDialog(unittest.TestCase):
+    """"Open agentY Settings..." sits in ComfyUI's own Settings dialog, a modal Reka
+    UI dialog that sets pointer-events:none on <body> and traps the focus. The modal
+    opened over it, inherited none, and not one of its controls could be clicked."""
+
+    def test_the_overlay_takes_pointer_events_itself(self):
+        rule = JS.split(".ays-overlay{", 1)[1].split("}", 1)[0]
+        self.assertIn("pointer-events:auto", rule)
+
+    def test_comfyuis_dialog_is_closed_before_the_modal_opens(self):
+        body = JS.split("async function openAgentYSettingsModal() {", 1)[1][:200]
+        self.assertIn("await closeHostDialogs();", body)
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "node is not installed")
+    def test_close_host_dialogs_sends_escape_until_the_dialog_is_gone(self):
+        import shutil
+        import subprocess
+        fn = "async function closeHostDialogs" + JS.split("export async function closeHostDialogs", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        sel = JS.split("const OPEN_DIALOG = ", 1)[1].split(";\n", 1)[0]
+        script = f"""
+const OPEN_DIALOG = {sel};
+class KeyboardEvent {{ constructor(type, init) {{ this.type = type; Object.assign(this, init); }} }}
+{fn}
+let open = true; const keys = [];
+const body = {{ dispatchEvent(e) {{ keys.push(e.type + ':' + e.key); if (e.key === 'Escape') setTimeout(() => {{ open = false; }}, 50); }} }};
+const doc = {{ activeElement: null, body, querySelector: (s) => (s === OPEN_DIALOG && open ? {{}} : null) }};
+const closed = await closeHostDialogs(doc, 1000);
+const none = await closeHostDialogs({{ querySelector: () => null }});
+console.log(JSON.stringify({{ closed, keys, none }}));
+"""
+        out = subprocess.run([shutil.which("node"), "--input-type=module", "-e", script],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), '{"closed":true,"keys":["keydown:Escape"],"none":true}')
+
+
 class TheQueueHook(unittest.TestCase):
 
     def test_the_page_asks_the_host_before_it_queues(self):
