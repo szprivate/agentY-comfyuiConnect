@@ -1058,14 +1058,16 @@ class AgentChat {
     .ay-cmenu{position:absolute;top:100%;left:8px;right:8px;margin-top:4px;z-index:60;pointer-events:auto;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;box-shadow:0 12px 40px rgba(0,0,0,.5);padding:6px;display:flex;flex-direction:column;gap:2px;max-height:70vh;overflow:auto;}
     .ay-cmenu input{background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;min-width:0;}
     .ay-cmenu input:focus{border-color:var(--ay-accent);}
-    .ay-cm-item{padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;display:flex;gap:8px;align-items:baseline;}
+    .ay-cm-item{color:var(--ay-text);padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;display:flex;gap:8px;align-items:baseline;}
     .ay-cm-item:hover,.ay-cm-item.sel{background:var(--ay-surface2);}
     .ay-cm-item.danger{color:var(--ay-danger,#e5736f);}
     .ay-cm-item small{color:var(--ay-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .ay-cm-sep{height:1px;background:var(--ay-border);margin:3px 0;}
     .ay-cm-row{display:flex;gap:6px;align-items:center;padding:2px 0;}
     .ay-cm-row span{flex:1;font-size:12.5px;}
-    .ay-bar select{flex:1;min-width:60px;text-overflow:ellipsis;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
+    .ay-bar select{flex:1;min-width:60px;text-overflow:ellipsis;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;color-scheme:dark;}
+    .ay-bar select option{background:var(--ay-surface);color:var(--ay-text);}
+    .ay-bar select option:checked{background:var(--ay-accent);color:#fff;}
     .ay-btn{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
     /* Toggle button in its ON state (e.g. auto-graph enabled). */
     .ay-btn.ay-on{background:var(--ay-accent);color:#fff;border-color:var(--ay-accent);}

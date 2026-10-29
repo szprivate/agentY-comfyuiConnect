@@ -120,7 +120,7 @@ const STYLES = `
   .ayc-table th{position:sticky;top:0;background:#1e2128;text-align:left;font-size:11px;text-transform:uppercase;
     letter-spacing:.05em;color:#9aa0aa;padding:8px 10px;cursor:pointer;user-select:none;white-space:nowrap;}
   .ayc-table th:hover{color:#e6e8ec;}
-  .ayc-table td{padding:7px 10px;border-top:1px solid #2c313b;vertical-align:top;}
+  .ayc-table td{color:#e6e8ec;padding:7px 10px;border-top:1px solid #2c313b;vertical-align:top;}
   .ayc-table tr.ayc-row{cursor:pointer;}
   .ayc-table tr.ayc-row:hover td{background:#1b1e25;}
   .ayc-table tr.ayc-sel td{background:#262b34;box-shadow:inset 3px 0 0 #6f97ff;}
