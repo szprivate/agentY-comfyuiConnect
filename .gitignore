@@ -7,3 +7,33 @@ __pycache__/
 # Machine-specific: records where the agentY host lives so the "Start server"
 # button can relaunch run_agent.ps1 (written by the host / install_agent.ps1).
 .agenty_host.json
+
+# Local env files and per-machine credentials.
+.env
+.env.*
+!.env_example
+!.env.example
+config/settings.local.json
+config/.mcp_tokens/
+config/mcp_bundles/
+.agenty_token*
+
+# ── Secrets audit 2026-10-29: things that must never be addable ─────────────
+# Key/credential files of any name, and private keys.
+keys*.txt
+*.pem
+*.p12
+*.pfx
+id_rsa*
+# Conversation / memory databases and archives of them: full chat history,
+# tool results (which have held .env contents) and prompts.
+memory.zip
+*.sqlite
+*.sqlite3
+*.db
+# Logs (message history, token logs, MCP server logs) and tool caches.
+/logs/
+.logs/
+.playwright-mcp/
+.cache/
+.remotion/
