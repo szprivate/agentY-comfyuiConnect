@@ -251,11 +251,113 @@ def _same_origin(request) -> bool:
     return origin.split("://", 1)[-1].rstrip("/").lower() == (request.headers.get("Host") or "").lower()
 
 
+def _host_name(value: str) -> str:
+    """The host part of a Host header, without the port ([::1]:8188 -> ::1)."""
+    raw = str(value or "").strip().lower()
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[1:end] if end > 0 else raw
+    if raw.count(":") > 1:          # a bare IPv6 literal
+        return raw
+    return raw.split(":", 1)[0]
+
+
+def _own_host(host_header: str) -> bool:
+    """Was this request addressed to this machine by an address or its own name?
+
+    The DNS-rebinding defence for the /agent/* routes. ComfyUI's own origin
+    check only runs when the Host is a loopback address, so a page on
+    ``evil.example`` that re-points its name at 127.0.0.1 is let through with a
+    matching Origin - and could read the session token from host_info, or write
+    .env and mcp.json through offline_settings. A rebinding attack has to use a
+    NAME the attacker controls; IP literals, localhost and this machine's own
+    name cannot be one. More names: AGENTY_ALLOWED_HOSTS (comma-separated).
+    """
+    import ipaddress as _ipaddress
+    import socket as _socket
+    host = _host_name(host_header)
+    if not host:
+        return True                 # HTTP/1.0 without Host: not a browser page
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return True
+    try:
+        _ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    own = set()
+    try:
+        name = _socket.gethostname().lower()
+        own |= {name, name + ".local"}
+        own.add(_socket.getfqdn().lower())
+    except Exception:  # noqa: BLE001
+        pass
+    extra = _os.environ.get("AGENTY_ALLOWED_HOSTS", "")
+    own |= {_host_name(h) for h in extra.split(",") if h.strip()}
+    return host in own
+
+
+def _foreign_request(request) -> str:
+    """Why this /agent/* request is refused, or "" when it may proceed.
+
+    Two rules: the Host must be this machine's (see :func:`_own_host`), and an
+    Origin, when a browser sent one, must name the same host:port the request was
+    sent to - a page of another site cannot call these routes, whatever ComfyUI's
+    own CORS flags say.
+    """
+    host = request.headers.get("Host") or ""
+    if not _own_host(host):
+        return ("refused: this request was addressed to a name that is not this "
+                "machine's (DNS rebinding). Add it to AGENTY_ALLOWED_HOSTS if it is yours.")
+    if not _same_origin(request):
+        return "refused: a cross-origin request"
+    return ""
+
+
+def _from_local_process(request) -> bool:
+    """A call from a program on this machine, not from a browser page.
+
+    register_host is called by the agentY host's own Python (urllib): loopback,
+    and no Origin - browsers send one on every POST, so a page cannot pass.
+    """
+    if request.headers.get("Origin") is not None:
+        return False
+    peer = ""
+    try:
+        peer = str(request.remote or "")
+    except Exception:  # noqa: BLE001
+        peer = ""
+    return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+# The launchers start_host may run. register_host records one of these and
+# nothing else: whatever it records is later run with PowerShell / bash.
+_LAUNCHERS = ("run_agent.ps1", "run_agent.sh")
+
+
+def _refuse(why: str):
+    return web.json_response({"ok": False, "error": why}, status=403)
+
+
+def _guarded(handler):
+    """Every /agent/* route: refuse a foreign Host or Origin (see _foreign_request)."""
+    import functools as _functools
+
+    @_functools.wraps(handler)
+    async def _wrapper(request):  # noqa: ANN001
+        why = _foreign_request(request)
+        if why:
+            return _refuse(why)
+        return await handler(request)
+    return _wrapper
+
+
 try:
     from server import PromptServer
     _routes = PromptServer.instance.routes
 
     @_routes.get("/agent/offline_settings")
+    @_guarded
     async def _agent_offline_settings(request):  # noqa: ANN001
         """The settings page's data, read from the agentY checkout's files — for
         when the host does not answer. Keys come back masked, as over the host."""
@@ -263,6 +365,7 @@ try:
         return web.json_response(result, status=status)
 
     @_routes.post("/agent/offline_settings")
+    @_guarded
     async def _agent_offline_settings_save(request):  # noqa: ANN001
         """Write a Settings save to the checkout's files (.env, settings.local.json,
         pricing, mcp.json). It takes effect when the host next starts."""
@@ -278,6 +381,7 @@ try:
         return web.json_response(result, status=status)
 
     @_routes.post("/agent/load_workflow")
+    @_guarded
     async def _agent_load_workflow(request):  # noqa: ANN001
         try:
             data = await request.json()
@@ -303,8 +407,17 @@ try:
             return True
 
     @_routes.post("/agent/register_host")
+    @_guarded
     async def _agent_register_host(request):  # noqa: ANN001
-        """The agentY host tells us where it lives (so we can relaunch it later)."""
+        """The agentY host tells us where it lives (so we can relaunch it later).
+
+        What is recorded here is what /agent/start_host later RUNS, so only the
+        host's own process may record it (loopback, no Origin: never a browser
+        page), the launcher must be one of ours, and the root a local folder - a
+        UNC root would be a share somebody else can put a run_agent.ps1 on.
+        """
+        if not _from_local_process(request):
+            return _refuse("refused: only the agentY host on this machine may register itself")
         try:
             data = await request.json()
         except Exception:  # noqa: BLE001
@@ -312,6 +425,10 @@ try:
         root = str((data or {}).get("project_root", "")).strip()
         script = (str((data or {}).get("run_script", "")).strip()
                   or _DEFAULT_RUN_SCRIPT)
+        if script not in _LAUNCHERS:
+            return web.json_response({"ok": False, "error": f"unknown launcher: {script!r}"}, status=400)
+        if root.startswith(("\\\\", "//")):
+            return web.json_response({"ok": False, "error": "project_root must be a local folder"}, status=400)
         if not root or not _os.path.isdir(root):
             return web.json_response({"ok": False, "error": "project_root is not a directory"}, status=400)
         record = {"project_root": root, "run_script": script}
@@ -336,6 +453,7 @@ try:
         return web.json_response({"ok": True})
 
     @_routes.get("/agent/host_info")
+    @_guarded
     async def _agent_host_info(request):  # noqa: ANN001
         """What the panel needs to talk about starting the host: which script, and
         whether the button can do it.
@@ -368,6 +486,7 @@ try:
         })
 
     @_routes.get("/agent/comfy_dirs")
+    @_guarded
     async def _agent_comfy_dirs(request):  # noqa: ANN001
         """Where THIS ComfyUI keeps its user, input and output directories.
 
@@ -400,6 +519,7 @@ try:
             return web.json_response({"ok": False, "error": str(_exc)}, status=500)
 
     @_routes.post("/agent/start_host")
+    @_guarded
     async def _agent_start_host(request):  # noqa: ANN001
         """Launch the agentY host in its own visible console/terminal window.
 
@@ -412,6 +532,11 @@ try:
             return web.json_response(
                 {"ok": False, "error": f"agentY location unknown — run {_DEFAULT_RUN_SCRIPT} once, "
                                        "or set the AGENTY_ROOT environment variable."}, status=409)
+        if (_os.path.basename(script) != script or script in ("", ".", "..")
+                or root.startswith(("\\\\", "//"))):
+            return web.json_response(
+                {"ok": False, "error": "refusing to run a launcher outside a local agentY checkout"},
+                status=400)
         script_path = _os.path.join(root, script)
         if not _os.path.isfile(script_path):
             return web.json_response({"ok": False, "error": f"{script} not found under {root}"}, status=404)
@@ -441,6 +566,7 @@ try:
         return web.json_response({"ok": True, "root": root, "script": script})
 
     @_routes.post("/agent/pick_files")
+    @_guarded
     async def _agent_pick_files(request):  # noqa: ANN001
         """Open a native OS file/folder dialog on the ComfyUI host and return the
         chosen absolute paths — the backend picker for the agentY collector nodes.
@@ -505,6 +631,7 @@ try:
         return web.json_response({"ok": True, "paths": paths, "kind": kind})
 
     @_routes.get("/agent/pm_item")
+    @_guarded
     async def _agent_pm_item(request):  # noqa: ANN001
         """What one project-memory entry holds: its text, and the file it names.
 
@@ -549,6 +676,7 @@ try:
         return out
 
     @_routes.get("/agent/pm_names")
+    @_guarded
     async def _agent_pm_names(request):  # noqa: ANN001
         """Every entry in the store, with the file each one names.
 
@@ -567,6 +695,7 @@ try:
         return web.json_response({"ok": True, "entries": entries})
 
     @_routes.get("/agent/pm_file")
+    @_guarded
     async def _agent_pm_file(request):  # noqa: ANN001
         """Serve the media a named entry points at, for the in-node preview.
 
@@ -585,9 +714,15 @@ try:
         if not path or not _os.path.isfile(path):
             return web.json_response({"ok": False, "error": "entry names no file"},
                                      status=404)
+        # A preview: pictures and films only. An entry is text the agent wrote,
+        # and a prompt-injected one could name .env just as easily as a render.
+        if not path.lower().endswith(_COLLECT_IMG_EXTS + _COLLECT_VID_EXTS):
+            return web.json_response({"ok": False, "error": "entry names no picture or film"},
+                                     status=403)
         return web.FileResponse(path)
 
     @_routes.post("/agent/reset_collector_cursor")
+    @_guarded
     async def _agent_reset_collector_cursor(request):  # noqa: ANN001
         """Reset a collector node's incremental-load cursor to the first file.
 
@@ -653,6 +788,7 @@ try:
             return _REPLY_TIMEOUT
 
     @_routes.post("/agent/canvas_reply")
+    @_guarded
     async def _agent_canvas_reply(request):  # noqa: ANN001
         """The frontend answering a pending /agent/canvas_* request."""
         try:
@@ -667,6 +803,7 @@ try:
         return web.json_response({"ok": True, "accepted": True})
 
     @_routes.get("/agent/canvas_selection")
+    @_guarded
     async def _agent_canvas_selection(request):  # noqa: ANN001
         """Live read of the nodes selected on the canvas, with their widget values.
 
@@ -687,6 +824,7 @@ try:
                                   "workflow": str(reply.get("workflow") or "")})
 
     @_routes.get("/agent/history_selection")
+    @_guarded
     async def _agent_history_selection(request):  # noqa: ANN001
         """Live read of what the user picked in a history panel.
 
@@ -710,6 +848,7 @@ try:
         return web.json_response({"ok": True, "selection": sel if isinstance(sel, dict) else None})
 
     @_routes.post("/agent/set_node_params")
+    @_guarded
     async def _agent_set_node_params(request):  # noqa: ANN001
         """Write widget values onto a node of the live graph (no reload, no re-queue).
 

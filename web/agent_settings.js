@@ -1925,7 +1925,7 @@ function buildMcpCard(mcpData, envSet) {
       fields[k.key] = { input, meta: k, stored };
       const label = el("div", { className: "ays-row" }, [
         el("span", { className: "ays-mcpsum", textContent: k.label || k.key }),
-        k.help_url ? el("a", { href: k.help_url, target: "_blank", rel: "noopener", textContent: "get a key" }) : null,
+        k.help_url && /^https?:\/\//i.test(String(k.help_url)) ? el("a", { href: k.help_url, target: "_blank", rel: "noopener", textContent: "get a key" }) : null,
       ]);
       parts.push(label, input);
     }

@@ -1662,7 +1662,9 @@ class AgentChat {
       card.appendChild(el("div", { className: "ay-toast-x", textContent: "✕" }));
       card.appendChild(el("div", { className: "ay-toast-title", textContent: icon + "  " + (t.title || "agentY") }));
       if (t.body) card.appendChild(el("div", { className: "ay-toast-body", textContent: t.body }));
-      if (t.url) {
+      // http(s) only: the address comes from an MCP server's answer, and a
+      // javascript: one would run in this page, which holds the session token.
+      if (t.url && /^https?:\/\//i.test(String(t.url))) {
         const link = el("span", { className: "ay-toast-link", textContent: "Open in Magnific ↗" });
         link.addEventListener("click", () => { try { window.open(t.url, "_blank", "noopener"); } catch (_) {} });
         card.appendChild(link);
