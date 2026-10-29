@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { backendBase } from "./agent_backend.js";
+import { watchDocument } from "./agent_tags.js";
 
 // Where the agentY panel is shown, and what can be dropped on it.
 //
@@ -214,6 +215,7 @@ export function installPanelHost(chat) {
     chat._viewerEl = elm;
     chat._viewerBack = opts.back || null;
     carryStyles(elm);
+    watchDocument(elm.ownerDocument);   // a popped-out viewer is another document
     chat.mount(elm);
     chat._syncViewerBtn();
     // The sidebar, if it is on screen, now says where the panel went.

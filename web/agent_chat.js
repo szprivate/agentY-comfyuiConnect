@@ -9,6 +9,7 @@ import { isAgentReviewer } from "./agent_review.js";
 import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
          stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
+import { eventInside } from "./agent_ui_root.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { openConversationManager, renameConversation, deleteConversations,
          searchConversations } from "./agent_conversations.js";
@@ -2204,7 +2205,8 @@ class AgentChat {
     this._convMenu = menu;
     this.convMenuBtn.parentElement.append(menu);
     this._convMenuOff = (e) => {
-      if (!menu.contains(e.target) && e.target !== this.convMenuBtn) this._closeConvMenu();
+      // the panel can sit in a shadow root (the viewer), where e.target is the host
+      if (!eventInside(e, menu) && !eventInside(e, this.convMenuBtn)) this._closeConvMenu();
     };
     document.addEventListener("mousedown", this._convMenuOff, true);
     this._renderConvMenu("main");
@@ -2292,6 +2294,7 @@ class AgentChat {
         this._closeConvMenu();
         openConversationManager({
           currentId: this.threadId,
+          anchor: this.wrap,
           onOpen: (id) => this.openThread(id),
           onRenamed: (id, t) => this._onRenamed(id, t),
           onDeleted: (ids) => this._afterDeleted(ids),

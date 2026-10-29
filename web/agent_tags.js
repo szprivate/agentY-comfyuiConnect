@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { eventTarget, eventInside, uiRoot, ensureStyleIn } from "./agent_ui_root.js";
 
 // agentY tags — the `agentY add tag` node, and the `#` menu it feeds.
 //
@@ -205,12 +206,8 @@ const CSS = `
 .ay-tagmenu-item.sel .ay-tagmenu-role { color: #dde; }
 `;
 
-function ensureStyle() {
-  if (document.getElementById(STYLE_ID)) return;
-  const s = document.createElement("style");
-  s.id = STYLE_ID;
-  s.textContent = CSS;
-  document.head.appendChild(s);
+function ensureStyle(parent) {
+  ensureStyleIn(parent, STYLE_ID, CSS);
 }
 
 // Open state. `start`/`end` bracket the `#query` being replaced, so accepting an
@@ -322,10 +319,11 @@ function render() {
 // height of its own (the whole panel scrolls), so the panel's rect cannot be used
 // for the vertical; the box is the anchor, and the panel only bounds the sides.
 function placeAbove(ta, within) {
+  const win = ta.ownerDocument.defaultView || window;
   const r = ta.getBoundingClientRect();
   const bounds = (within && within.getBoundingClientRect()) || r;
   const left0 = Math.max(bounds.left, 4);
-  const maxW = Math.max(120, Math.min(bounds.right, window.innerWidth) - left0 - 4);
+  const maxW = Math.max(120, Math.min(bounds.right, win.innerWidth) - left0 - 4);
   menu.el.style.maxWidth = maxW + "px";
   menu.el.style.left = Math.round(left0 + 4) + "px";
   const h = menu.el.getBoundingClientRect().height;
@@ -428,12 +426,16 @@ function refresh(ta) {
   menu.end = ta.selectionStart;
   const again = keep ? items.findIndex((t) => t.tag === keep.tag) : -1;
   menu.sel = again >= 0 ? again : 0;
+  // Mounted beside the box, not on the page: in the viewer the box is inside a
+  // shadow root, where the page's stylesheet and body do not apply (agent_ui_root.js).
+  const parent = uiRoot(ta);
+  if (menu.el && menu.el.parentNode !== parent) { menu.el.remove(); menu.el = null; }
   if (!menu.el) {
-    ensureStyle();
-    menu.el = document.createElement("div");
+    ensureStyle(parent);
+    menu.el = ta.ownerDocument.createElement("div");
     menu.el.className = "ay-tagmenu";
-    document.body.appendChild(menu.el);
-  }
+    parent.appendChild(menu.el);
+  } else ensureStyle(parent);
   render();
 }
 
@@ -464,6 +466,7 @@ const BOXES = [
 // the caret to wherever the panel ends.
 export function registerTagBox(el, opts = {}) {
   if (!el) return;
+  if (el.ownerDocument) watchDocument(el.ownerDocument);
   OWNER.set(el, { node: null, widget: null, inserts: opts.inserts || "name",
                   anchor: opts.anchor || "caret", within: opts.within || null });
 }
@@ -488,19 +491,20 @@ function ownerFor(el) {
   return found;
 }
 
-function textareaFor(target) {
+function textareaFor(e) {
+  const target = eventTarget(e);
   if (!target || (target.tagName !== "TEXTAREA" && target.tagName !== "INPUT")) return null;
   return ownerFor(target) ? target : null;
 }
 
 function onInput(e) {
   if (applying) return;
-  const ta = textareaFor(e.target);
+  const ta = textareaFor(e);
   if (ta) refresh(ta);
 }
 
 function onKeyDown(e) {
-  const ta = textareaFor(e.target);
+  const ta = textareaFor(e);
   // Nothing open means nothing to drive: every key belongs to the textarea.
   if (!ta || !isOpen() || menu.ta !== ta) return;
   const stop = () => {
@@ -536,34 +540,44 @@ function onKeyDown(e) {
 // A click inside the box moves the caret without typing; a click outside, a
 // scroll, or losing the window all mean the menu no longer points at anything.
 function onPointerDown(e) {
-  const ta = textareaFor(e.target);
+  const ta = textareaFor(e);
   if (ta) setTimeout(() => refresh(ta), 0);
-  else if (!(menu.el && menu.el.contains(e.target))) close();
+  else if (!eventInside(e, menu.el)) close();
+}
+
+// The menu's listeners, on one document. The page's is wired in setup(); a viewer
+// popped out into its own window is a second document, and events there never
+// reach the first one's listeners, so the panel host calls this for it too.
+const WATCHED = new WeakSet();
+export function watchDocument(doc) {
+  if (!doc || WATCHED.has(doc)) return;
+  WATCHED.add(doc);
+  // Capture phase: the canvas binds its own key handling, and the arrow keys
+  // driving this menu must not also drive whatever is behind it.
+  doc.addEventListener("input", onInput, true);
+  doc.addEventListener("keydown", onKeyDown, true);
+  doc.addEventListener("mousedown", onPointerDown, true);
+  // Anything that moves the box out from under the menu closes it, rather than
+  // leaving it floating beside a caret that is no longer there: a scroll, a
+  // wheel (which the textarea forwards to the canvas as a zoom), losing focus.
+  // Scrolling the menu ITSELF is the exception — it has a max height, so a long
+  // list has to be scrollable, and closing on the gesture that reveals the rest
+  // of it is a menu that cannot be reached past the tenth entry.
+  const elsewhere = (e) => {
+    if (menu.el && e && eventInside(e, menu.el)) return false;
+    // The composer's menu is tied to the box, not the page: the chat log
+    // scrolling while the agent streams does not move it.
+    if (menu.ta && (ownerFor(menu.ta) || {}).anchor === "above") return false;
+    return true;
+  };
+  doc.addEventListener("scroll", (e) => { if (elsewhere(e)) close(); }, true);
+  doc.addEventListener("wheel", (e) => { if (elsewhere(e)) close(); }, true);
 }
 
 app.registerExtension({
   name: "agentY.tagMenu",
   setup() {
-    // Capture phase: the canvas binds its own key handling, and the arrow keys
-    // driving this menu must not also drive whatever is behind it.
-    document.addEventListener("input", onInput, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("mousedown", onPointerDown, true);
-    // Anything that moves the box out from under the menu closes it, rather than
-    // leaving it floating beside a caret that is no longer there: a scroll, a
-    // wheel (which the textarea forwards to the canvas as a zoom), losing focus.
-    // Scrolling the menu ITSELF is the exception — it has a max height, so a long
-    // list has to be scrollable, and closing on the gesture that reveals the rest
-    // of it is a menu that cannot be reached past the tenth entry.
-    const elsewhere = (e) => {
-      if (menu.el && e && menu.el.contains(e.target)) return false;
-      // The composer's menu is tied to the box, not the page: the chat log
-      // scrolling while the agent streams does not move it.
-      if (menu.ta && (ownerFor(menu.ta) || {}).anchor === "above") return false;
-      return true;
-    };
-    document.addEventListener("scroll", (e) => { if (elsewhere(e)) close(); }, true);
-    document.addEventListener("wheel", (e) => { if (elsewhere(e)) close(); }, true);
+    watchDocument(document);
     window.addEventListener("blur", () => close());
   },
 });

@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
 import { closeHostDialogs } from "./agent_settings.js";
+import { uiRoot, ensureStyleIn } from "./agent_ui_root.js";
 
 // agentY conversations - the "Manage conversations" page, and the helpers the
 // sidebar's conversation menu (agent_chat.js) shares with it.
@@ -103,11 +104,7 @@ function h(tag, props = {}, kids = []) {
 }
 
 const STYLE_ID = "agentY-conversations-style";
-function injectStyles() {
-  if (document.getElementById(STYLE_ID)) return;
-  const s = document.createElement("style");
-  s.id = STYLE_ID;
-  s.textContent = `
+const STYLES = `
   .ayc-overlay{position:fixed;inset:0;background:rgba(8,9,12,.6);z-index:10000;display:flex;pointer-events:auto;
     align-items:center;justify-content:center;font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif;}
   .ayc-card{background:#15171c;color:#e6e8ec;border:1px solid #2c313b;border-radius:9px;pointer-events:auto;
@@ -149,7 +146,9 @@ function injectStyles() {
   .ayc-empty{padding:30px;text-align:center;color:#9aa0aa;font-size:12.5px;}
   .ayc-card [hidden]{display:none !important;}
   `;
-  document.head.appendChild(s);
+
+function injectStyles() {
+  ensureStyleIn(document.body, STYLE_ID, STYLES);
 }
 
 let openPage = null;
@@ -319,7 +318,11 @@ export async function openConversationManager(ctx = {}) {
     } finally { yesBtn.disabled = false; }
   });
 
-  document.body.append(overlay);
+  // Beside the panel that asked, not on the page: the viewer hides the page body
+  // and keeps the panel in a shadow root (agent_ui_root.js).
+  const parent = uiRoot(ctx.anchor);
+  ensureStyleIn(parent, STYLE_ID, STYLES);
+  parent.append(overlay);
   openPage = { close };
   view.append(h("div", { className: "ayc-empty", textContent: "Click a conversation to read it." }));
   try {

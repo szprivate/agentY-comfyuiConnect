@@ -62,6 +62,7 @@ class Behaviour(unittest.TestCase):
         src = HOST.replace('"../../scripts/', '"../scripts/')
         (d / "web" / "agent_panel_host.js").write_text(src, encoding="utf-8")
         (d / "web" / "agent_backend.js").write_text('export const backendBase = () => "http://h";')
+        (d / "web" / "agent_tags.js").write_text("export const watchDocument = () => {};")
         (d / "run.mjs").write_text(r'''
 const uploads = [];
 globalThis.File = class { constructor(parts, name, o) { this.name = name; } };
