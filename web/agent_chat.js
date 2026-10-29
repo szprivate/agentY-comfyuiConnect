@@ -9,7 +9,8 @@ import { isAgentReviewer } from "./agent_review.js";
 import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
          stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
-import { eventInside } from "./agent_ui_root.js";
+import { eventInside, eventTarget } from "./agent_ui_root.js";
+import { altWordJump, fullSizeSrc } from "./agent_composer_keys.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { collectHistorySelection } from "./agent_history_selection.js";
 import { openConversationManager, renameConversation, deleteConversations,
@@ -407,6 +408,14 @@ class AgentChat {
     // every time a step line lands makes the history unreadable during a long run.
     // Read off the scroll event because an append does not move scrollTop: the flag
     // therefore still carries what the user's own last scroll said.
+    // A result picture opens full size. One listener on the log, not one per
+    // picture: a log rebuilt from its saved HTML (a reload, a re-opened
+    // conversation, an adopted turn that finished) has no per-picture listeners,
+    // and the pictures in it were dead to clicks.
+    ctx.logEl.addEventListener("click", (e) => {
+      const src = fullSizeSrc(eventTarget(e));
+      if (src) window.open(src, "_blank", "noopener");
+    });
     ctx.logEl.addEventListener("scroll", () => {
       const gap = ctx.logEl.scrollHeight - ctx.logEl.scrollTop - ctx.logEl.clientHeight;
       ctx._stick = gap < 24;
@@ -2929,8 +2938,7 @@ class AgentChat {
                       preload: "metadata" })
       : el("img", { className: "ay-out-media", src, loading: "lazy", alt: ev.name || "" });
     if (ev.kind === "image") {
-      media.title = "Open full size";
-      media.addEventListener("click", () => window.open(src, "_blank", "noopener"));
+      media.title = "Open full size";   // the log's click listener opens it (_makeCtx)
     }
     const label = [ev.index ? "#" + ev.index : "", ev.role || ev.caption || "", ev.name || ""]
       .filter(Boolean).join(" · ");
@@ -5562,8 +5570,11 @@ class AgentChat {
     if (!needsArg) { /* leave for the user to press Enter */ }
   }
   _onKeydown(e) {
+    // Alt+Left/Right jumps a word (Ctrl+arrows the browser does itself).
+    if (altWordJump(e, this.input)) return;
     const popOpen = this.pop.style.display === "block";
-    if (popOpen) {
+    // The command list takes plain keys only; a modified arrow stays the box's.
+    if (popOpen && !(e.altKey || e.ctrlKey || e.metaKey)) {
       if (e.key === "ArrowDown") { e.preventDefault(); this._popSel = (this._popSel + 1) % this._filtered.length; this._renderPop(); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); this._popSel = (this._popSel - 1 + this._filtered.length) % this._filtered.length; this._renderPop(); return; }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); this._pickCmd(this._filtered[this._popSel]); return; }

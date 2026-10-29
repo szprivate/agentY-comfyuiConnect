@@ -522,6 +522,9 @@ function onKeyDown(e) {
   const ta = textareaFor(e);
   // Nothing open means nothing to drive: every key belongs to the textarea.
   if (!ta || !isOpen() || menu.ta !== ta) return;
+  // The menu uses plain keys only. Alt/Ctrl/Meta combos (word jumps, select
+  // all, undo ...) are the textarea's, open menu or not.
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
   const stop = () => {
     e.preventDefault();
     e.stopPropagation();
