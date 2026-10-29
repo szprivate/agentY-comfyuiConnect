@@ -303,6 +303,8 @@ function render() {
     row.addEventListener("mouseenter", () => select(i));
     menu.el.appendChild(row);
   });
+  const owner = ownerFor(menu.ta) || {};
+  if (owner.anchor === "above") return placeAbove(menu.ta, owner.within);
   const at = caretPoint(menu.ta);
   menu.el.style.left = Math.round(at.left) + "px";
   menu.el.style.top = Math.round(at.top) + "px";
@@ -313,6 +315,24 @@ function render() {
   }
   if (box.right > window.innerWidth - 4) {
     menu.el.style.left = Math.max(4, Math.round(window.innerWidth - box.width - 4)) + "px";
+  }
+}
+
+// Over the box, inside the panel that holds it. The sidebar mount element has no
+// height of its own (the whole panel scrolls), so the panel's rect cannot be used
+// for the vertical; the box is the anchor, and the panel only bounds the sides.
+function placeAbove(ta, within) {
+  const r = ta.getBoundingClientRect();
+  const bounds = (within && within.getBoundingClientRect()) || r;
+  const left0 = Math.max(bounds.left, 4);
+  const maxW = Math.max(120, Math.min(bounds.right, window.innerWidth) - left0 - 4);
+  menu.el.style.maxWidth = maxW + "px";
+  menu.el.style.left = Math.round(left0 + 4) + "px";
+  const h = menu.el.getBoundingClientRect().height;
+  menu.el.style.top = Math.max(4, Math.round(r.top - h - 6)) + "px";
+  const box = menu.el.getBoundingClientRect();
+  if (box.right > bounds.right - 2) {
+    menu.el.style.left = Math.max(4, Math.round(bounds.right - box.width - 4)) + "px";
   }
 }
 
@@ -437,6 +457,17 @@ const BOXES = [
   { type: COLLECTOR_NODE, widget: "files", inserts: "path" },
 ];
 
+// Any other textarea can take the menu too: the sidebar composer registers itself
+// here, so there is ONE menu (one tag source, one renderer, one key handler) and
+// not a second copy in agent_chat.js. `anchor: "above"` is for a box at the foot
+// of a panel: the menu sits over the box, inside `within`, instead of following
+// the caret to wherever the panel ends.
+export function registerTagBox(el, opts = {}) {
+  if (!el) return;
+  OWNER.set(el, { node: null, widget: null, inserts: opts.inserts || "name",
+                  anchor: opts.anchor || "caret", within: opts.within || null });
+}
+
 function ownerFor(el) {
   if (OWNER.has(el)) return OWNER.get(el);
   let found = null;
@@ -524,7 +555,13 @@ app.registerExtension({
     // Scrolling the menu ITSELF is the exception — it has a max height, so a long
     // list has to be scrollable, and closing on the gesture that reveals the rest
     // of it is a menu that cannot be reached past the tenth entry.
-    const elsewhere = (e) => !(menu.el && e && menu.el.contains(e.target));
+    const elsewhere = (e) => {
+      if (menu.el && e && menu.el.contains(e.target)) return false;
+      // The composer's menu is tied to the box, not the page: the chat log
+      // scrolling while the agent streams does not move it.
+      if (menu.ta && (ownerFor(menu.ta) || {}).anchor === "above") return false;
+      return true;
+    };
     document.addEventListener("scroll", (e) => { if (elsewhere(e)) close(); }, true);
     document.addEventListener("wheel", (e) => { if (elsewhere(e)) close(); }, true);
     window.addEventListener("blur", () => close());

@@ -8,7 +8,7 @@ import { flowPurpose, isHookNode, isReviewNode, isEditNode, isExecNode, isExecSl
 import { isAgentReviewer } from "./agent_review.js";
 import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
          stageNote, stageTitle } from "./agent_plan.js";
-import { normaliseTag } from "./agent_tags.js";
+import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 import { searchableSelect } from "./agent_combo.js";
@@ -1344,6 +1344,12 @@ class AgentChat {
       [this.pop, this.runDock, this.queueEl, this.vBarEl, this.selBarEl, this.attachEl,
        inrow, this.usageEl, this.fileInput]);
     wrap.append(inwrap);
+    // `#` opens the canvas-tag menu here as it does in a hook prompt. Its key
+    // handler runs in the capture phase, so Enter/Tab/arrows/Esc are taken before
+    // _onKeydown sees them: a pick never sends the message. The menu sits over the
+    // composer and is bounded to its width, which is the panel's (the mount element
+    // has no height, so nothing else is a usable anchor).
+    registerTagBox(this.input, { inserts: "name", anchor: "above", within: inwrap });
     this._startSelectionIndicator();
 
     // model quick-switch bar (bottom)
