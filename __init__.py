@@ -1,6 +1,6 @@
 """agentY-comfyuiConnect — canvas ↔ agent bridge.
 
-Three responsibilities:
+Four responsibilities:
 
 1. **Push** — the agentY pipeline POSTs a graph-format workflow to
    ``/agent/load_workflow``; this broadcasts it over the websocket and
@@ -21,6 +21,9 @@ Three responsibilities:
    websocket and answered from there. The sidebar chat already ships its
    selection with every message; this is how the agentY **MCP** server (running
    under Claude, with no page of its own) sees the same thing.
+4. **History selection** - ``/agent/history_selection`` reads, the same way,
+   what the user picked in the bEpic viewer's history strip and in ComfyUI's
+   assets sidebar (``web/agent_history_selection.js``).
 
 The hook is a **V3** node so its ``anchor`` input can *auto-grow*: connect one
 node and a fresh empty ``anchor`` slot appears, letting a single hook gather
@@ -683,6 +686,29 @@ try:
         return web.json_response({"ok": True, "count": len(nodes), "nodes": nodes,
                                   "workflow": str(reply.get("workflow") or "")})
 
+    @_routes.get("/agent/history_selection")
+    async def _agent_history_selection(request):  # noqa: ANN001
+        """Live read of what the user picked in a history panel.
+
+        The same round trip as the canvas selection: the page answers from
+        ``web/agent_history_selection.js`` - the bEpic viewer's history strip and
+        ComfyUI's assets sidebar. Relayed as the page sent it; resolving files,
+        runs and sidecars is the caller's job (agenty_core.tools.history_selection),
+        so the agentY host, which gets the same data with each message, resolves it
+        the same way."""
+        reply = await _ask_frontend("agent.request_history_selection", {},
+                                    _clamp_timeout(request),
+                                    sid=str(request.query.get("client_id", "")))
+        if reply is None:
+            return web.json_response({
+                "ok": False, "selection": None,
+                "error": "no ComfyUI browser page answered - open ComfyUI in a browser "
+                         "(a background tab is fine). If it is open, its agentY extension "
+                         "is older than this route; reload the page.",
+            })
+        sel = reply.get("selection")
+        return web.json_response({"ok": True, "selection": sel if isinstance(sel, dict) else None})
+
     @_routes.post("/agent/set_node_params")
     async def _agent_set_node_params(request):  # noqa: ANN001
         """Write widget values onto a node of the live graph (no reload, no re-queue).
@@ -720,7 +746,7 @@ try:
 
     print("[agentY-comfyuiConnect] registered /agent routes "
           "(load_workflow, register_host, host_info, comfy_dirs, start_host, pick_files, "
-          "reset_collector_cursor, canvas_selection, set_node_params)")
+          "reset_collector_cursor, canvas_selection, history_selection, set_node_params)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")

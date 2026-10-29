@@ -11,6 +11,7 @@ import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel,
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { eventInside } from "./agent_ui_root.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
+import { collectHistorySelection } from "./agent_history_selection.js";
 import { openConversationManager, renameConversation, deleteConversations,
          searchConversations } from "./agent_conversations.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -840,6 +841,7 @@ class AgentChat {
       loop_render: { v },
       canvas_hooks: this._collectCanvasHooks(),
       canvas_selection: this._collectCanvasSelection(),
+      history_selection: this._historySelection(),
       canvas_prompt: await this._captureCanvasGraph(),
       open_workflows: openTabs,
     });
@@ -978,6 +980,7 @@ class AgentChat {
         canvas_prompt: await this._captureCanvasGraph(),
         canvas_hooks: this._collectCanvasHooks(),
         canvas_selection: this._collectCanvasSelection(),
+        history_selection: this._historySelection(),
         client: panelClientId(),
         thread_id: this.threadId || "",
       };
@@ -4014,6 +4017,7 @@ class AgentChat {
       canvas_inputs: canvasInputs.map((c) => ({ value: c.value, kind: c.kind })),
       canvas_hooks: canvasHooks,
       canvas_selection: canvasSelection,
+      history_selection: this._historySelection(),
       canvas_prompt: canvasPrompt,
       open_workflows: openTabs,
       dry_run: dryRun,
@@ -4205,6 +4209,13 @@ class AgentChat {
     }
     if (nodes.length > MAX)
       bar.append(el("span", { className: "ay-selmore", textContent: `+${nodes.length - MAX} more` }));
+  }
+
+  // What the user picked in a history panel (the bEpic viewer's strip, ComfyUI's
+  // assets sidebar), or null - agent_history_selection.js. Never throws: a turn
+  // must not fail over a panel that is not there.
+  _historySelection() {
+    try { return collectHistorySelection(); } catch (_) { return null; }
   }
 
   // Snapshot every selected node (ANY type) with its widget parameter values, so

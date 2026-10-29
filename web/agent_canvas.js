@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { collectHistorySelection } from "./agent_history_selection.js";
 
 // agentY-comfyuiConnect: when the agentY pipeline runs a workflow it POSTs the graph to
 // /agent/load_workflow, which the server broadcasts as an "agent.load_workflow"
@@ -279,6 +280,17 @@ app.registerExtension({
       }
       try { workflow = String(app.workflowManager?.activeWorkflow?.path || ""); } catch (_) {}
       reply(d.req_id, { nodes, workflow });
+    });
+
+    // The history panels' picks (agent_history_selection.js) for
+    // GET /agent/history_selection - get_history_selection's live read.
+    api.addEventListener("agent.request_history_selection", (event) => {
+      const d = (event && event.detail) || {};
+      let selection = null;
+      try { selection = collectHistorySelection(); } catch (err) {
+        console.error("[agentY-comfyuiConnect] reading the history selection failed:", err);
+      }
+      reply(d.req_id, { selection });
     });
 
     api.addEventListener("agent.set_node_params", (event) => {
