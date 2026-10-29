@@ -101,7 +101,7 @@ class WhatItPrints(unittest.TestCase):
 class InThePanel(unittest.TestCase):
     def test_the_plan_button_took_the_auto_graph_buttons_place(self):
         self.assertIn('setButtonIcon(this.planBtn, "plan", "☰");', CHAT)
-        self.assertIn("[this.threadSel, newBtn, delBtn, this.undoBtn, this.planBtn, this.loopBtn]", CHAT)
+        self.assertIn("[this.threadSel, this.convMenuBtn, this.undoBtn, this.planBtn, this.loopBtn]", CHAT)
         for gone in ("autographBtn", "_toggleAutograph", "_loadAutograph"):
             self.assertNotIn(gone, CHAT)
 

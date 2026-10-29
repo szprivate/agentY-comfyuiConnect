@@ -10,6 +10,8 @@ import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel,
          stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
+import { openConversationManager, renameConversation, deleteConversations,
+         searchConversations } from "./agent_conversations.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
 import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
@@ -1051,7 +1053,17 @@ class AgentChat {
       font-size:13.5px;line-height:1.5;color:var(--ay-text);background:var(--ay-bg);
     }
     .ay-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--ay-border);flex-shrink:0;}
-    .ay-bar{background:var(--ay-surface);}
+    .ay-bar{background:var(--ay-surface);position:relative;}
+    .ay-cmenu{position:absolute;top:100%;left:8px;right:8px;margin-top:4px;z-index:60;pointer-events:auto;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;box-shadow:0 12px 40px rgba(0,0,0,.5);padding:6px;display:flex;flex-direction:column;gap:2px;max-height:70vh;overflow:auto;}
+    .ay-cmenu input{background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;min-width:0;}
+    .ay-cmenu input:focus{border-color:var(--ay-accent);}
+    .ay-cm-item{padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;display:flex;gap:8px;align-items:baseline;}
+    .ay-cm-item:hover,.ay-cm-item.sel{background:var(--ay-surface2);}
+    .ay-cm-item.danger{color:var(--ay-danger,#e5736f);}
+    .ay-cm-item small{color:var(--ay-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ay-cm-sep{height:1px;background:var(--ay-border);margin:3px 0;}
+    .ay-cm-row{display:flex;gap:6px;align-items:center;padding:2px 0;}
+    .ay-cm-row span{flex:1;font-size:12.5px;}
     .ay-bar select{flex:1;min-width:60px;text-overflow:ellipsis;background:var(--ay-bg);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 10px;font-size:12.5px;cursor:pointer;}
     .ay-btn{background:var(--ay-surface);color:var(--ay-text);border:1px solid var(--ay-border);border-radius:7px;padding:7px 11px;cursor:pointer;font-size:12.5px;transition:background .12s,border-color .12s,transform .06s;}
     /* Toggle button in its ON state (e.g. auto-graph enabled). */
@@ -1273,12 +1285,10 @@ class AgentChat {
     // shown until the icons load (or if that fetch fails).
     this.threadSel = el("select", { title: "Conversation" });
     this.threadSel.addEventListener("change", () => this.openThread(this.threadSel.value));
-    const newBtn = el("button", { className: "ay-btn", title: "New chat" });
-    setButtonIcon(newBtn, "newChat", "＋");
-    newBtn.addEventListener("click", () => this.newThread());
-    const delBtn = el("button", { className: "ay-btn", title: "Delete this conversation" });
-    setButtonIcon(delBtn, "deleteChat", "🗑");
-    delBtn.addEventListener("click", () => this.deleteThread());
+    // New / rename / delete / search / manage live in this menu, not in bar buttons.
+    this.convMenuBtn = el("button", { className: "ay-btn", textContent: "⋯",
+      title: "Conversations: new, rename, delete, search, manage" });
+    this.convMenuBtn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleConvMenu(); });
     // Undo: takes the conversation — and the canvas, when it can tell that is
     // safe — back to before the agent's last step.
     this.undoBtn = el("button", { className: "ay-btn", title: "Undo the agent's last step" });
@@ -1299,7 +1309,7 @@ class AgentChat {
     setButtonIcon(this.loopBtn, "promptLoop", "✍");
     this.loopBtn.addEventListener("click", () => this._togglePromptLoop());
     wrap.append(el("div", { className: "ay-bar" },
-      [this.threadSel, newBtn, delBtn, this.undoBtn, this.planBtn, this.loopBtn]));
+      [this.threadSel, this.convMenuBtn, this.undoBtn, this.planBtn, this.loopBtn]));
     // The run on screen: one line always, the stages when opened (_refreshShotBar).
     this.planLineEl = el("button", { className: "ay-planline",
       title: "Show or hide the stages of this run" });
@@ -2136,13 +2146,158 @@ class AgentChat {
 
   async deleteThread() {
     if (!this.threadId) return this.newThread();
-    const tid = this.threadId;
+    await this._afterDeleted(await this._deleteIds([this.threadId]));
+  }
+
+  // One bulk call, same endpoint the Manage page uses. The host refuses a
+  // conversation with a turn running; those come back as `skipped` and stay.
+  async _deleteIds(ids) {
     try {
-      await fetch(backendBase() + "/agentY/threads/" + tid, { method: "DELETE" });
-    } catch (_) {}
-    this._ctxs.delete(tid);
-    this.newThread();
+      const res = await deleteConversations(ids);
+      if ((res.skipped || []).length) this._sys("Not deleted: a turn is running in " +
+        res.skipped.length + " of them. Stop it first.");
+      return res.deleted_ids || [];
+    } catch (_) {
+      this._sys("Could not delete: the agentY host did not answer.");
+      return [];
+    }
+  }
+
+  // Conversations are gone on the host: drop their sessions, and if the one on
+  // screen was among them move to the newest remaining one (else a fresh one).
+  async _afterDeleted(ids) {
+    if (!ids || !ids.length) return;
+    const wasOpen = ids.includes(this.threadId);
+    for (const id of ids) this._ctxs.delete(id);
+    await this._loadThreads();
+    if (!wasOpen) return;
+    const next = Array.from(this.threadSel.options).find((o) => o.value && !ids.includes(o.value));
+    if (next) await this.openThread(next.value); else this.newThread();
+  }
+
+  async renameThread(title) {
+    if (!this.threadId) return this._sys("Nothing to rename yet - send a message first.");
+    try {
+      const saved = await renameConversation(this.threadId, title);
+      this._onRenamed(this.threadId, saved);
+    } catch (e) {
+      this._sys("Could not rename: " + e.message);
+    }
+  }
+
+  _onRenamed(id, title) {
+    const opt = this.threadSel && this.threadSel.querySelector(`option[value="${id}"]`);
+    if (opt) { opt.dataset.title = title; opt.textContent = title; }
     this._loadThreads();
+  }
+
+  // ── the conversation menu ──────────────────────────────────────────────────
+  _closeConvMenu() {
+    if (this._convMenu) this._convMenu.remove();
+    this._convMenu = null;
+    if (this._convMenuOff) { document.removeEventListener("mousedown", this._convMenuOff, true); this._convMenuOff = null; }
+  }
+
+  _toggleConvMenu() {
+    if (this._convMenu) return this._closeConvMenu();
+    const menu = el("div", { className: "ay-cmenu" });
+    this._convMenu = menu;
+    this.convMenuBtn.parentElement.append(menu);
+    this._convMenuOff = (e) => {
+      if (!menu.contains(e.target) && e.target !== this.convMenuBtn) this._closeConvMenu();
+    };
+    document.addEventListener("mousedown", this._convMenuOff, true);
+    this._renderConvMenu("main");
+  }
+
+  _renderConvMenu(mode) {
+    const menu = this._convMenu;
+    if (!menu) return;
+    menu.replaceChildren();
+    const item = (label, fn, cls = "", sub = "") => {
+      const it = el("div", { className: "ay-cm-item " + cls }, [el("span", { textContent: label }),
+        sub ? el("small", { textContent: sub }) : null].filter(Boolean));
+      it.addEventListener("mousedown", (e) => { e.preventDefault(); fn(); });
+      return it;
+    };
+    if (mode === "rename") {
+      const cur = this._threadMeta && this._threadMeta.get(this.threadId);
+      const inp = el("input", { value: (cur && cur.title) || "", placeholder: "Conversation name" });
+      const go = async () => { const v = inp.value.trim(); if (v) { this._closeConvMenu(); await this.renameThread(v); } };
+      const ok = el("button", { className: "ay-btn", textContent: "Save" });
+      ok.addEventListener("click", go);
+      const no = el("button", { className: "ay-btn", textContent: "Cancel" });
+      no.addEventListener("click", () => this._renderConvMenu("main"));
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); go(); }
+        if (e.key === "Escape") { e.stopPropagation(); this._renderConvMenu("main"); }
+      });
+      menu.append(el("div", { className: "ay-cm-row" }, [inp, ok, no]));
+      inp.focus(); inp.select();
+      return;
+    }
+    if (mode === "delete") {
+      const cur = this._threadMeta && this._threadMeta.get(this.threadId);
+      const yes = el("button", { className: "ay-btn", textContent: "Delete" });
+      yes.addEventListener("click", async () => { this._closeConvMenu(); await this.deleteThread(); });
+      const no = el("button", { className: "ay-btn", textContent: "Cancel" });
+      no.addEventListener("click", () => this._renderConvMenu("main"));
+      menu.append(el("div", { className: "ay-cm-row" },
+        [el("span", { textContent: `Delete "${(cur && cur.title) || "this conversation"}"? This cannot be undone.` }), yes, no]));
+      return;
+    }
+    // main: search box, its results, then the actions
+    const search = el("input", { placeholder: "Search conversations…" });
+    const results = el("div");
+    let hits = [], sel = 0, seq = 0, timer = null;
+    const paint = () => {
+      results.replaceChildren();
+      hits.forEach((t, i) => {
+        const it = item(t.title || "New chat", () => { this._closeConvMenu(); this.openThread(t.id); },
+          i === sel ? "sel" : "", t.snippet || "");
+        results.append(it);
+      });
+    };
+    const run = () => {
+      const q = search.value.trim().toLowerCase();
+      if (!q) { hits = []; return paint(); }
+      // Titles answer at once from the list already loaded; message content
+      // comes back from the host a moment later and is merged in.
+      const meta = Array.from(this._threadMeta ? this._threadMeta.values() : []);
+      hits = meta.filter((t) => (t.title || "").toLowerCase().includes(q)).slice(0, 12);
+      sel = 0; paint();
+      clearTimeout(timer);
+      const mine = ++seq;
+      timer = setTimeout(async () => {
+        const more = await searchConversations(search.value.trim());
+        if (mine !== seq || !this._convMenu) return;
+        const have = new Set(hits.map((t) => t.id));
+        hits = hits.concat(more.filter((t) => !have.has(t.id))).slice(0, 20);
+        paint();
+      }, 200);
+    };
+    search.addEventListener("input", run);
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" && hits.length) { e.preventDefault(); sel = (sel + 1) % hits.length; paint(); }
+      else if (e.key === "ArrowUp" && hits.length) { e.preventDefault(); sel = (sel - 1 + hits.length) % hits.length; paint(); }
+      else if (e.key === "Enter" && hits[sel]) { e.preventDefault(); const id = hits[sel].id; this._closeConvMenu(); this.openThread(id); }
+      else if (e.key === "Escape") { e.stopPropagation(); this._closeConvMenu(); }
+    });
+    menu.append(search, results, el("div", { className: "ay-cm-sep" }),
+      item("＋  New conversation", () => { this._closeConvMenu(); this.newThread(); }),
+      item("✎  Rename conversation…", () => this._renderConvMenu("rename")),
+      item("🗑  Delete conversation…", () => this._renderConvMenu("delete"), "danger"),
+      el("div", { className: "ay-cm-sep" }),
+      item("⚙  Manage conversations…", () => {
+        this._closeConvMenu();
+        openConversationManager({
+          currentId: this.threadId,
+          onOpen: (id) => this.openThread(id),
+          onRenamed: (id, t) => this._onRenamed(id, t),
+          onDeleted: (ids) => this._afterDeleted(ids),
+        });
+      }));
+    search.focus();
   }
 
   async openThread(id) {
