@@ -1,13 +1,14 @@
 import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
+import { agentTagList } from "./agent_tags.js";
 
 // The bEpic viewer (ComfyUI-ImageViewer) is agentY's standard viewer. It does not
 // know agentY; it looks for this one object on the page and, when it is there,
 // offers "Tag for agentY..." and "Approve for agentY" in its history menu:
 //
-//   window.agentYViewerBridge = { version, state(), tag(...), approve(...) }
+//   window.agentYViewerBridge = { version, state(), tag(...), approve(...), tags() }
 //
-// Kept to the three things the viewer may ask, so the contract is this file.
+// Kept to the few things the viewer may ask, so the contract is this file.
 //
 //   tag      POST /agentY/viewer/tag on the host: the picture becomes a project
 //            reference, so #name resolves like an `agentY add tag` node's.
@@ -96,3 +97,10 @@ async function feedback({ text, files }) {
   return say(true, (halted ? "Review feedback sent. " : "") + msg, { halted });
 }
 window.agentYViewerBridge.feedback = feedback;
+
+// tags     every agentY tag - the canvas's `agentY add tag` nodes and the
+//          project's remembered references, the list the `#` menu offers - as
+//          [{ tag, path, role, source }]. The viewer lists them in the filter at
+//          the bottom of its history panel and shows the pictures wearing one.
+//          Pass { fresh: true } to skip the short cache.
+window.agentYViewerBridge.tags = (opts) => agentTagList(opts || {});

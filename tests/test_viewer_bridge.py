@@ -50,8 +50,10 @@ class Behaviour(unittest.TestCase):
         (d / "package.json").write_text('{"type":"module"}')
         (d / "app.js").write_text("export const app = globalThis.__app;")
         (d / "backend.js").write_text('export const backendBase = () => "http://host";')
+        (d / "tags.js").write_text("export const agentTagList = async (o) => globalThis.__tags(o);")
         (d / "bridge.js").write_text(SRC.replace('"../../scripts/app.js"', '"./app.js"')
-                                        .replace('"./agent_backend.js"', '"./backend.js"'))
+                                        .replace('"./agent_backend.js"', '"./backend.js"')
+                                        .replace('"./agent_tags.js"', '"./tags.js"'))
         (d / "run.js").write_text(
             "const calls = [];\n"
             "globalThis.window = globalThis;\n"
@@ -114,6 +116,22 @@ class Behaviour(unittest.TestCase):
         self.assertTrue(r["res"]["halted"])
         self.assertEqual(r["call"], {"text": "at 00:03 the face drifts", "files": ["/o/f.png"]})
         self.assertFalse(r["none"]["ok"])
+
+    def test_tags_are_the_hash_menus_list_for_the_viewer_filter(self):
+        r = self.run_bridge(
+            "globalThis.__tags = async (o) => [{ tag: 'hero_face', path: '/o/h.png', source: 'canvas', opts: o }]; "
+            "const list = await b.tags({ fresh: true }); "
+            "const none = await b.tags(); "
+            "console.log(JSON.stringify({ list, none }));")
+        self.assertEqual(r["list"][0]["tag"], "hero_face")
+        self.assertEqual(r["list"][0]["opts"], {"fresh": True})
+        self.assertEqual(r["none"][0]["opts"], {})
+
+    def test_the_list_is_the_tag_menus_own(self):
+        tags = (WEB / "agent_tags.js").read_text(encoding="utf-8")
+        body = tags.split("export async function agentTagList")[1].split("function primeRemembered")[0]
+        self.assertIn("sceneTags()", body)
+        self.assertIn("remembered()", body)
 
     def test_feedback_never_presses_continue(self):
         self.assertIn("window.agentYViewerBridge.feedback = feedback", SRC)
