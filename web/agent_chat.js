@@ -13,6 +13,7 @@ import { eventInside, eventTarget } from "./agent_ui_root.js";
 import { altWordJump, fullSizeSrc } from "./agent_composer_keys.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { collectHistorySelection } from "./agent_history_selection.js";
+import { collectViewerState } from "./agent_viewer_state.js";
 import { openConversationManager, renameConversation, deleteConversations,
          searchConversations } from "./agent_conversations.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
@@ -851,6 +852,7 @@ class AgentChat {
       canvas_hooks: this._collectCanvasHooks(),
       canvas_selection: this._collectCanvasSelection(),
       history_selection: this._historySelection(),
+      viewer_state: this._viewerState(),
       canvas_prompt: await this._captureCanvasGraph(),
       open_workflows: openTabs,
     });
@@ -990,6 +992,7 @@ class AgentChat {
         canvas_hooks: this._collectCanvasHooks(),
         canvas_selection: this._collectCanvasSelection(),
         history_selection: this._historySelection(),
+        viewer_state: this._viewerState(),
         client: panelClientId(),
         thread_id: this.threadId || "",
       };
@@ -4028,6 +4031,7 @@ class AgentChat {
       canvas_hooks: canvasHooks,
       canvas_selection: canvasSelection,
       history_selection: this._historySelection(),
+      viewer_state: this._viewerState(),
       canvas_prompt: canvasPrompt,
       open_workflows: openTabs,
       dry_run: dryRun,
@@ -4226,6 +4230,12 @@ class AgentChat {
   // must not fail over a panel that is not there.
   _historySelection() {
     try { return collectHistorySelection(); } catch (_) { return null; }
+  }
+
+  // What the bEpic viewer shows (tab, item, frame, range, marks), or null while it
+  // is closed - agent_viewer_state.js. Never throws, like the selection above.
+  _viewerState() {
+    try { return collectViewerState(); } catch (_) { return null; }
   }
 
   // Snapshot every selected node (ANY type) with its widget parameter values, so

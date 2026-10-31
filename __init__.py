@@ -24,6 +24,9 @@ Four responsibilities:
 4. **History selection** - ``/agent/history_selection`` reads, the same way,
    what the user picked in the bEpic viewer's history strip and in ComfyUI's
    assets sidebar (``web/agent_history_selection.js``).
+5. **Viewer state** - ``/agent/viewer_state`` and ``/agent/viewer_annotations``
+   read what the bEpic viewer shows (tab, item, frame, range, compare, camera)
+   and the Annotation tool's marks on it (``web/agent_viewer_state.js``).
 
 The hook is a **V3** node so its ``anchor`` input can *auto-grow*: connect one
 node and a fresh empty ``anchor`` slot appears, letting a single hook gather
@@ -847,6 +850,62 @@ try:
         sel = reply.get("selection")
         return web.json_response({"ok": True, "selection": sel if isinstance(sel, dict) else None})
 
+    _NO_PAGE = ("no ComfyUI browser page answered - open ComfyUI in a browser "
+                "(a background tab is fine). If it is open, its agentY extension "
+                "is older than this route; reload the page.")
+    _OLD_VIEWER = ("the bEpic viewer on the page is too old to say what it shows - update "
+                   "ComfyUI-ImageViewer under custom_nodes and reload the page.")
+
+    @_routes.get("/agent/viewer_state")
+    @_guarded
+    async def _agent_viewer_state(request):  # noqa: ANN001
+        """Live read of what the bEpic viewer shows (``web/agent_viewer_state.js``).
+
+        The same round trip as the history selection. ``state`` is null while the
+        viewer is closed; ``installed`` false means no viewer on the page can say."""
+        reply = await _ask_frontend("agent.request_viewer_state", {},
+                                    _clamp_timeout(request),
+                                    sid=str(request.query.get("client_id", "")))
+        if reply is None:
+            return web.json_response({"ok": False, "state": None, "error": _NO_PAGE})
+        installed = bool(reply.get("installed", True))
+        state = reply.get("state")
+        out = {"ok": installed, "installed": installed,
+               "state": state if isinstance(state, dict) else None}
+        if not installed:
+            out["error"] = _OLD_VIEWER
+        return web.json_response(out)
+
+    @_routes.get("/agent/viewer_annotations")
+    @_guarded
+    async def _agent_viewer_annotations(request):  # noqa: ANN001
+        """Live read of the Annotation tool's marks on the item the viewer shows.
+
+        ``?frame=N`` (a clip): only the marks on that frame; ``?raw=1``: the stored
+        marks too, normalised - what get_viewer_annotations draws a mask from.
+        Saved marks of any other file are read from disk through the viewer's own
+        ``/bepic/video_annotations`` (its path containment applies there)."""
+        try:
+            frame = int(request.query.get("frame", "-1"))
+        except (TypeError, ValueError):
+            frame = -1
+        raw = str(request.query.get("raw", "")).lower() in ("1", "true", "yes")
+        reply = await _ask_frontend("agent.request_viewer_annotations",
+                                    {"frame": frame if frame >= 0 else None, "raw": raw},
+                                    _clamp_timeout(request),
+                                    sid=str(request.query.get("client_id", "")))
+        if reply is None:
+            return web.json_response({"ok": False, "annotations": None, "error": _NO_PAGE})
+        installed = bool(reply.get("installed", True))
+        ann = reply.get("annotations")
+        state = reply.get("state")
+        out = {"ok": installed and isinstance(ann, dict), "installed": installed,
+               "annotations": ann if isinstance(ann, dict) else None,
+               "state": state if isinstance(state, dict) else None}
+        if not installed:
+            out["error"] = _OLD_VIEWER
+        return web.json_response(out)
+
     @_routes.post("/agent/set_node_params")
     @_guarded
     async def _agent_set_node_params(request):  # noqa: ANN001
@@ -885,7 +944,8 @@ try:
 
     print("[agentY-comfyuiConnect] registered /agent routes "
           "(load_workflow, register_host, host_info, comfy_dirs, start_host, pick_files, "
-          "reset_collector_cursor, canvas_selection, history_selection, set_node_params)")
+          "reset_collector_cursor, canvas_selection, history_selection, viewer_state, "
+          "viewer_annotations, set_node_params)")
 except Exception as _e:  # noqa: BLE001
     # Never break ComfyUI startup if the server API shape changes.
     print(f"[agentY-comfyuiConnect] could not register /agent routes: {_e}")

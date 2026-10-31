@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { collectHistorySelection } from "./agent_history_selection.js";
+import { collectViewerState, collectViewerAnnotations, viewerAnswers } from "./agent_viewer_state.js";
 
 // agentY-comfyuiConnect: when the agentY pipeline runs a workflow it POSTs the graph to
 // /agent/load_workflow, which the server broadcasts as an "agent.load_workflow"
@@ -291,6 +292,30 @@ app.registerExtension({
         console.error("[agentY-comfyuiConnect] reading the history selection failed:", err);
       }
       reply(d.req_id, { selection });
+    });
+
+    // What the bEpic viewer shows and the marks on it (agent_viewer_state.js) for
+    // GET /agent/viewer_state and /agent/viewer_annotations - get_viewer_state's
+    // and get_viewer_annotations' live reads. `installed` tells "closed" apart
+    // from "a viewer too old to answer".
+    api.addEventListener("agent.request_viewer_state", (event) => {
+      const d = (event && event.detail) || {};
+      let state = null;
+      try { state = collectViewerState(); } catch (err) {
+        console.error("[agentY-comfyuiConnect] reading the viewer state failed:", err);
+      }
+      reply(d.req_id, { state, installed: viewerAnswers() });
+    });
+
+    api.addEventListener("agent.request_viewer_annotations", (event) => {
+      const d = (event && event.detail) || {};
+      let annotations = null;
+      try {
+        annotations = collectViewerAnnotations({ frame: d.frame, raw: !!d.raw });
+      } catch (err) {
+        console.error("[agentY-comfyuiConnect] reading the viewer's annotations failed:", err);
+      }
+      reply(d.req_id, { annotations, state: collectViewerState(), installed: viewerAnswers() });
     });
 
     api.addEventListener("agent.set_node_params", (event) => {
