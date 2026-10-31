@@ -1,4 +1,4 @@
-// Word jumps in the composer, and the click that opens a result full size.
+// Word jumps in the composer, and the click that shows a result full size.
 //
 // Kept free of ComfyUI imports so tests can load it in node.
 //
@@ -62,4 +62,63 @@ export function altWordJump(e, ta) {
 export function fullSizeSrc(target) {
   const img = target && target.closest ? target.closest("img.ay-out-media") : null;
   return img ? (img.getAttribute("src") || "") : "";
+}
+
+// Show a result picture full size OVER the panel, in the panel's own document.
+//
+// It used to be window.open(src). The panel is one DOM that also lives in the
+// bEpic viewer: docked in its shadow root, full-screen, or popped out into a
+// window of its own. The listener runs in the ComfyUI page's realm, so from the
+// popout it called the PAGE's window.open: the picture opened as a tab of the
+// ComfyUI window behind the popout (or not at all where that window's popup
+// blocker stops a call it did not see the click for) - nothing happened where
+// the user was looking. Full-screen, a new tab took them out of the viewer. An
+// overlay inside the panel (.ay-wrap is position:relative) needs no window and
+// no gesture, and is the same in all four places. A plain link in it still
+// opens a tab, from the window the panel is in.
+export function showFullSize(target, src) {
+  if (!target || !src) return null;
+  const doc = target.ownerDocument || document;
+  const holder = (target.closest && target.closest(".ay-wrap")) || doc.body;
+  holder.querySelector(":scope > .ay-lightbox")?.remove();
+  let href = src;
+  try { href = new URL(src, window.location.href).href; } catch (_) {}
+  const box = doc.createElement("div");
+  box.className = "ay-lightbox";
+  box.title = "Click or Esc to close";
+  box.style.cssText = "position:absolute;inset:0;z-index:300;display:flex;flex-direction:column;"
+    + "align-items:center;justify-content:center;gap:8px;padding:10px;box-sizing:border-box;"
+    + "background:rgba(8,9,12,.94);cursor:zoom-out;";
+  const img = doc.createElement("img");
+  img.className = "ay-lightbox-img";
+  img.src = href;
+  img.alt = (target.getAttribute && target.getAttribute("alt")) || "";
+  img.style.cssText = "max-width:100%;max-height:calc(100% - 34px);object-fit:contain;display:block;"
+    + "border-radius:4px;background:#000;";
+  const link = doc.createElement("a");
+  link.className = "ay-lightbox-open";
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = "Open in a new tab ↗";
+  link.style.cssText = "color:#9db6ff;font:12px ui-sans-serif,system-ui,sans-serif;text-decoration:none;cursor:pointer;";
+  box.append(img, link);
+  const close = () => {
+    box.remove();
+    doc.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  };
+  box.addEventListener("click", (e) => {
+    if (e.target === link) return;   // the link opens its tab; the overlay stays
+    e.stopPropagation();
+    close();
+  });
+  doc.addEventListener("keydown", onKey, true);
+  holder.appendChild(box);
+  return box;
 }

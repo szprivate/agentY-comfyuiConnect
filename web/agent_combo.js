@@ -10,11 +10,19 @@
 // native list would. Options are read from the select each time the list opens,
 // so a select rebuilt later (a model list refreshed from the host) needs nothing.
 
+import { uiRoot, ensureStyleIn } from "./agent_ui_root.js";
+
 const STYLE_ID = "agentY-combo-styles";
 
 function injectStyles(doc) {
   if (doc.getElementById(STYLE_ID)) return;
-  const css = `
+  const s = doc.createElement("style");
+  s.id = STYLE_ID;
+  s.textContent = css;
+  doc.head.append(s);
+}
+
+const css = `
   .ay-combo{position:relative;display:inline-flex;align-items:center;min-width:0;cursor:text;}
   .ay-combo > select{display:none !important;}
   .ay-combo-input{flex:1;min-width:0;width:100%;background:transparent;border:none;outline:none;
@@ -33,11 +41,6 @@ function injectStyles(doc) {
   .ay-combo-item mark{background:none;color:#ffd479;font-weight:600;}
   .ay-combo-none{padding:8px 12px;color:#8a909b;}
   `;
-  const s = doc.createElement("style");
-  s.id = STYLE_ID;
-  s.textContent = css;
-  doc.head.append(s);
-}
 
 // The select's options as [{value, label, group}], in order.
 function readOptions(select) {
@@ -111,23 +114,42 @@ export function searchableSelect(select, { placeholder = "Type to filter…", ex
     wrap.classList.toggle("ay-combo-disabled", off);
   };
 
+  // The list goes where the box is NOW, not where it was built: the agentY panel
+  // is one DOM that moves between the ComfyUI page, the bEpic viewer's shadow root
+  // and the viewer's popout window. Appended to the page's <body> it showed in the
+  // main window at the popout's coordinates, and vanished behind the viewer's
+  // full-screen mode (which hides everything else in <body>).
+  let listWin = window, listDoc = doc, listRoot = null, follow = 0, lastAt = "";
   const position = () => {
     if (!list) return;
     const r = wrap.getBoundingClientRect();
-    const win = doc.defaultView || window;
-    const below = win.innerHeight - r.bottom;
-    list.style.left = `${Math.max(4, r.left)}px`;
-    list.style.minWidth = `${Math.max(220, r.width)}px`;
-    list.style.maxWidth = `${Math.max(320, win.innerWidth - r.left - 8)}px`;
+    lastAt = `${r.left},${r.top},${r.width},${r.height}`;
+    const vw = listWin.innerWidth, vh = listWin.innerHeight;
+    const below = vh - r.bottom;
+    const width = Math.min(Math.max(220, r.width), vw - 8);
+    list.style.minWidth = `${width}px`;
+    list.style.maxWidth = `${Math.max(width, Math.min(320, vw - 8))}px`;
+    list.style.bottom = "";
+    let top;
     if (below < 200 && r.top > below) {
-      list.style.top = "";
-      list.style.bottom = `${win.innerHeight - r.top + 2}px`;
-      list.style.maxHeight = `${Math.min(320, r.top - 8)}px`;
+      const h = Math.min(320, r.top - 8);
+      list.style.maxHeight = `${h}px`;
+      top = r.top - 2 - Math.min(h, list.scrollHeight + 2);
     } else {
-      list.style.bottom = "";
-      list.style.top = `${r.bottom + 2}px`;
       list.style.maxHeight = `${Math.min(320, below - 8)}px`;
+      top = r.bottom + 2;
     }
+    // Inside the viewport, however wide the list came out.
+    const left = Math.max(4, Math.min(r.left, vw - 4 - list.offsetWidth));
+    list.style.left = `${left}px`;
+    list.style.top = `${Math.max(4, top)}px`;
+    // position:fixed is relative to the viewport only when no ancestor is
+    // transformed (or filtered, or contained); in the viewer's dock it can be a
+    // panel instead. Measure where the list landed and move it by the difference.
+    const got = list.getBoundingClientRect();
+    const dx = left - got.left, dy = Math.max(4, top) - got.top;
+    if (Math.abs(dx) > 0.5) list.style.left = `${left + dx}px`;
+    if (Math.abs(dy) > 0.5) list.style.top = `${Math.max(4, top) + dy}px`;
   };
 
   const render = () => {
@@ -203,15 +225,30 @@ export function searchableSelect(select, { placeholder = "Type to filter…", ex
     const c = current();
     input.value = "";
     input.placeholder = c.value ? c.label : placeholder;
-    list = doc.createElement("div");
+    listDoc = wrap.ownerDocument || doc;
+    listWin = listDoc.defaultView || window;
+    const root = uiRoot(wrap);
+    listRoot = root;
+    ensureStyleIn(root, STYLE_ID, css);
+    list = listDoc.createElement("div");
     list.className = "ay-combo-list";
     list.addEventListener("mousedown", (e) => e.preventDefault());
-    doc.body.append(list);
+    root.appendChild(list);
     render();
     position();
-    const win = doc.defaultView || window;
-    win.addEventListener("resize", position);
-    doc.addEventListener("scroll", onScroll, true);
+    listWin.addEventListener("resize", position);
+    listDoc.addEventListener("scroll", onScroll, true);
+    // A scroll inside a shadow root does not reach the document.
+    if (root !== listDoc.body) root.addEventListener("scroll", onScroll, true);
+    // The box can move with no scroll or resize to say so (the viewer's dock
+    // laying out, the bar re-wrapping): keep the list on it while it is open.
+    const tick = () => {
+      if (!list) return;
+      const r = wrap.getBoundingClientRect();
+      if (`${r.left},${r.top},${r.width},${r.height}` !== lastAt) position();
+      follow = listWin.requestAnimationFrame(tick);
+    };
+    follow = listWin.requestAnimationFrame(tick);
   };
   const close = () => {
     if (!isOpen) return;
@@ -220,9 +257,12 @@ export function searchableSelect(select, { placeholder = "Type to filter…", ex
     list = null;
     items = [];
     active = -1;
-    const win = doc.defaultView || window;
-    win.removeEventListener("resize", position);
-    doc.removeEventListener("scroll", onScroll, true);
+    listWin.removeEventListener("resize", position);
+    listDoc.removeEventListener("scroll", onScroll, true);
+    if (listRoot) listRoot.removeEventListener("scroll", onScroll, true);
+    listRoot = null;
+    if (follow) listWin.cancelAnimationFrame(follow);
+    follow = 0;
     showCurrent();
   };
   const pick = (value) => {

@@ -11,7 +11,8 @@ The regressions it pins:
   * Alt+Left/Right in the composer did nothing (the browser has no Alt word jump on
     Windows; it reads Alt+Left as Back) - the composer does the jump itself now.
   * a picture in a log rebuilt from saved HTML (a reload, a re-opened conversation)
-    had lost its per-picture click listener; the log's one listener opens it now.
+    had lost its per-picture click listener; the log's one listener shows it now
+    (over the panel: tests/test_panel_hosts_browser.py has it in every host).
 """
 import json
 import pathlib
@@ -33,13 +34,13 @@ export const app = {
 """
 
 # The wiring agent_chat.js does, against the real modules: the composer's keydown
-# runs altWordJump first (_onKeydown), the log has one click listener that opens
-# fullSizeSrc (_makeCtx). The log is filled from HTML, like a restored panel.
+# runs altWordJump first (_onKeydown), the log has one click listener that shows
+# fullSizeSrc over the panel (_makeCtx). The log is filled from HTML, like a restored panel.
 PAGE = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <div id="side"></div><div id="host"></div>
 <script type="module">
 import { registerTagBox } from "/extensions/agentY/agent_tags.js";
-import { altWordJump, fullSizeSrc } from "/extensions/agentY/agent_composer_keys.js";
+import { altWordJump, fullSizeSrc, showFullSize } from "/extensions/agentY/agent_composer_keys.js";
 import { eventTarget } from "/extensions/agentY/agent_ui_root.js";
 for (const ext of window.__exts || []) if (ext.setup) ext.setup();
 window.__opened = [];
@@ -49,6 +50,8 @@ window.addEventListener("keydown", (e) => window.__seen.push(
   { key: e.key, alt: e.altKey, ctrl: e.ctrlKey, prevented: e.defaultPrevented }));
 function build(root) {
   const wrap = document.createElement("div");
+  wrap.className = "ay-wrap";
+  wrap.style.position = "relative";
   wrap.innerHTML = '<div class="ay-log" style="height:200px"></div>'
     + '<div class="inwrap"><textarea class="ay-input" style="width:300px;height:60px"></textarea></div>';
   root.appendChild(wrap);
@@ -56,8 +59,9 @@ function build(root) {
   ta.addEventListener("keydown", (e) => { altWordJump(e, ta); });
   registerTagBox(ta, { inserts: "name", anchor: "above", within: wrap.querySelector(".inwrap") });
   log.addEventListener("click", (e) => {
-    const src = fullSizeSrc(eventTarget(e));
-    if (src) window.open(src, "_blank", "noopener");
+    const t = eventTarget(e);
+    const src = fullSizeSrc(t);
+    if (src) showFullSize(t, src);
   });
   log.innerHTML = '<div class="ay-msg ay-out"><img class="ay-out-media" '
     + 'src="/view?type=input&filename=a.png" style="width:120px;height:80px;display:block">'
@@ -217,14 +221,17 @@ class ComposerKeysBrowser(unittest.TestCase):
     def test_restored_picture_opens_full_size(self):
         for where, sel in (("side", "#side img.ay-out-media"), ("shadow", "#host img.ay-out-media")):
             with self.subTest(where=where):
+                root = "document" if where == "side" else "document.getElementById('host').shadowRoot"
+                shown = f"() => [...{root}.querySelectorAll('.ay-wrap > .ay-lightbox img')].map((i) => i.getAttribute('src'))"
                 self.page.evaluate("() => { window.__opened = []; }")
                 self.page.locator(sel).click()
-                opened = self.page.evaluate("() => window.__opened")
-                self.assertEqual(opened, ["/view?type=input&filename=a.png"])
-                # a click beside it opens nothing
-                self.page.evaluate("() => { window.__opened = []; }")
+                self.assertEqual(self.page.evaluate(shown), [ORIGIN + "/view?type=input&filename=a.png"])
+                self.assertEqual(self.page.evaluate("() => window.__opened"), [])   # shown over the panel, no window
+                self.page.keyboard.press("Escape")
+                self.assertEqual(self.page.evaluate(shown), [])
+                # a click beside it shows nothing
                 self.page.locator(sel.replace("img.ay-out-media", ".ay-out-label")).click()
-                self.assertEqual(self.page.evaluate("() => window.__opened"), [])
+                self.assertEqual(self.page.evaluate(shown), [])
 
 
 if __name__ == "__main__":

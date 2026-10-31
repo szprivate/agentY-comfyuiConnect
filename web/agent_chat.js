@@ -10,7 +10,7 @@ import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel,
          stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { eventInside, eventTarget } from "./agent_ui_root.js";
-import { altWordJump, fullSizeSrc } from "./agent_composer_keys.js";
+import { altWordJump, fullSizeSrc, showFullSize } from "./agent_composer_keys.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { collectHistorySelection } from "./agent_history_selection.js";
 import { collectViewerState } from "./agent_viewer_state.js";
@@ -412,10 +412,12 @@ class AgentChat {
     // A result picture opens full size. One listener on the log, not one per
     // picture: a log rebuilt from its saved HTML (a reload, a re-opened
     // conversation, an adopted turn that finished) has no per-picture listeners,
-    // and the pictures in it were dead to clicks.
+    // and the pictures in it were dead to clicks. Shown over the panel, not in a
+    // new window: see showFullSize (from the popout it opened behind the popout).
     ctx.logEl.addEventListener("click", (e) => {
-      const src = fullSizeSrc(eventTarget(e));
-      if (src) window.open(src, "_blank", "noopener");
+      const t = eventTarget(e);
+      const src = fullSizeSrc(t);
+      if (src) showFullSize(t, src);
     });
     ctx.logEl.addEventListener("scroll", () => {
       const gap = ctx.logEl.scrollHeight - ctx.logEl.scrollTop - ctx.logEl.clientHeight;
@@ -2215,7 +2217,10 @@ class AgentChat {
   _closeConvMenu() {
     if (this._convMenu) this._convMenu.remove();
     this._convMenu = null;
-    if (this._convMenuOff) { document.removeEventListener("mousedown", this._convMenuOff, true); this._convMenuOff = null; }
+    if (this._convMenuOff) {
+      for (const d of this._convMenuDocs || [document]) d.removeEventListener("mousedown", this._convMenuOff, true);
+      this._convMenuOff = null;
+    }
   }
 
   _toggleConvMenu() {
@@ -2227,7 +2232,11 @@ class AgentChat {
       // the panel can sit in a shadow root (the viewer), where e.target is the host
       if (!eventInside(e, menu) && !eventInside(e, this.convMenuBtn)) this._closeConvMenu();
     };
-    document.addEventListener("mousedown", this._convMenuOff, true);
+    // ...and popped out with the viewer it is in another document, which a
+    // listener on this page's document never hears from.
+    const own = menu.ownerDocument || document;
+    this._convMenuDocs = own === document ? [document] : [document, own];
+    for (const d of this._convMenuDocs) d.addEventListener("mousedown", this._convMenuOff, true);
     this._renderConvMenu("main");
   }
 

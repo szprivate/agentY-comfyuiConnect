@@ -37,7 +37,10 @@ class ComposerWiring(unittest.TestCase):
     def test_picture_click_is_on_the_log_not_the_picture(self):
         # a log rebuilt from saved panel_html carries no per-picture listeners
         self.assertRegex(CHAT, r'ctx\.logEl\.addEventListener\("click"')
-        self.assertIn("fullSizeSrc(eventTarget(e))", CHAT)
+        self.assertIn("fullSizeSrc(t)", CHAT)
+        # shown over the panel: the page's window.open did nothing from the popout
+        self.assertIn("showFullSize(t, src)", CHAT)
+        self.assertNotIn('window.open(src, "_blank"', CHAT)
         show = CHAT[CHAT.index("  _showOutput(ev) {"):CHAT.index("  injectNode(ev) {")]
         self.assertNotIn('addEventListener("click"', show)
         self.assertIn("img.ay-out-media", KEYS)
