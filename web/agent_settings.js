@@ -64,6 +64,7 @@ const SECTIONS = [
     objects: [["llm", "ollama"], ["llm", "strata"]],
     inlineExtra: ["llm"] },   // llm's own scalars (history_window)
   { title: "Canvas", keys: ["drop_outputs_into_canvas", "show_outputs_in_panel", "place_text_nodes_on_canvas",
+                            "duplicate_canvas_sources",
                             "autoload_workflows_into_canvas", "work_in_open_graph",
                             "hooks_into_canvas", "hook_subgraph_min_nodes",
                             "canvas_full_graph", "hook_tap_tensors", "hook_scoped_graph",
@@ -188,6 +189,13 @@ const KEY_NOTES = {
     + "instead of a filename in the chat. Off keeps your graph clean when you are "
     + "generating in bulk — the files are written exactly the same either way, "
     + "and the chat names each one with its full path.",
+  duplicate_canvas_sources:
+    "When the agent wires new nodes to an image or video loader that your graph "
+    + "already uses, copy that loader into free space and wire the new nodes to the "
+    + "copy, so the new chain gets a place of its own instead of landing behind your "
+    + "nodes. The original and its wires are never touched. A loader standing alone "
+    + "is wired as it is when there is room beside it, and copied when there is not. "
+    + "Off: the new nodes are wired to the loader itself (they still go into free space).",
   place_text_nodes_on_canvas:
     "When a text hook is answered, put the answer on the canvas as an \"agentY "
     + "text\" node you can read and wire. It is a visible copy and nothing more: "

@@ -246,3 +246,86 @@ export function flowArrange(items, edges, origin, gaps = GAPS, maxWidth = MAX_RO
   out.bounds = boundsOf(all);
   return out;
 }
+
+// ── Nodes the agent adds to an open graph (edit_canvas_graph) ────────────────
+//
+// They used to land one by one beside the node named as "near" - for a branch
+// off an image loader that is exactly where the user's own graph goes on, so new
+// chains ended up behind existing nodes and the canvas got messier with every
+// edit. Now an edit's new nodes are one block, laid out in columns from their
+// source (layoutBlock, the same block an inserted workflow gets), and the block
+// goes where nothing is: right beside the source when that is free, else below
+// everything or right of everything, whichever is nearer the source.
+//
+// A media source the new nodes read from is copied when it is in use (the host
+// does that, canvas_edit.duplicate_sources) or when it stands alone with no room
+// beside it (the page does that); the copy is the block's first column.
+
+export const MEDIA_TYPES = ["IMAGE", "VIDEO", "LATENT"];
+const MEDIA_FILE = /\.(png|jpe?g|webp|gif|bmp|tiff?|exr|mp4|mov|webm|mkv|avi|m4v|latent)$/i;
+
+/** Is a node of this shape a media source - something that loads an image, a
+ *  video or a latent and nothing else? Same rule as canvas_edit.is_media_source:
+ *  an IMAGE / VIDEO / LATENT output, nothing wired in, and a class that loads
+ *  (Load / Loader / Collector) or a value naming a media file. */
+export function isMediaSourceShape(type, outputTypes, anyInputLinked, values) {
+  if (anyInputLinked) return false;
+  const outs = (outputTypes || []).map(String);
+  if (outs.includes("AGENTY_EXEC")) return false;
+  if (!outs.some((t) => MEDIA_TYPES.includes(t))) return false;
+  const low = String(type || "").toLowerCase();
+  if (low.includes("load") || low.includes("collector")) return true;
+  return (values || []).some((v) => typeof v === "string" && MEDIA_FILE.test(v));
+}
+
+/** Columns and rows for one edit's new nodes: column = depth from the block's
+ *  roots along `edges` ([[from, to]] between them), rows by where their feeds
+ *  sit, then in the order given. -> layoutBlock items. */
+export function chainItems(items, edges) {
+  const list = (items || []).filter((i) => i && Array.isArray(i.size));
+  const ids = list.map((i) => String(i.id));
+  const depth = depthsOf(ids, edges);
+  const preds = {};
+  for (const [a, b] of edges || []) (preds[String(b)] = preds[String(b)] || []).push(String(a));
+  const order = new Map(ids.map((id, n) => [id, n]));
+  const row = {};
+  const out = [];
+  for (const d of [...new Set(ids.map((id) => depth[id]))].sort((a, b) => a - b)) {
+    const inCol = list.filter((i) => depth[String(i.id)] === d);
+    const bary = (i) => {
+      const rs = (preds[String(i.id)] || []).filter((p) => p in row).map((p) => row[p]);
+      return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : Infinity;
+    };
+    inCol.sort((a, b) => (bary(a) - bary(b)) || (order.get(String(a.id)) - order.get(String(b.id))));
+    inCol.forEach((i, r) => {
+      row[String(i.id)] = r;
+      out.push({ id: i.id, size: i.size, band: 0, col: d, row: r });
+    });
+  }
+  return out;
+}
+
+/** Where a block of `size` ([w, h], its group box) goes.
+ *  anchor: the rectangle of the node it hangs off, or null; obstacles: every
+ *  rectangle on the canvas (nodes with title bars, groups).
+ *  -> {origin: the box's top-left, where: "right" | "below" | "beside" | "empty"}.
+ *  "right" puts the block's first node level with the anchor, just right of it,
+ *  and only when that rectangle is clear of everything; "below" and "beside" are
+ *  outside everything's bounds, so they are clear by construction. */
+export function chainOrigin(size, anchor, obstacles, fallback = [80, 80], gaps = GAPS, margin = BLOCK_MARGIN) {
+  const g = { ...GAPS, ...(gaps || {}) };
+  const rects = (obstacles || []).filter((r) => r && r.length >= 4 && r.every(Number.isFinite));
+  const a = anchor && anchor.length >= 4 && anchor.every(Number.isFinite) ? anchor : null;
+  const right = a ? [a[0] + a[2] + g.column - g.pad, a[1] - g.group_title - g.pad] : null;
+  const b = boundsOf(rects);
+  if (!b) return { origin: right || [fallback[0], fallback[1]], where: right ? "right" : "empty" };
+  if (right) {
+    const box = [right[0], right[1], size[0], size[1]];
+    if (!rects.some((r) => overlaps(box, r, g.node))) return { origin: right, where: "right" };
+  }
+  const below = [a ? a[0] : b[0], b[1] + b[3] + margin];
+  const beside = [b[0] + b[2] + margin, a ? a[1] - g.group_title - g.pad : b[1]];
+  const from = a ? [a[0] + a[2], a[1]] : [b[0], b[1] + b[3]];
+  const dist = (p) => Math.hypot(p[0] - from[0], p[1] - from[1]);
+  return dist(beside) < dist(below) ? { origin: beside, where: "beside" } : { origin: below, where: "below" };
+}

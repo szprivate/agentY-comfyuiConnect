@@ -23,7 +23,8 @@ import { standardSize } from "./agent_canvas.js";
 import { installPanelHost } from "./agent_panel_host.js";
 import { GAPS, GROUP_COLOR, OUTPUTS_COLOR, OUTPUTS_TITLE, OUTPUT_CELL, blockOrigin, groupBox,
          isAgentGroupTitle, layoutBlock, nextAgentName, outputSlot, outputsOrigin, outputsReach,
-         flowArrange, boundsOf, overlaps } from "./agent_layout.js";
+         flowArrange, boundsOf, overlaps, chainItems, chainOrigin,
+         isMediaSourceShape } from "./agent_layout.js";
 
 // agentY chat — a ComfyUI sidebar tab that talks to the agentY headless chat host
 // (src/utils/agentY_server.py) over HTTP/SSE. It replaces the Chainlit
@@ -2859,13 +2860,17 @@ class AgentChat {
 
   _dropPos(near = null, exclude = null) {
     const placed = (n) => n && n !== exclude && isXY(n.pos) && isXY(n.size);
-    let nodes = [];
+    let nodes = [], boxes = [];
     // Measured on the graph the node is going to LAND on, not the active one —
     // otherwise a drop is laid out to miss the nodes of a workflow it will never
     // be part of, and lands on top of the ones it will.
     try {
       const g = this._targetGraph();
       nodes = ((g && g._nodes) || []).filter(placed);
+      // Groups are kept off too: a drop inside someone's group box reads as
+      // part of it. Shaped like nodes for _freeSpot.
+      boxes = this._groupsOf(g).map((gr) => this._groupRect(gr))
+        .filter((r) => r.every(Number.isFinite)).map((r) => ({ pos: [r[0], r[1]], size: [r[2], r[3]] }));
     } catch (_) {}
     if (!nodes.length) return this._viewCorner();   // nothing to measure: land in view
 
@@ -2897,7 +2902,11 @@ class AgentChat {
       minY = Math.min(minY, n.pos[1]);
       maxY = Math.max(maxY, n.pos[1] + n.size[1]);
     }
-    return this._freeSpot([maxX + DROP_GAP, minY], nodes, DROP_SIZE,
+    // The node's own size once it has one (a python node, a text box), so the
+    // slot really holds it; DROP_SIZE is only the floor.
+    const size = exclude && isXY(exclude.size)
+      ? [Math.max(DROP_SIZE[0], exclude.size[0]), Math.max(DROP_SIZE[1], exclude.size[1])] : DROP_SIZE;
+    return this._freeSpot([maxX + DROP_GAP, minY], nodes.concat(boxes), size,
                           Math.max(maxY - minY, DROP_COL_H));
   }
 
@@ -4317,7 +4326,8 @@ class AgentChat {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patch_id: ev.patch_id, ok, applied: res && res.applied,
-                               missed, error: err ? String(err) : "" }),
+                               missed, error: err ? String(err) : "",
+                               duplicated: (res && res.duplicated) || [] }),
       });
     } catch (_) {}
   }
@@ -4501,6 +4511,8 @@ class AgentChat {
     const added = [], wired = [], missed = [], replaced = [];
     const offMenu = [];      // nodes given a file the page's menus don't list yet
     const placeOf = {};      // where a removed node stood, for the one that replaces it
+    const fresh = [];        // new nodes that take no one's place: laid out together below
+    const nearOf = new Map();   // ...and the node each was asked to go beside (the fallback)
     const changed = typeof graph.beforeChange === "function"
       && typeof graph.afterChange === "function";
     if (changed) { try { graph.beforeChange(); } catch (_) {} }
@@ -4518,7 +4530,15 @@ class AgentChat {
         }
         if (op.op === "add") {
           let n = null;
-          try { n = LG.createNode(op.class_type); } catch (_) {}
+          // A copy of a media source (the host's duplicate_sources): the node
+          // itself cloned, so it shows what the original shows - its preview, a
+          // video's frame range - and not only the values the host knows of.
+          const orig = op.duplicate_of != null ? byId(op.duplicate_of) : null;
+          if (orig && typeof orig.clone === "function") {
+            try { n = orig.clone(); } catch (_) { n = null; }
+            if (n && n.properties) delete n.properties.agentY_output;
+          }
+          if (!n) { try { n = LG.createNode(op.class_type); } catch (_) {} }
           if (!n) { missed.push(`add ${op.class_type} (not registered here)`); continue; }
           if (!byId(op.node_id)) n.id = Number(op.node_id);
           graph.add(n);
@@ -4536,8 +4556,11 @@ class AgentChat {
             n.pos = [was.pos[0], was.pos[1]];
             replaced.push(`#${n.id} ${was.type} → ${n.type}`);
           } else {
-            n.pos = this._dropPos(op.near != null ? node(op.near) : null, n);
-            added.push(`#${n.id} ${n.type}`);
+            n.pos = this._viewCorner();    // for now: _placeChain puts it in its place below
+            fresh.push(n);
+            if (op.near != null) nearOf.set(n, op.near);
+            added.push(`#${n.id} ${n.type}`
+              + (orig ? ` (a copy of #${orig.id}, which is in use - the original is unchanged)` : ""));
           }
         } else if (op.op === "connect") {
           const from = node(op.from), to = node(op.to);
@@ -4568,9 +4591,23 @@ class AgentChat {
     // A whole workflow put into the graph: lay it out as the agent's own
     // workflows are, below what is there, in a group of its own.
     let blockName = null;
+    let duplicated = [];
     if (ev.block && ev.block.slots) {
       try { blockName = this._layoutBlock(ev.block, made); } catch (err) {
         console.warn("[agentY] could not lay out the inserted workflow:", err);
+      }
+    } else if (fresh.length) {
+      // Anything else that is new: one block, in free space (agent_layout.js).
+      try {
+        const placed = this._placeChain(graph, ev, fresh, byId, made);
+        blockName = placed.group;
+        duplicated = placed.duplicated;
+        for (const d of duplicated) added.unshift(`#${d.id} copy of #${d.of} (no room beside it)`);
+      } catch (err) {
+        console.warn("[agentY] could not lay out the new nodes:", err);
+        for (const n of fresh) {
+          try { n.pos = this._dropPos(nearOf.has(n) ? node(nearOf.get(n)) : null, n); } catch (_) {}
+        }
       }
     }
     if (offMenu.length) this._freshenMenus(offMenu);
@@ -4585,7 +4622,9 @@ class AgentChat {
       + (missed.length ? `. ⚠️ Could not apply: ${missed.join(", ")} — do those by hand.` : ".")
       + " **Ctrl+Z** undoes it.");
     const n = added.length + wired.length + replaced.length;
-    return { ok: n > 0 || !(ev.ops || []).length, applied: n, missed };   // partly applied still counts: the panel says what it missed
+    // `duplicated`: copies the page made itself - the host's copy of the graph
+    // learns of them from this answer (canvas_edit.record_duplicates).
+    return { ok: n > 0 || !(ev.ops || []).length, applied: n, missed, duplicated };   // partly applied still counts: the panel says what it missed
   }
 
   // arrange_canvas / group_canvas_nodes / auto_group_canvas: groups drawn, renamed
@@ -4736,6 +4775,141 @@ class AgentChat {
   _setGroupBox(group, box) {
     const data = typeof group.serialize === "function" ? group.serialize() : {};
     group.configure({ ...data, bounding: [box[0], box[1], box[2], box[3]] });
+  }
+
+  // A node that loads media and nothing else (agent_layout.js isMediaSourceShape).
+  _isMediaSource(n) {
+    if (!n) return false;
+    return isMediaSourceShape(n.type || n.comfyClass,
+      (n.outputs || []).map((o) => o && o.type),
+      (n.inputs || []).some((i) => i && i.link != null),
+      (n.widgets || []).map((w) => w && w.value));
+  }
+  _linkOf(graph, id) {
+    if (id == null || !graph || !graph.links) return null;
+    return typeof graph.links.get === "function" ? graph.links.get(id) : graph.links[id];
+  }
+
+  // The new nodes of one edit (not the ones that replaced a node in its place):
+  // laid out together in columns from the node they hang off, at the canvas's
+  // own sizes, where nothing is - never over a node or a group, and never moving
+  // anything that was there. Geometry: agent_layout.js chainItems / chainOrigin /
+  // layoutBlock.
+  //
+  // The node they hang off is their source: the media source a wire comes from,
+  // else any node of the graph that feeds them, else the node named `near`.
+  // * A copy the host made (the source is in use) is already among them - the
+  //   block's first column - and goes with them into free space.
+  // * A media source that stands alone (nothing but these reads it): wired as it
+  //   is when the block fits right beside it; when it does not (other nodes, a
+  //   group around it, the outputs grid) it is copied into free space with them,
+  //   if copies are on (Settings > Canvas) and the host can be told the new id.
+  // A block of two or more nodes gets a group of its own, agent_N, like an
+  // inserted workflow. Returns {group, duplicated: [{of, id, wires}]}.
+  _placeChain(graph, ev, fresh, byId, made) {
+    const mine = new Set(fresh);
+    for (const n of fresh) { try { n.setSize(standardSize(n)); } catch (_) {} }
+    const feedsOf = (n) => (n.inputs || []).map((inp, slot) => {
+      const l = inp && inp.link != null ? this._linkOf(graph, inp.link) : null;
+      const from = l ? byId(l.origin_id) : null;
+      return from ? { from, to: n, slot, output: l.origin_slot | 0 } : null;
+    }).filter(Boolean);
+    const copies = new Map();     // a copy the host made -> its original
+    for (const op of ev.ops || []) {
+      if (op.op !== "add" || op.duplicate_of == null) continue;
+      const n = made[String(op.node_id)];
+      const o = byId(op.duplicate_of);
+      if (n && o && fresh.includes(n)) copies.set(n, o);
+    }
+    const outside = fresh.flatMap(feedsOf).filter((f) => !mine.has(f.from));
+    const feedsOld = fresh.some((n) => (n.outputs || []).some((o) => ((o && o.links) || []).some((id) => {
+      const l = this._linkOf(graph, id);
+      const t = l ? byId(l.target_id) : null;
+      return t && !mine.has(t);
+    })));
+    let source = copies.size ? [...copies.values()][0] : null;
+    if (!source) {
+      const media = outside.find((f) => this._isMediaSource(f.from));
+      source = (media || outside[0] || {}).from || null;
+    }
+    if (!source) {
+      const op = (ev.ops || []).find((o) => o.op === "add" && o.near != null);
+      source = op ? byId(op.near) : null;
+    }
+
+    const obstacles = () => {
+      const rects = this._contentRects(graph, mine);
+      const out = this._outputsGroup(graph);
+      // The outputs grid as it will grow, not only as drawn: the next result goes there.
+      if (out) rects.push(outputsReach(this._groupRect(out)));
+      return rects;
+    };
+    const lay = (origin) => {
+      const ids = new Set(fresh.map((n) => String(n.id)));
+      const edges = fresh.flatMap(feedsOf).filter((f) => ids.has(String(f.from.id)))
+        .map((f) => [String(f.from.id), String(f.to.id)]);
+      const items = chainItems(fresh.map((n) => ({ id: String(n.id), size: [n.size[0], n.size[1]] })), edges);
+      return layoutBlock(items, origin);
+    };
+    const anchor = source && isXY(source.pos) && isXY(source.size) ? this._rectOf(source) : null;
+    let laid = lay([0, 0]);
+    let spot = chainOrigin([laid.bounds[2], laid.bounds[3]], anchor, obstacles(), this._viewCorner());
+
+    const duplicated = [];
+    const bare = source && !copies.size && !feedsOld && this._isMediaSource(source)
+      && (source.outputs || []).every((o) => ((o && o.links) || []).every((id) => {
+        const l = this._linkOf(graph, id);
+        return l && mine.has(byId(l.target_id));
+      }));
+    if (bare && spot.where !== "right" && ev.duplicate_sources !== false && ev.patch_id) {
+      const copy = this._copySource(graph, source, outside.filter((f) => f.from === source));
+      if (copy) {
+        fresh.unshift(copy.node);
+        mine.add(copy.node);
+        duplicated.push({ of: copy.of, id: copy.id, wires: copy.wires });
+        laid = lay([0, 0]);
+        spot = chainOrigin([laid.bounds[2], laid.bounds[3]], anchor, obstacles(), this._viewCorner());
+      }
+    }
+    laid = lay(spot.origin);
+    for (const n of fresh) {
+      const p = laid.positions[String(n.id)];
+      if (p) n.pos = [p[0], p[1]];
+    }
+    let group = null;
+    if (fresh.length >= 2 && laid.bounds && window.LiteGraph && window.LiteGraph.LGraphGroup) {
+      group = nextAgentName(this._groupsOf(graph).map((g) => g.title), "agent");
+      this._addGroup(graph, group, laid.bounds, GROUP_COLOR);
+    }
+    return { group, duplicated };
+  }
+
+  // A copy of media source `src` for the new nodes in `feeds` (their wires from
+  // it move to the copy). The original keeps everything it had.
+  _copySource(graph, src, feeds) {
+    let dup = null;
+    try { dup = typeof src.clone === "function" ? src.clone() : null; } catch (_) { dup = null; }
+    if (!dup) {
+      try { dup = window.LiteGraph.createNode(src.type); } catch (_) { dup = null; }
+      if (!dup) return null;
+      for (const w of src.widgets || []) {
+        const t = (dup.widgets || []).find((x) => x && x.name === w.name);
+        if (t && w.value !== undefined && typeof w.value !== "object") t.value = w.value;
+      }
+    }
+    if (dup.properties) delete dup.properties.agentY_output;
+    graph.add(dup);
+    markAgentDrop(dup);
+    try { dup.setSize(standardSize(dup)); } catch (_) {}
+    const wires = [];
+    for (const f of feeds) {
+      try {
+        const name = f.to.inputs[f.slot] && f.to.inputs[f.slot].name;
+        if (dup.connect(f.output, f.to, f.slot)) wires.push([String(f.to.id), String(name), f.output]);
+      } catch (_) {}
+    }
+    if (!wires.length) { try { graph.remove(dup); } catch (_) {} return null; }
+    return { node: dup, of: String(src.id), id: String(dup.id), wires };
   }
 
   // An inserted workflow: its nodes at the canvas's own sizes, in the columns
