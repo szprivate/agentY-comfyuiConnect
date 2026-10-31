@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { backendBase } from "./agent_backend.js";
-import { agentTagList } from "./agent_tags.js";
+import { agentTagList, announceTagsChanged } from "./agent_tags.js";
+import { untagPicture, clearCanvasTagAt } from "./agent_tag_ops.js";
 
 // The bEpic viewer (ComfyUI-ImageViewer) is agentY's standard viewer. It does not
 // know agentY; it looks for this one object on the page and, when it is there,
@@ -49,6 +50,7 @@ async function tag({ tag, path, role }) {
   let j = {};
   try { j = await res.json(); } catch (_) {}
   if (!res.ok || !j.ok) return say(false, j.error || `The agentY host refused it (HTTP ${res.status}).`);
+  announceTagsChanged({ tagged: [{ tag: j.tag, path }] });
   return say(true, `Tagged as #${j.tag}. Write #${j.tag} in a prompt to use it.`, { tag: j.tag });
 }
 
@@ -104,3 +106,22 @@ window.agentYViewerBridge.feedback = feedback;
 //          the bottom of its history panel and shows the pictures wearing one.
 //          Pass { fresh: true } to skip the short cache.
 window.agentYViewerBridge.tags = (opts) => agentTagList(opts || {});
+
+// untag    the viewer's "Remove tag #name": { tag, path } -> { ok, message, removed,
+//          canvas: [{ id, title }] }. The remembered reference for that picture is
+//          forgotten. A tag that comes from an `agentY add tag` node on the canvas is
+//          NOT touched: `canvas` names the node(s), and the viewer asks the user
+//          before it calls clearCanvasTag.
+// clearCanvasTag  { tag, path }: clear the tag field of the canvas node(s) that put
+//          the tag on that picture - only after the user said yes.
+// manageTags      { anchor, tag }: open the Manage tags page beside `anchor` (the
+//          viewer's own element, so it opens in the viewer's root and window).
+// Every change is announced as the window event "agenty-tags-changed", which the
+// viewer listens for to repaint its filter and badges.
+window.agentYViewerBridge.untag = ({ tag, path } = {}) => untagPicture(String(tag || ""), String(path || ""));
+window.agentYViewerBridge.clearCanvasTag = ({ tag, path } = {}) => clearCanvasTagAt(String(tag || ""), String(path || ""));
+window.agentYViewerBridge.manageTags = (opts) => {
+  if (typeof window.agentYOpenTagManager !== "function") return false;
+  window.agentYOpenTagManager(opts || {});
+  return true;
+};

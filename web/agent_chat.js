@@ -17,6 +17,7 @@ import { collectViewerState } from "./agent_viewer_state.js";
 import { openConversationManager, renameConversation, deleteConversations,
          searchConversations } from "./agent_conversations.js";
 import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
+import { openTagManager } from "./agent_tag_manager.js";
 import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
 import { standardSize } from "./agent_canvas.js";
@@ -2328,6 +2329,10 @@ class AgentChat {
           onRenamed: (id, t) => this._onRenamed(id, t),
           onDeleted: (ids) => this._afterDeleted(ids),
         });
+      }),
+      item("🏷  Manage tags…", () => {
+        this._closeConvMenu();
+        openTagManager({ anchor: this.wrap });
       }));
     search.focus();
   }

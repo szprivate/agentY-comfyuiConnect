@@ -675,7 +675,9 @@ try:
                 path = _pm_entry_path(body)
                 first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
                 out.append({"name": f.stem, "type": f.parent.name,
-                            "summary": first, "path": path})
+                            "summary": first, "path": path,
+                            "tag": _pm_tag_name(f.stem, body),
+                            "origin": _pm_tag_origin(body)})
         return out
 
     @_routes.get("/agent/pm_names")
@@ -1891,6 +1893,30 @@ def _pm_dir(create: bool = False):
 def _pm_slug(name: str) -> str:
     """Same normalisation the host uses, so both sides agree on what a name is."""
     return _re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+
+
+# A remembered tag's entry quotes its name as `#hero_face`; the file is only its
+# slug (hero-face.md). Same reading as tag_memory.display_name on the host.
+_PM_TAG_MARK = _re.compile(r"`#([A-Za-z0-9_\-]+)`")
+
+
+def _pm_tag_name(stem: str, body: str) -> str:
+    """The name a remembered tag is written with in a prompt, else the file's."""
+    found = ""
+    for m in _PM_TAG_MARK.finditer(str(body or "")):
+        if _pm_slug(m.group(1)) == stem:
+            found = m.group(1)
+    return found or stem
+
+
+def _pm_tag_origin(body: str) -> str:
+    """viewer / canvas / agent: who made the entry (tag_memory.origin_of)."""
+    text = str(body or "")
+    if "from the bEpic viewer" in text:
+        return "viewer"
+    if "`agentY add tag` node tagged" in text:
+        return "canvas"
+    return "agent"
 
 
 def _pm_find(key: str):

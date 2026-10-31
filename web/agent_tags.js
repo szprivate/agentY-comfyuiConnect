@@ -41,6 +41,23 @@ export function normaliseTag(raw) {
     .replace(/^_+|_+$/g, "");
 }
 
+// The identity of a tag, the way the project store files it: "hero_face",
+// "Hero-Face" and "hero face" are one tag (project_memory.slug on the host). The
+// canvas keeps the name as typed; this is what two spellings are compared by.
+export function tagKey(raw) {
+  return String(raw || "").trim().replace(/^#+/, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// Tell every listener (the `#` menu's cache, the viewer's filter and badges, an
+// open Manage tags page) that tags changed. `detail` says how, when it is known:
+// { renamed: {from, to}, deleted: [name], untagged: [{tag, path}] }.
+export const TAGS_CHANGED = "agenty-tags-changed";
+export function announceTagsChanged(detail) {
+  forgetRemembered();
+  try { window.dispatchEvent(new CustomEvent(TAGS_CHANGED, { detail: detail || {} })); } catch (_) {}
+}
+
 function widgetValue(node, name) {
   const w = (node.widgets || []).find((x) => x && x.name === name);
   return w ? String(w.value ?? "") : "";
@@ -109,15 +126,74 @@ export function sceneTags() {
       if (!tag) continue;
       const role = widgetValue(n, "role").trim();
       const path = fileBehind(g, n);
-      const prev = byName.get(tag);
-      if (!prev) byName.set(tag, { tag, role, path, source: "canvas" });
+      const key = tagKey(tag);
+      const node = { id: String(n.id), title: String(n.title || "agentY add tag"), path };
+      const prev = byName.get(key);
+      if (!prev) byName.set(key, { tag, role, path, source: "canvas", nodes: [node],
+                                   paths: path ? [path] : [] });
       else {
         if (!prev.role) prev.role = role;
         if (!prev.path) prev.path = path;
+        prev.nodes.push(node);
+        if (path && !prev.paths.includes(path)) prev.paths.push(path);
       }
     }
   }
   return [...byName.values()].sort((a, b) => a.tag.localeCompare(b.tag));
+}
+
+// The live `agentY add tag` nodes carrying `tag` (any spelling), with the graph
+// each is in - what an edit of a canvas tag writes to. `path`, when given, keeps
+// only the nodes whose wire leads to that file (compared with `samePath`).
+export function canvasTagNodes(tag, path) {
+  const key = tagKey(tag);
+  const out = [];
+  if (!key) return out;
+  for (const g of graphs()) {
+    for (const n of g._nodes || g.nodes || []) {
+      if (!isType(n, TAG_NODE) || tagKey(widgetValue(n, "tag")) !== key) continue;
+      const file = fileBehind(g, n);
+      if (path && !samePath(file, path)) continue;
+      out.push({ node: n, graph: g, id: String(n.id), title: String(n.title || "agentY add tag"), path: file });
+    }
+  }
+  return out;
+}
+
+// Two spellings of one file: slashes, a drive letter's case, ComfyUI's
+// " [output]" suffix, and a canvas loader's input-relative name against a full
+// path that ends with it.
+export function samePath(a, b) {
+  const norm = (p) => {
+    let s = String(p || "").trim().replace(/\s*\[(output|input|temp)\]\s*$/i, "").replace(/\\/g, "/");
+    if (/^[A-Za-z]:\//.test(s)) s = s[0].toLowerCase() + s.slice(1);
+    return s;
+  };
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const abs = (p) => /^([a-z]:)?\//i.test(p);
+  if (abs(x) && !abs(y)) return x.endsWith("/" + y);
+  if (abs(y) && !abs(x)) return y.endsWith("/" + x);
+  return false;
+}
+
+// Write `value` into the tag field of these nodes (from canvasTagNodes): the same
+// steps as the canvas write path behind set_canvas_node_params (value, the
+// widget's callback, a redraw), on the live node so a tag inside a subgraph is
+// reached too. "" clears the field; the node and its wiring stay.
+export function writeCanvasTag(found, value) {
+  let n = 0;
+  for (const f of found || []) {
+    const w = (f.node.widgets || []).find((x) => x && x.name === "tag");
+    if (!w) continue;
+    w.value = String(value || "");
+    try { if (w.callback) w.callback(w.value, app.canvas, f.node); } catch (_) {}
+    try { if (f.node.setDirtyCanvas) f.node.setDirtyCanvas(true, true); } catch (_) {}
+    n += 1;
+  }
+  try { if (app.graph && app.graph.setDirtyCanvas) app.graph.setDirtyCanvas(true, true); } catch (_) {}
+  return n;
 }
 
 // References remembered for the PROJECT — tags whose `remember` switch was on in
@@ -134,6 +210,12 @@ let REMEMBERED_AT = 0;
 let INFLIGHT = null;
 const REMEMBERED_TTL = 30000;
 
+// Drop the cache's freshness: the next read asks the store again. After a tag is
+// made, renamed or removed - whoever did it - so the menu offers what is there.
+export function forgetRemembered() {
+  REMEMBERED_AT = 0;
+}
+
 const isWarm = () => !!REMEMBERED && Date.now() - REMEMBERED_AT < REMEMBERED_TTL;
 
 function remembered() {
@@ -147,8 +229,9 @@ function remembered() {
     .then((r) => r.json())
     .then((d) => (d.entries || [])
       .filter((e) => e && e.path)
-      .map((e) => ({ tag: e.name, role: e.summary || "", path: e.path,
-                     source: "memory" })))
+      // `tag` is the name as written (hero_face); `name` the file's (hero-face).
+      .map((e) => ({ tag: e.tag || e.name, role: e.summary || "", path: e.path,
+                     source: "memory", origin: e.origin || "" })))
     .catch(() => [])
     .then((list) => {
       REMEMBERED = list;
@@ -170,8 +253,8 @@ export async function agentTagList({ fresh = false } = {}) {
   const scene = sceneTags();
   let kept = [];
   try { kept = await remembered(); } catch (_) { kept = []; }
-  const names = new Set(scene.map((t) => t.tag));
-  return scene.concat(kept.filter((t) => t && t.tag && !names.has(t.tag)));
+  const names = new Set(scene.map((t) => tagKey(t.tag)));
+  return scene.concat(kept.filter((t) => t && t.tag && !names.has(tagKey(t.tag))));
 }
 
 // Warm the cache without blocking the keystroke that needs it, and call back
@@ -219,6 +302,11 @@ const CSS = `
 .ay-tagmenu-item.sel .ay-tagmenu-name { color: #fff; }
 .ay-tagmenu-item .ay-tagmenu-role { color: #999; margin-left: 8px; }
 .ay-tagmenu-item.sel .ay-tagmenu-role { color: #dde; }
+.ay-tagmenu-manage {
+  margin-top: 3px; padding: 4px 8px; border-top: 1px solid #333; color: #999;
+  cursor: pointer; font-size: 11.5px;
+}
+.ay-tagmenu-manage:hover { color: #ddd; }
 `;
 
 function ensureStyle(parent) {
@@ -315,6 +403,20 @@ function render() {
     row.addEventListener("mouseenter", () => select(i));
     menu.el.appendChild(row);
   });
+  // The way to the Manage tags page (agent_tag_manager.js), when it is loaded.
+  // Not one of `menu.items`: the arrow keys and Enter never land on it.
+  if (typeof window.agentYOpenTagManager === "function") {
+    const manage = menu.el.ownerDocument.createElement("div");
+    manage.className = "ay-tagmenu-manage";
+    manage.textContent = "Manage tags…";
+    manage.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const anchor = menu.ta;
+      close();
+      try { window.agentYOpenTagManager({ anchor }); } catch (_) {}
+    });
+    menu.el.appendChild(manage);
+  }
   const owner = ownerFor(menu.ta) || {};
   if (owner.anchor === "above") return placeAbove(menu.ta, owner.within);
   const at = caretPoint(menu.ta);
@@ -414,13 +516,13 @@ function refresh(ta) {
   // A collector holds files, so a tag with no file behind it has nothing to give
   // it — offering the name there would insert an empty line.
   const onCanvas = sceneTags().filter((t) => inserts !== "path" || t.path);
-  const seen = new Set(onCanvas.map((t) => t.tag));
+  const seen = new Set(onCanvas.map((t) => tagKey(t.tag)));
   // Then what the PROJECT remembers, minus anything the canvas already names —
   // the tag in front of you is the more specific statement, same rule the agent
   // side resolves by. Only reached once the cache is warm; the prime below fills
   // it once, then re-opens the menu, so the first `#` of a session catches up by
   // itself rather than waiting for another keystroke.
-  const fromMemory = (REMEMBERED || []).filter((t) => !seen.has(t.tag));
+  const fromMemory = (REMEMBERED || []).filter((t) => !seen.has(tagKey(t.tag)));
   const all = [...onCanvas, ...fromMemory];
   primeRemembered(() => { if (lastBox === ta) refresh(ta); });
   // Nothing to offer. The menu is a consequence of tags existing, so before the
@@ -597,6 +699,7 @@ app.registerExtension({
   setup() {
     watchDocument(document);
     window.addEventListener("blur", () => close());
+    window.addEventListener(TAGS_CHANGED, () => forgetRemembered());
   },
 });
 

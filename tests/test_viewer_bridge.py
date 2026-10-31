@@ -50,13 +50,19 @@ class Behaviour(unittest.TestCase):
         (d / "package.json").write_text('{"type":"module"}')
         (d / "app.js").write_text("export const app = globalThis.__app;")
         (d / "backend.js").write_text('export const backendBase = () => "http://host";')
-        (d / "tags.js").write_text("export const agentTagList = async (o) => globalThis.__tags(o);")
+        (d / "tags.js").write_text("export const agentTagList = async (o) => globalThis.__tags(o);\n"
+                                   "export const announceTagsChanged = (d) => globalThis.__announced.push(d);")
+        (d / "ops.js").write_text("export const untagPicture = async (t, p) => globalThis.__ops('untag', t, p);\n"
+                                  "export const clearCanvasTagAt = (t, p) => globalThis.__ops('clear', t, p);")
         (d / "bridge.js").write_text(SRC.replace('"../../scripts/app.js"', '"./app.js"')
                                         .replace('"./agent_backend.js"', '"./backend.js"')
-                                        .replace('"./agent_tags.js"', '"./tags.js"'))
+                                        .replace('"./agent_tags.js"', '"./tags.js"')
+                                        .replace('"./agent_tag_ops.js"', '"./ops.js"'))
         (d / "run.js").write_text(
             "const calls = [];\n"
             "globalThis.window = globalThis;\n"
+            "globalThis.__announced = [];\n"
+            "globalThis.__ops = (...a) => { calls.push(a); return { ok: true, op: a[0] }; };\n"
             "const files = { name: 'files', value: '' };\n"
             "const node = { type: 'AgentYImageCollector', properties: { agentY_review_key: 'k' },\n"
             "  widgets: [files], setDirtyCanvas() {} };\n"
@@ -104,6 +110,24 @@ class Behaviour(unittest.TestCase):
         self.assertTrue(r["res"]["ok"])
         self.assertEqual(r["url"], "http://host/agentY/viewer/tag")
         self.assertEqual(r["body"], {"tag": "anna", "path": "/o/a.png", "role": "lead"})
+
+    def test_a_tag_is_announced_so_the_viewer_and_the_menu_follow(self):
+        r = self.run_bridge(
+            "await b.tag({ tag: 'anna', path: '/o/a.png' });\n"
+            "console.log(JSON.stringify({ announced: globalThis.__announced }));")
+        self.assertEqual(r["announced"], [{"tagged": [{"tag": "anna", "path": "/o/a.png"}]}])
+
+    def test_untag_clear_and_manage_go_where_they_should(self):
+        r = self.run_bridge(
+            "const u = await b.untag({ tag: 'anna', path: '/o/a.png' });\n"
+            "const c = b.clearCanvasTag({ tag: 'anna', path: '/o/a.png' });\n"
+            "const before = b.manageTags({});\n"
+            "window.agentYOpenTagManager = (o) => calls.push(['manage', o.tag]);\n"
+            "const after = b.manageTags({ tag: 'anna' });\n"
+            "console.log(JSON.stringify({ u, c, before, after, calls }));")
+        self.assertEqual((r["u"]["op"], r["c"]["op"]), ("untag", "clear"))
+        self.assertEqual(r["calls"], [["untag", "anna", "/o/a.png"], ["clear", "anna", "/o/a.png"], ["manage", "anna"]])
+        self.assertEqual((r["before"], r["after"]), (False, True))
 
     def test_feedback_goes_to_the_panel_as_a_message_with_the_pictures(self):
         r = self.run_bridge(
