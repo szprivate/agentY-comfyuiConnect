@@ -42,7 +42,7 @@ export function formatUsage(u, seconds = null) {
     const context = Number(u.last_call) || 0;
     const parts = [context > 0 ? compactCount(context) + " context" : compactCount(u.input) + " in",
                    compactCount(u.output) + " out"];
-    const hit = Number(u.cache_hit) || 0;
+    const hit = Math.min(1, Math.max(0, Number(u.cache_hit) || 0));
     if (hit > 0) parts.push(Math.round(hit * 100) + "% cached");
     const calls = Number(u.calls) || 0;
     if (calls > 0) parts.push(calls + (calls === 1 ? " call" : " calls"));

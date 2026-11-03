@@ -55,8 +55,11 @@ function pct(x) { return (100 * (x || 0)).toFixed(1) + "%"; }
 // cache reads + cache writes). Anthropic reports these three as disjoint parts
 // of the input, so this is the share of input served cheaply from cache.
 function hitRate(r) {
-  const denom = (r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0);
-  return denom > 0 ? (r.cache_read || 0) / denom : 0;
+  // hit_denom (from the host) counts each input token once per provider's
+  // convention (DashScope keeps cached tokens inside input, Anthropic beside it).
+  const denom = r.hit_denom > 0 ? r.hit_denom
+    : (r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0);
+  return denom > 0 ? Math.min(1, (r.cache_read || 0) / denom) : 0;
 }
 function fmtTs(sec) {
   if (!sec) return "—";
