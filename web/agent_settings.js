@@ -494,6 +494,49 @@ const ROUTING_RULES_NOTE = "When the agent loads a skill or tool pack, or calls 
   + "a rule, it is told which model is recommended for the job. A rule whose model is not available "
   + "right now stays silent.";
 
+const ESCALATION_NOTE = "When a turn goes in circles (the agent repeats a call the repeat guard "
+  + "refuses, several tool calls in a row fail, or the turn runs very long), the conversation moves to "
+  + "this model by itself and the agent says so. Once per conversation; it stays on that model until "
+  + "the conversation ends. A model that is not available, or a text-only one while the conversation "
+  + "holds images, changes nothing. Costs more per call than a smaller model.";
+
+// The stronger model a spiralling turn moves to (llm.routing.escalation). Drawn
+// only when the host's settings carry the block, so an older host is not written
+// a setting it does not read.
+function escalationRows(container, routing, modelGroups, refs) {
+  const esc = routing.escalation;
+  if (!esc || typeof esc !== "object") return;
+  const field = el("div", { className: "ays-field ays-hasnote" });
+  const onBox = el("input", { type: "checkbox", className: "ays-input" });
+  onBox.checked = esc.enabled === true;
+  const modelSel = buildModelSelect(modelGroups, String(esc.model || ""), false);
+  const modelBox = searchableSelect(modelSel, { placeholder: "Type a model name…",
+    extraChoices: CUSTOM_PROVIDERS.length ? typedModelChoices : null });
+  const num = (key, title) => {
+    const inp = el("input", { type: "number", className: "ays-input", min: "0", step: "1",
+                              value: String(esc[key] ?? ""), title });
+    refs.push({ path: ["llm", "routing", "escalation", key],
+                get: () => { const n = parseInt(inp.value, 10); return Number.isFinite(n) && n >= 0 ? n : esc[key]; } });
+    return inp;
+  };
+  const errInp = num("after_errors", "llm.routing.escalation.after_errors: failed tool calls in a row (0 = off)");
+  const callsInp = num("after_tool_calls", "llm.routing.escalation.after_tool_calls: tool calls in one turn (0 = off)");
+  const sync = () => { for (const x of [modelSel, errInp, callsInp]) x.disabled = !onBox.checked; };
+  onBox.addEventListener("change", sync);
+  sync();
+  field.append(
+    el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Escalate when stuck",
+                                                       title: "llm.routing.escalation.enabled" }), onBox]),
+    el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "escalation model",
+                                                       title: "llm.routing.escalation.model" }), modelBox]),
+    el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "after failed calls in a row" }), errInp]),
+    el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "after tool calls in a turn" }), callsInp]),
+    el("div", { className: "ays-note ays-keynote", textContent: ESCALATION_NOTE }));
+  refs.push({ path: ["llm", "routing", "escalation", "enabled"], get: () => onBox.checked });
+  refs.push({ path: ["llm", "routing", "escalation", "model"], get: () => modelSel.value || String(esc.model || "") });
+  container.append(field);
+}
+
 const ruleWhen = (rule) => {
   const when = (rule && rule.when) || {};
   for (const [k] of ROUTING_KINDS) if (when[k]) return [k, String(when[k])];
@@ -514,6 +557,8 @@ function routingRows(container, settings, modelGroups, refs) {
   autoField.append(autoRow, el("div", { className: "ays-note ays-keynote", textContent: ROUTING_AUTO_NOTE }));
   refs.push({ path: ["llm", "routing", "auto_switch"], get: () => autoBox.checked });
   container.append(autoField);
+
+  escalationRows(container, routing, modelGroups, refs);
 
   // The rules.
   const original = Array.isArray(routing.rules) ? routing.rules : [];

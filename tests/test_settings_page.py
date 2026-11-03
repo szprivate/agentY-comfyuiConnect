@@ -152,6 +152,17 @@ class TheModelRouting(unittest.TestCase):
         for kind in ('"skill"', '"tool_pack"', '"tool"'):
             self.assertIn(kind, JS.split("const ROUTING_KINDS", 1)[1].split("];", 1)[0])
 
+    def test_escalation_is_a_switch_and_a_model_drawn_with_the_routing(self):
+        routing = JS.split("function routingRows(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("escalationRows(container, routing, modelGroups, refs)", routing)
+        body = JS.split("function escalationRows(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("Escalate when stuck", body)
+        self.assertIn("buildModelSelect(modelGroups", body)
+        for key in ("enabled", "model", "after_errors", "after_tool_calls"):
+            self.assertIn(f'"escalation", ', body)
+            self.assertIn(key, body)
+        self.assertIn('if (!esc || typeof esc !== "object") return;', body)   # an older host: not drawn
+
 
 
 
