@@ -297,6 +297,7 @@ function injectStyles() {
   .ays-field .ays-row{padding:3px 0;}
   .ays-think{display:inline-flex;align-items:center;gap:3px;flex:none;cursor:pointer;font-size:13px;white-space:nowrap;}
   .ays-row .ays-think-sel{flex:none;width:auto;}
+  .ays-row .ays-images-sel{min-width:0;padding-left:4px;padding-right:2px;font-size:12px;}
   .ays-field .ays-keynote{margin:0 0 0 calc(42% + 10px);}
   .ays-field.ays-hasnote{margin:12px 0;}
   .ays-label{flex:0 0 42%;font-size:12.5px;color:#c3c8d0;word-break:break-word;font-family:ui-monospace,monospace;}
@@ -528,7 +529,8 @@ function escalationRows(container, routing, modelGroups, refs) {
     el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "Escalate when stuck",
                                                        title: "llm.routing.escalation.enabled" }), onBox]),
     el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "escalation model",
-                                                       title: "llm.routing.escalation.model" }), modelBox]),
+                                                       title: "llm.routing.escalation.model" }), modelBox,
+                                         ...[imagesControl(modelSel)].filter(Boolean)]),
     el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "after failed calls in a row" }), errInp]),
     el("div", { className: "ays-row" }, [el("label", { className: "ays-label", textContent: "after tool calls in a turn" }), callsInp]),
     el("div", { className: "ays-note ays-keynote", textContent: ESCALATION_NOTE }));
@@ -739,6 +741,108 @@ function videoAsRows(container, chosen, refs, saveSel) {
   container.append(el("div", { className: "ays-note ays-keynote", textContent: VIDEO_AS_NOTE }));
 }
 
+// Which models can read images (llm.vision_models / llm.text_only_models). The
+// host decides from the model's name before it sends anything: a model it takes
+// for text-only is never handed an image (the agent gets the file paths and the
+// Vision tier's description instead). The two lists overrule that guess. They
+// are lists of name parts, but the setting is about a MODEL, so it is drawn as a
+// switch on every row that picks one, and rows showing the same model move
+// together. Drawn only when the host's settings carry both lists.
+let IMAGE_LISTS = null;            // { vision: [...], text: [...] }, as they will be saved
+let IMAGE_CTX = { strataVision: false, custom: {} };
+const imageControls = [];          // { sel, spec: () => "provider,model" }
+const IMAGES_TITLE = "Can this model read images? The agent decides from the model's name "
+  + "before anything is sent, and never sends an image to a model it takes for text-only: it "
+  + "gets the file paths and the Vision tier's description instead. Auto = the guess from the "
+  + "name. Set Text only on a hosted orchestrator to keep every image on this machine.";
+// The name-based guess, as src/utils/vision_capability.py supports_vision makes it.
+const VISION_PROVIDERS = ["claude", "anthropic", "bedrock", "google", "gemini"];
+const VISION_MARKERS = ["-vl", "vl-", "vl:", "vision", "omni", "4o", "gpt-4.1", "o4-",
+  "llava", "minicpm-v", "gemma3", "gemma-3", "pixtral", "internvl", "moondream"];
+
+function splitSpec(spec) {
+  const t = String(spec || "").toLowerCase();
+  const i = t.indexOf(",");
+  const provider = (i < 0 ? t : t.slice(0, i)).trim();
+  const model = (i < 0 ? t : t.slice(i + 1)).trim() || provider;
+  return { provider, model };
+}
+
+function guessReadsImages(spec) {
+  const { provider, model } = splitSpec(spec);
+  if (!provider) return false;
+  if (VISION_PROVIDERS.includes(provider)) return true;
+  if (provider === "strata") return IMAGE_CTX.strataVision;
+  if (IMAGE_CTX.custom[provider]) return true;
+  return VISION_MARKERS.some((m) => model.includes(m));
+}
+
+// "text" / "vision" when a list entry decides it (text-only is checked first, as
+// the host does), else "auto"; `by` is the entry that did.
+function imageState(spec) {
+  const { model } = splitSpec(spec);
+  for (const [list, state] of [[IMAGE_LISTS.text, "text"], [IMAGE_LISTS.vision, "vision"]]) {
+    const hit = list.find((p) => { const t = String(p).toLowerCase().trim(); return t && model.includes(t); });
+    if (hit !== undefined) return { state, by: String(hit) };
+  }
+  return { state: "auto", by: "" };
+}
+
+function setImageState(spec, want) {
+  const { model } = splitSpec(spec);
+  if (!model) return;
+  const lc = (p) => String(p).toLowerCase().trim();
+  const drop = (list, matchAny) => list.filter((p) => !(matchAny ? (lc(p) && model.includes(lc(p))) : lc(p) === model));
+  // Auto takes out this model's own entries. Text only / Reads images also take out
+  // what would overrule them: an entry on the other list that matches this model
+  // (a shorter name part can match other models too; their rows show the change).
+  IMAGE_LISTS.vision = drop(IMAGE_LISTS.vision, want === "text");
+  IMAGE_LISTS.text = drop(IMAGE_LISTS.text, want === "vision");
+  if (want === "text") IMAGE_LISTS.text.push(model);
+  if (want === "vision") IMAGE_LISTS.vision.push(model);
+}
+
+function refreshImageControls() {
+  for (const c of imageControls) {
+    const spec = c.spec();
+    c.sel.style.display = spec ? "" : "none";
+    if (!spec) continue;
+    const { state, by } = imageState(spec);
+    const guess = guessReadsImages(spec);
+    c.sel.options[0].textContent = guess ? "🖼 auto: yes" : "🖼 auto: no";
+    c.sel.value = state;
+    const { model } = splitSpec(spec);
+    c.sel.title = IMAGES_TITLE + (by && by.toLowerCase().trim() !== model
+      ? `\n\nSet by the entry "${by}" in llm.${state === "text" ? "text_only_models" : "vision_models"}.` : "");
+  }
+}
+
+function initImageLists(settings, refs) {
+  const llm = (settings && settings.llm) || {};
+  imageControls.length = 0;
+  IMAGE_LISTS = null;
+  if (!Array.isArray(llm.vision_models) || !Array.isArray(llm.text_only_models)) return;
+  IMAGE_LISTS = { vision: llm.vision_models.map(String), text: llm.text_only_models.map(String) };
+  IMAGE_CTX = { strataVision: !!((llm.strata || {}).vision), custom: {} };
+  for (const p of CUSTOM_PROVIDERS) if (p && p.id && p.vision) IMAGE_CTX.custom[String(p.id).toLowerCase()] = true;
+  refs.push({ path: ["llm", "vision_models"], get: () => IMAGE_LISTS.vision.slice() });
+  refs.push({ path: ["llm", "text_only_models"], get: () => IMAGE_LISTS.text.slice() });
+}
+
+// The switch beside a model select. Returns null when the host has no lists.
+function imagesControl(modelSel) {
+  if (!IMAGE_LISTS || !modelSel) return null;
+  const sel = el("select", { className: "ays-input ays-think-sel ays-images-sel" });
+  for (const [v, t] of [["auto", "🖼 auto"], ["vision", "🖼 reads images"], ["text", "🚫 text only"]]) {
+    sel.append(el("option", { value: v, textContent: t }));
+  }
+  const entry = { sel, spec: () => modelSel.value };
+  imageControls.push(entry);
+  sel.addEventListener("change", () => { setImageState(entry.spec(), sel.value); refreshImageControls(); });
+  modelSel.addEventListener("change", refreshImageControls);
+  return sel;
+}
+
 // Reasoning per agent: llm.thinking (per tier, on/off) and llm.thinking_roles (per
 // role, "" = as its tier). Not shown as groups of their own — each is a switch on
 // the model row it belongs to, where the choice is actually made.
@@ -796,7 +900,11 @@ const GROUP_NOTES = {
   tiers: "Every role takes its model from one of these tiers. Set them and you are "
     + "done — per-role overrides below are for the exceptions. 💭 turns reasoning on "
     + "for a tier: better decisions, slower and more tokens. Worth it for the Lead; "
-    + "rarely for agents that make many quick tool calls.",
+    + "rarely for agents that make many quick tool calls."
+    + " 🖼 says whether a model can read images; a model set to text only is never sent "
+    + "one (it gets the file paths and the Vision tier's description). Set the Vision and "
+    + "QA judge tiers to a local model and the orchestrator to text only, and no image "
+    + "leaves this machine.",
   pipeline: "Leave a role blank to inherit from its tier. Fill one in only when "
     + "that single job wants a different model from the rest of its tier.",
   memory: "Long-term memory. The store is always local FAISS. Its embedder is "
@@ -893,6 +1001,7 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
   const row = el("div", { className: "ays-row" });
   row.append(el("label", { className: "ays-label", textContent: key }));
   let input;
+  let imagesSel = null;
   // Both llm.tiers.* and llm.pipeline.* are model choices; only the per-role
   // overrides may be left blank to inherit.
   const isOverride = path[0] === "llm" && path[1] === "pipeline";
@@ -943,6 +1052,7 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     refs.push({ path, get: () => sel.value });
     input = searchableSelect(sel, { placeholder: "Type a model name…",
                                     extraChoices: CUSTOM_PROVIDERS.length ? typedModelChoices : null });
+    imagesSel = imagesControl(sel);
   } else if (Array.isArray(AUX_CHOICES[path.join(".")]) && AUX_CHOICES[path.join(".")].length) {
     // A model the agent loads itself: picked from a list, like the others.
     const current = val == null ? "" : String(val);
@@ -968,6 +1078,7 @@ function renderLeafRow(container, key, val, path, modelGroups, refs) {
     refs.push({ path, get: () => (input.value === shown ? stored : input.value) });
   }
   row.append(input);
+  if (imagesSel) row.append(imagesSel);
   const think = thinkingControl(path, key, refs);
   if (think) row.append(think);
   field.append(row);
@@ -1023,6 +1134,7 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
   THINKING = { tiers: llm.thinking || {}, roles: llm.thinking_roles || {} };
   claimedObjects.add("llm.thinking");
   claimedObjects.add("llm.thinking_roles");
+  initImageLists(settings, refs);
 
   for (const section of SECTIONS) {
     const { group, body } = makeCollapsibleGroup(section.title, "", !!section.open);
@@ -1169,6 +1281,8 @@ function buildTopLevelSettings(container, settings, modelGroups, refs, envUrlRow
     }
     container.append(group);
   }
+  // Every row with a model now exists: show what each one's switch says.
+  if (IMAGE_LISTS) refreshImageControls();
 }
 
 // Reassemble the nested settings object from the collected leaf refs.
