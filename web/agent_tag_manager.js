@@ -17,8 +17,11 @@ import {
 // and its listeners on that root's document; every confirmation in the page.
 //
 // Left: every tag (name, where it lives, how many pictures), sortable, filterable.
-// Right: the picked tag's pictures as a grid of thumbnails (/bepic/thumb, loaded as
-// they scroll into view, a few at a time, capped), with the actions.
+// A click picks one, Ctrl+click adds or takes one away, Shift+click (and Shift+Up /
+// Down) a range; Up / Down / Home / End move through the list.
+// Right: the picked tags' pictures as a grid of thumbnails (/bepic/thumb, loaded as
+// they scroll into view, a few at a time, capped), with the actions - for one tag
+// rename / merge / delete, for several merge them into one / delete them.
 //
 // Nothing a user or the agent wrote is ever parsed as HTML here: names, roles, file
 // names and paths are all set as textContent or attribute values.
@@ -84,6 +87,7 @@ const STYLES = `
   .ayt-table tr.ayt-row{cursor:pointer;}
   .ayt-table tr.ayt-row:hover td{background:#1b1e25;}
   .ayt-table tr.ayt-sel td{background:#262b34;box-shadow:inset 3px 0 0 #6f97ff;}
+  .ayt-table tr.ayt-cur td.ayt-t{text-decoration:underline;text-decoration-color:#6f97ff;text-underline-offset:3px;}
   .ayt-table td.ayt-t{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ecbff;}
   .ayt-table td.ayt-n{white-space:nowrap;color:#c3c8d0;}
   .ayt-input{background:#161a20;color:#e6e8ec;border:1px solid #2c313b;border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;min-width:0;}
@@ -135,8 +139,11 @@ export async function openTagManager(ctx = {}) {
     return e;
   };
 
+  // `inspect` is the tag last picked (the anchor of a Shift range, what the arrows move
+  // from); `sel` every tag picked - Ctrl+click adds or takes one away, Shift+click and
+  // Shift+arrows take a range of the list as it is shown.
   const state = { rows: [], sortKey: "tag", dir: 1, q: "", inspect: ctx.select ? String(ctx.select) : null,
-                  pending: null, hostError: "" };
+                  sel: new Set(), anchor: null, pending: null, hostError: "" };
 
   const overlay = h("div", { className: "ayt-overlay" });
   const card = h("div", { className: "ayt-card" });
@@ -155,6 +162,7 @@ export async function openTagManager(ctx = {}) {
   const say = (t) => { msg.textContent = t || ""; };
   const visible = () => sortTagRows(filterTagRows(state.rows, state.q), state.sortKey, state.dir);
   const current = () => state.rows.find((r) => r.key === state.inspect || r.tag === state.inspect) || null;
+  const picked = () => state.rows.filter((r) => state.sel.has(r.key));
 
   // An action waiting for "Yes": its sentence in the foot, the buttons beside it.
   const ask = (text, run, yesLabel = "Yes") => {
@@ -184,18 +192,63 @@ export async function openTagManager(ctx = {}) {
       return th;
     }));
     const body = h("tbody");
-    const sel = current();
     for (const r of rows) {
-      const tr = h("tr", { className: "ayt-row" + (sel && sel.key === r.key ? " ayt-sel" : "") }, [
+      const tr = h("tr", { className: "ayt-row" + (state.sel.has(r.key) ? " ayt-sel" : "") + (state.inspect === r.key ? " ayt-cur" : "") }, [
         h("td", { className: "ayt-t", textContent: "#" + r.tag, title: r.role || r.tag }),
         h("td", { className: "ayt-n", textContent: sourceText(r) }),
         h("td", { className: "ayt-n", textContent: String(r.images.length) }),
       ]);
       tr.dataset.key = r.key;
-      tr.addEventListener("click", () => { unask(); say(""); inspect(r.key); });
+      tr.addEventListener("click", (e) => {
+        unask(); say("");
+        pick(r.key, e.shiftKey ? "range" : (e.ctrlKey || e.metaKey) ? "toggle" : "only");
+      });
+      // Shift+click picks a range, not the page's text.
+      tr.addEventListener("mousedown", (e) => { if (e.shiftKey) e.preventDefault(); });
       body.append(tr);
     }
     list.append(h("table", { className: "ayt-table" }, [h("thead", {}, head), body]));
+    const cur = list.querySelector("tr.ayt-cur");
+    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+  }
+
+  /** Pick tag `key`: on its own ("only"), added or taken away ("toggle"), or the
+   *  list's range from the anchor to it ("range"). */
+  function pick(key, how = "only") {
+    const order = visible().map((r) => r.key);
+    if (how === "toggle") {
+      if (state.sel.has(key)) state.sel.delete(key); else state.sel.add(key);
+      state.anchor = key;
+      state.inspect = state.sel.has(key) ? key : ([...state.sel].pop() || null);
+    } else if (how === "range" && state.anchor && order.includes(state.anchor) && order.includes(key)) {
+      const [a, b] = [order.indexOf(state.anchor), order.indexOf(key)].sort((x, y) => x - y);
+      state.sel = new Set(order.slice(a, b + 1));
+      state.inspect = key;
+    } else {
+      state.sel = new Set([key]);
+      state.anchor = key;
+      state.inspect = key;
+    }
+    showView();
+  }
+
+  /** Up / Down (Home / End) through the list as shown; Shift extends the range. */
+  function step(delta, extend) {
+    const order = visible().map((r) => r.key);
+    if (!order.length) return;
+    const at = order.indexOf(state.inspect);
+    const to = at < 0 ? (delta > 0 ? 0 : order.length - 1)
+      : Math.max(0, Math.min(order.length - 1, delta === Infinity ? order.length - 1 : delta === -Infinity ? 0 : at + delta));
+    if (at === to && state.sel.size === 1) return;
+    unask(); say("");
+    if (extend && state.anchor && order.includes(state.anchor)) pick(order[to], "range");
+    else pick(order[to], "only");
+  }
+
+  function showView() {
+    const many = picked();
+    if (many.length > 1) inspectMany(many);
+    else inspect(many.length ? many[0].key : state.inspect);
   }
 
   // ── thumbnails, a few at a time as they come into view ──────────────────────
@@ -229,6 +282,9 @@ export async function openTagManager(ctx = {}) {
 
   function inspect(key) {
     state.inspect = key;
+    const one = current();
+    state.sel = new Set(one ? [one.key] : []);
+    if (one && !state.anchor) state.anchor = one.key;
     renderList();
     const r = current();
     if (!r) { view.replaceChildren(h("div", { className: "ayt-empty", textContent: "Click a tag to see its pictures." })); return; }
@@ -299,10 +355,25 @@ export async function openTagManager(ctx = {}) {
       ask(parts.join(" "), async () => { busy(true); await after(await deleteEverywhere(r, { withCanvas: canvasNodes.length > 0 }), null); }, "Delete");
     });
 
+    const grid = pictureGrid([r], busy, after);
+
+    view.replaceChildren(
+      h("div", { className: "ayt-viewhead" }, [
+        h("div", { className: "ayt-actions" }, [name, renameBtn]),
+        h("div", { className: "ayt-actions" }, [mergeSel, keepSel, mergeBtn, delBtn]),
+        notes,
+      ]),
+      grid);
+  }
+
+
+  /** The pictures of `rows` as tiles (a tag's own name on each when there are several). */
+  function pictureGrid(rows, busy, after) {
     const grid = h("div", { className: "ayt-grid" });
     const L = makeLoader(grid);
-    const shown = r.images.slice(0, GRID_CAP);
-    for (const img of shown) {
+    const all = rows.flatMap((r) => r.images.map((img) => ({ r, img })));
+    const shown = all.slice(0, GRID_CAP);
+    for (const { r, img } of shown) {
       const pic = h("img", { alt: "", loading: "lazy", decoding: "async" });
       L.add(pic, thumbUrl(img.path));
       const openBtn = h("button", { className: "ayt-btn small", textContent: "Open in viewer" });
@@ -318,28 +389,94 @@ export async function openTagManager(ctx = {}) {
         const text = fromCanvas
           ? `Take #${r.tag} off ${img.name}? This picture is tagged by ${where}; its tag field is cleared.`
           : `Take #${r.tag} off ${img.name}?`;
-        ask(text, async () => { busy(true); await after(await removeImage(r, img, { withCanvas: fromCanvas }), r.key); }, "Remove");
+        ask(text, async () => { busy(true); await after(await removeImage(r, img, { withCanvas: fromCanvas }), rows.length > 1 ? undefined : r.key); }, "Remove");
       });
+      const from = [rows.length > 1 ? "#" + r.tag : "", img.from.includes("canvas") ? "canvas" : "", img.from.includes("memory") ? "remembered" : "", img.exists === false ? "file missing" : ""];
       const tile = h("div", { className: "ayt-tile", title: img.path }, [
         h("div", { className: "ayt-img" }, pic),
         h("div", { className: "ayt-fn", textContent: img.name }),
         h("div", { className: "ayt-path", textContent: img.path }),
-        h("div", { className: "ayt-from", textContent: [img.from.includes("canvas") ? "canvas" : "", img.from.includes("memory") ? "remembered" : "", img.exists === false ? "file missing" : ""].filter(Boolean).join(" · ") }),
+        h("div", { className: "ayt-from", textContent: from.filter(Boolean).join(" · ") }),
         h("div", { className: "ayt-tilebtns" }, [openBtn, rmBtn]),
       ]);
       tile.dataset.path = img.path;
+      tile.dataset.tag = r.tag;
       grid.append(tile);
     }
-    if (!r.images.length) grid.append(h("div", { className: "ayt-empty", textContent: "No picture is behind this tag (a tag node not wired to a loader)." }));
-    if (r.images.length > shown.length) grid.append(h("div", { className: "ayt-note", textContent: `${r.images.length - shown.length} more not shown.` }));
+    if (!all.length) grid.append(h("div", { className: "ayt-empty", textContent: rows.length > 1 ? "No picture is behind these tags." : "No picture is behind this tag (a tag node not wired to a loader)." }));
+    if (all.length > shown.length) grid.append(h("div", { className: "ayt-note", textContent: `${all.length - shown.length} more not shown.` }));
+    return grid;
+  }
 
+  /** Several tags picked: their pictures, and what can be done to all of them at once
+   *  (merge them into one, delete them). Renaming is for one tag. */
+  function inspectMany(rows) {
+    renderList();
+    const n = rows.length;
+    const keys = new Set(rows.map((r) => r.key));
+    const nodesOf = rows.flatMap((r) => r.nodes || []);
+    const title = h("div", { className: "ayt-note", textContent: `${n} tags picked: ${rows.map((r) => "#" + r.tag).join(", ")}` });
+    title.style.color = "#e6e8ec";
+    const mergeSel = h("select", { className: "ayt-input", title: "The tag these are merged into" });
+    mergeSel.append(h("option", { value: "", textContent: `Merge ${n} into…` }));
+    const picks = h("optgroup", { label: "One of them" });
+    for (const o of sortTagRows(rows, "tag", 1)) picks.append(h("option", { value: o.tag, textContent: "#" + o.tag }));
+    const others = h("optgroup", { label: "Another tag" });
+    for (const o of sortTagRows(state.rows.filter((x) => !keys.has(x.key)), "tag", 1)) others.append(h("option", { value: o.tag, textContent: "#" + o.tag }));
+    mergeSel.append(picks);
+    if (others.children.length) mergeSel.append(others);
+    const mergeBtn = h("button", { className: "ayt-btn", textContent: "Merge", disabled: true });
+    const delBtn = h("button", { className: "ayt-btn danger", textContent: `Delete ${n} tags…` });
+    mergeSel.addEventListener("change", () => { mergeBtn.disabled = !mergeSel.value; });
+    const notes = h("div", { className: "ayt-note" });
+    if (nodesOf.length) notes.textContent = `${nodesOf.length} canvas node${nodesOf.length === 1 ? "" : "s"} carry ${nodesOf.length === 1 ? "one of them" : "these tags"}: ${nodesOf.map((x) => "#" + x.id).join(", ")}. Merging or deleting edits their tag field.`;
+
+    const busy = (on) => { for (const b of [mergeBtn, delBtn]) b.disabled = on; };
+    // Each tag in turn; the first that fails stops the rest and says so.
+    const each = async (run, keyAfter) => {
+      busy(true);
+      const said = [];
+      let failed = null;
+      for (const r of rows) {
+        const res = await run(r);
+        if (res && res.skip) continue;
+        if (!res || !res.ok) { failed = `#${r.tag}: ${(res && res.message) || "That did not work."}`; break; }
+        if (res.message) said.push(res.message);
+      }
+      busy(false);
+      await reload(keyAfter);
+      say(failed ? failed + (said.length ? ` (before it: ${said.join(" ")})` : "") : (said.join(" ") || "Done."));
+    };
+    mergeBtn.addEventListener("click", () => {
+      const into = mergeSel.value;
+      if (!into) return;
+      const from = rows.filter((r) => r.tag !== into);
+      const parts = [`Merge ${from.map((r) => "#" + r.tag).join(", ")} into #${into}? Afterwards only #${into} is left of them.`];
+      if (nodesOf.length) parts.push("The tag field of their canvas nodes becomes #" + into + ".");
+      if (from.some((r) => r.memory) && (state.rows.find((x) => x.tag === into) || {}).memory) parts.push(`#${into} keeps its own remembered picture; the others' are untagged.`);
+      ask(parts.join(" "), () => each(async (r) => (r.tag === into ? { skip: true }
+        : mergeInto(r, into, { keep: "into", withCanvas: (r.nodes || []).length > 0 })), into), "Merge");
+    });
+    delBtn.addEventListener("click", () => {
+      const parts = [`Delete ${rows.map((r) => "#" + r.tag).join(", ")}?`];
+      if (rows.some((r) => r.memory)) parts.push("Remembered tags are forgotten; the pictures stay where they are.");
+      if (nodesOf.length) parts.push("The tag field of their canvas nodes is cleared.");
+      parts.push("Hook prompts that say them will no longer find them.");
+      ask(parts.join(" "), () => each((r) => deleteEverywhere(r, { withCanvas: (r.nodes || []).length > 0 }), null), "Delete");
+    });
+    const after = async (res, keyAfter) => {
+      busy(false);
+      if (!res.ok) { say(res.message || "That did not work."); return; }
+      await reload(keyAfter);
+      say(res.message || "Done.");
+    };
     view.replaceChildren(
       h("div", { className: "ayt-viewhead" }, [
-        h("div", { className: "ayt-actions" }, [name, renameBtn]),
-        h("div", { className: "ayt-actions" }, [mergeSel, keepSel, mergeBtn, delBtn]),
+        title,
+        h("div", { className: "ayt-actions" }, [mergeSel, mergeBtn, delBtn]),
         notes,
       ]),
-      grid);
+      pictureGrid(rows, busy, after));
   }
 
   async function reload(selectKey) {
@@ -347,9 +484,19 @@ export async function openTagManager(ctx = {}) {
     state.rows = rows;
     state.hostError = hostError;
     if (hostError) say(hostError + " Remembered tags are shown, but cannot be changed.");
+    // Picked before and still there: kept (several only when nothing new is asked for).
+    const keep = selectKey === undefined ? [...state.sel].filter((k) => rows.some((r) => r.key === k)) : [];
+    if (keep.length > 1) {
+      state.sel = new Set(keep);
+      if (!keep.includes(state.inspect)) state.inspect = keep[keep.length - 1];
+      if (!keep.includes(state.anchor)) state.anchor = state.inspect;
+      showView();
+      return;
+    }
     const want = selectKey === undefined ? state.inspect : selectKey;
     const hit = want ? rows.find((r) => r.key === want || r.tag === want || r.key === tagKey(want)) : null;
     state.inspect = hit ? hit.key : null;
+    state.anchor = state.inspect;
     if (hit) inspect(hit.key);
     else { renderList(); view.replaceChildren(h("div", { className: "ayt-empty", textContent: "Click a tag to see its pictures." })); }
   }
@@ -370,6 +517,22 @@ export async function openTagManager(ctx = {}) {
     openPage = null;
   }
   const onKey = (e) => {
+    // Up / Down / Home / End move through the tags (Shift: a range) - from the list or the
+    // filter field, not while a name is being typed elsewhere or a dropdown is open.
+    const STEPS = { ArrowDown: 1, ArrowUp: -1, Home: -Infinity, End: Infinity };
+    // The page is modal, so they are its keys wherever the focus is - but inside a shadow
+    // root (the viewer) e.target is the host: the element itself is the path's first.
+    if (e.key in STEPS) {
+      const t = (e.composedPath && e.composedPath()[0]) || e.target;
+      const typing = t && (t.tagName === "SELECT" || t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && t !== filter));
+      const homeEnd = e.key === "Home" || e.key === "End";
+      if (!typing && !(homeEnd && t === filter) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        step(STEPS[e.key], e.shiftKey);
+        return;
+      }
+    }
     if (e.key !== "Escape") return;
     e.stopPropagation();
     if (state.pending) { unask(); say(""); } else close();

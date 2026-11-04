@@ -93,6 +93,9 @@ class TagManagerHosts(unittest.TestCase):
                 return self._json(route, {"ok": True, "tag": body["to"], "from": body["tag"], "path": hit["path"],
                                           "warning": "Hook prompts and messages that say #%s were not changed: "
                                                      "edit them to say #%s." % (body["tag"], body["to"])})
+            if op == "merge":
+                hit.update(tag=body["into"], key=body["into"].lower())
+                return self._json(route, {"ok": True, "tag": body["into"], "from": body["from"]})
             if op in ("delete", "untag"):
                 self.memory.remove(hit)
                 return self._json(route, {"ok": True, "tag": hit["tag"], "path": hit["path"]})
@@ -225,7 +228,7 @@ class TagManagerHosts(unittest.TestCase):
                 self.page.evaluate("""async () => { const P = document.querySelector('bepic-viewer-panel');
                     if (!P.isPanelDocked('history')) P.setPanelDocked('history', true);
                     const k = P.activeTab || 'main'; P.activeTab = k;
-                    P.history[k] = [[{ path: 'D:/out/set.png', type: 'output' }], [{ path: 'D:/out/other.png', type: 'output' }]];
+                    P.history.all = [[{ path: 'D:/out/set.png', type: 'output', fromTab: k }], [{ path: 'D:/out/other.png', type: 'output', fromTab: k }]];   // the one history (all tabs)
                     P._historyPanelSig = null; P.renderHistoryPanel(); await P.refreshAgentTags({ fresh: true }); }""")
                 badges = """([FIND]) => eval(FIND)('.history-thumb').map(([t]) =>
                     [...t.querySelectorAll('.history-agent-tag > span:first-child')].map((s) => s.textContent))"""
@@ -251,7 +254,7 @@ class TagManagerHosts(unittest.TestCase):
         self.assertEqual(self.calls[-1], ("push", {"paths": ["D:/out/set.png"], "tab_name": "agentY", "focus": True}))
         # one it holds is opened there, with no push
         self.page.evaluate("""() => { const P = document.querySelector('bepic-viewer-panel');
-            const k = P.activeTab || 'main'; P.activeTab = k; P.history[k] = [[{ path: 'D:/out/set.png', type: 'output' }]]; }""")
+            const k = P.activeTab || 'main'; P.activeTab = k; P.history.all = [[{ path: 'D:/out/set.png', type: 'output', fromTab: k }]]; }""")
         n = len(self.calls)
         self.open_manager_from_menu(shown)
         shown.locator(".ayt-row", has_text="#set").first.click()
@@ -275,6 +278,87 @@ class TagManagerHosts(unittest.TestCase):
                 self.assertEqual(injected, 0)
                 self.assertIsNone(self.page.evaluate("window.__xss"))
                 self.close_all(shown)
+
+
+    def picked(self, shown):
+        return shown.evaluate("""([FIND]) => ({
+            sel: eval(FIND)('.ayt-row.ayt-sel').map(([r]) => r.children[0].textContent),
+            cur: eval(FIND)('.ayt-row.ayt-cur').map(([r]) => r.children[0].textContent),
+            head: (eval(FIND)('.ayt-viewhead')[0] || [null])[0] ? eval(FIND)('.ayt-viewhead')[0][0].innerText : '',
+            tiles: eval(FIND)('.ayt-tile').map(([t]) => t.dataset.tag) })""", [FIND])
+
+    def test_arrow_keys_and_several_tags(self):
+        for where in ("sidebar", "viewer"):
+            with self.subTest(where=where):
+                self.reset()
+                shown = self.open_in(where)
+                self.page.evaluate(CANVAS)
+                self.open_manager_from_menu(shown)
+                shown.locator(".ayt-row", has_text="#hero_face").first.click()
+                # Down / Up go through the list as it is shown (sorted by name)
+                shown.keyboard.press("ArrowDown")
+                p = self.picked(shown)
+                self.assertEqual((p["sel"], p["cur"]), (["#set"], ["#set"]))
+                self.assertEqual(shown.locator(".ayt-viewhead input.ayt-input").first.input_value(), "set")
+                shown.keyboard.press("ArrowDown")
+                shown.keyboard.press("ArrowDown")          # held at the end
+                self.assertEqual(self.picked(shown)["sel"], ["#xss_file"])
+                shown.keyboard.press("Home")
+                self.assertEqual(self.picked(shown)["sel"], ["#hero_face"])
+                shown.keyboard.press("End")
+                shown.keyboard.press("ArrowUp")
+                self.assertEqual(self.picked(shown)["sel"], ["#set"])
+                # typing a name is left alone
+                box = shown.locator(".ayt-viewhead input.ayt-input").first
+                box.click()
+                box.press("ArrowUp")
+                self.assertEqual(self.picked(shown)["sel"], ["#set"])
+                # Shift+Up: a range; the view is for several
+                shown.locator(".ayt-row", has_text="#set").first.click()
+                shown.keyboard.press("Shift+ArrowUp")
+                p = self.picked(shown)
+                self.assertEqual((p["sel"], p["cur"]), (["#hero_face", "#set"], ["#hero_face"]))
+                self.assertIn("2 tags picked", p["head"])
+                self.assertIn("Delete 2 tags", p["head"])
+                self.assertEqual(sorted(p["tiles"]), ["hero_face", "set"], "the pictures of both")
+                # Ctrl+click adds and takes away; Shift+click is a range from the last plain pick
+                shown.locator(".ayt-row", has_text="#xss_file").first.click(modifiers=["Control"])
+                self.assertEqual(self.picked(shown)["sel"], ["#hero_face", "#set", "#xss_file"])
+                shown.locator(".ayt-row", has_text="#hero_face").first.click(modifiers=["Control"])
+                self.assertEqual(self.picked(shown)["sel"], ["#set", "#xss_file"])
+                shown.locator(".ayt-row", has_text="#hero_face").first.click()
+                shown.locator(".ayt-row", has_text="#xss_file").first.click(modifiers=["Shift"])
+                self.assertEqual(self.picked(shown)["sel"], ["#hero_face", "#set", "#xss_file"])
+                shown.locator(".ayt-row", has_text="#hero_face").first.click(modifiers=["Control"])
+                # delete the two: asked first, then each goes to the host
+                shown.locator(".ayt-viewhead button", has_text="Delete 2 tags").first.click()
+                self.assertIn("Delete #set, #xss_file?", shown.locator(".ayt-msg").first.inner_text())
+                self.assertFalse([c for c in self.calls if c[0] == "delete"])
+                shown.locator(".ayt-foot button", has_text="Delete").first.click()
+                shown.wait_for_function("([FIND]) => eval(FIND)('.ayt-row').length === 1", arg=[FIND], timeout=5000)
+                self.assertEqual([c for c in self.calls if c[0] == "delete"],
+                                 [("delete", {"tag": "set"}), ("delete", {"tag": "xss_file"})])
+                self.assertEqual(self.errors, [])
+                self.close_all(shown)
+
+    def test_several_tags_merge_into_one(self):
+        self.reset()
+        shown = self.open_in("sidebar")
+        self.page.evaluate(CANVAS)
+        self.open_manager_from_menu(shown)
+        shown.locator(".ayt-row", has_text="#set").first.click()
+        shown.locator(".ayt-row", has_text="#hero_face").first.click(modifiers=["Control"])
+        shown.locator(".ayt-viewhead select").first.select_option("set")
+        shown.locator(".ayt-viewhead button", has_text="Merge").first.click()
+        self.assertIn("Merge #hero_face into #set?", shown.locator(".ayt-msg").first.inner_text())
+        shown.locator(".ayt-foot button", has_text="Merge").first.click()
+        shown.wait_for_function("([FIND]) => !eval(FIND)('.ayt-row').some(([r]) => r.textContent.includes('#hero_face'))",
+                                arg=[FIND], timeout=5000)
+        # the canvas node now says #set; nothing of the host's was merged (hero_face is the canvas's)
+        self.assertEqual(self.page.evaluate("() => window.app.graph._nodes[1].widgets[0].value"), "set")
+        self.assertFalse([c for c in self.calls if c[0] == "merge"])
+        self.assertEqual(self.errors, [])
+        self.close_all(shown)
 
 
 if __name__ == "__main__":
