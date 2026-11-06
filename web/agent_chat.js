@@ -65,6 +65,16 @@ function comfyBase() {
   return location.origin;
 }
 
+// A result that is a sound file: kind "audio", or a plain "file" with a sound's
+// name (the host says "audio" only when a loader node was chosen for sound).
+const AUDIO_NAME = /\.(wav|mp3|flac|ogg|oga|m4a|aac|opus|weba)$/i;
+export function isAudioOutput(ev) {
+  if (!ev) return false;
+  if (ev.kind === "audio") return true;
+  if (ev.kind && ev.kind !== "file") return false;
+  return AUDIO_NAME.test(String(ev.filename || ev.name || ev.path || ""));
+}
+
 // Highest status-line seq the panel has already shown. Persisted so a page
 // reload doesn't re-dump the whole server-side ring buffer.
 const STATUS_SEQ_KEY = "agentY_status_seq";
@@ -1204,6 +1214,8 @@ class AgentChat {
       border:1px solid var(--ay-border, rgba(255,255,255,.08));border-radius:8px;}
     .ay-out-media{display:block;max-width:100%;max-height:300px;border-radius:5px;background:#000;}
     img.ay-out-media{cursor:zoom-in;}
+    .ay-out-sound{width:min(100%,340px);box-sizing:border-box;}
+    .ay-out-audio{display:block;width:100%;height:36px;}
     .ay-out-label{font-size:11px;color:var(--ay-muted);padding:5px 2px 0;font-family:ui-monospace,monospace;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .ay-usage{font-size:11px;color:var(--ay-muted);padding:4px 2px 0;font-family:ui-monospace,monospace;
@@ -2742,7 +2754,7 @@ class AgentChat {
     r.outputs += 1;
     r.outs.hidden = false;
     r.outs.append(el("div", { className: "ay-run-out", title: path }, [
-      el("span", { textContent: "🖼" }),
+      el("span", { textContent: isAudioOutput(ev) ? "🔊" : ev.kind === "video" ? "🎬" : "🖼" }),
       el("span", { className: "ay-run-out-name", textContent: path.split(/[\\/]/).pop() || path }),
       el("span", {
         className: "ay-run-out-note",
@@ -2939,13 +2951,18 @@ class AgentChat {
   }
 
   // ── graph node injection (the whole point) ───────────────────────────────────
-  // A finished image or video, shown in the chat with its number in the
+  // A finished image, video or sound, shown in the chat with its number in the
   // conversation - the number the agent knows it by, so "upscale 3" is the
   // picture with #3 on it. The host decides whether to (Settings > Canvas >
   // "Show results in the chat"); only an explicit false switches it off.
+  //
+  // A sound comes as kind "audio" when a loader was chosen for it (Settings >
+  // Load & save nodes) and as a plain "file" otherwise, so it is told by its
+  // name: either way it gets a player.
   _showOutput(ev) {
     if (!ev || ev.show === false) return;
-    if (ev.kind !== "image" && ev.kind !== "video") return;
+    const audio = isAudioOutput(ev);
+    if (ev.kind !== "image" && ev.kind !== "video" && !audio) return;
     if (!ev.filename) return;                 // not staged: nothing this page can load
     // A turn re-read from its start (the panel re-attaching to a running turn)
     // sends its outputs again: the picture is already in this log. A picture the
@@ -2959,7 +2976,9 @@ class AgentChat {
     const cut = ev.filename.lastIndexOf("/");
     const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename.slice(cut + 1))
       + (cut > 0 ? "&subfolder=" + encodeURIComponent(ev.filename.slice(0, cut)) : "");
-    const media = ev.kind === "video"
+    const media = audio
+      ? el("audio", { className: "ay-out-audio", src, controls: true, preload: "metadata" })
+      : ev.kind === "video"
       ? el("video", { className: "ay-out-media", src, controls: true, muted: true, loop: true,
                       preload: "metadata" })
       : el("img", { className: "ay-out-media", src, loading: "lazy", alt: ev.name || "" });
@@ -2968,7 +2987,7 @@ class AgentChat {
     }
     const label = [ev.index ? "#" + ev.index : "", ev.role || ev.caption || "", ev.name || ""]
       .filter(Boolean).join(" · ");
-    const card = el("div", { className: "ay-msg ay-out" },
+    const card = el("div", { className: "ay-msg ay-out" + (audio ? " ay-out-sound" : "") },
       [media, el("div", { className: "ay-out-label", textContent: label })]);
     if (ev.index) card.dataset.index = String(ev.index);
     card.dataset.file = ev.filename;
