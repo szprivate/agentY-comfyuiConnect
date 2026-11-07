@@ -6,8 +6,8 @@ import { flowTitle, FLOW_TITLE_SEP } from "./agent_flow.js";
 import { flowPurpose, isHookNode, isReviewNode, isEditNode, isExecNode, isExecSlot, execSource, onExecWire,
          execPredecessors } from "./agent_exec.js";
 import { isAgentReviewer } from "./agent_review.js";
-import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
-         stageNote, stageTitle } from "./agent_plan.js";
+import { anyBranchRunning, groupLabel, hasPlan, hasRun, planChips, planLine, proposalGroup,
+         stageLabel, stageMark, stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { eventInside, eventTarget } from "./agent_ui_root.js";
 import { altWordJump, fullSizeSrc, showFullSize } from "./agent_composer_keys.js";
@@ -1087,7 +1087,7 @@ class AgentChat {
         }
         // While a run is on screen its plan is kept current: the record changes
         // in turns this page did not start (a branch finishing, a lead woken).
-        if (this._shotLead() || hasPlan(this._plan)) this._refreshShotBar();
+        if (this._shotLead() || hasRun(this._plan)) this._refreshShotBar();
         // A turn with no browser behind it (one asked for from Slack) cannot
         // capture the graph itself, so the host asks us to. This tick is the
         // only regular contact the panel has with it.
@@ -1288,6 +1288,13 @@ class AgentChat {
     .ay-planrow[data-state="waiting"] .ay-planmark,.ay-planrow[data-state="waiting"] .ay-plannote{color:#ffcf6f;opacity:1;}
     .ay-planrow[data-changed="1"] .ay-planmark,.ay-planrow[data-changed="1"] .ay-plannote{color:#ff9f6f;opacity:1;}
     .ay-planrow[data-state="pending"] .ay-planname{opacity:.6;}
+    .ay-planprophead{display:flex;align-items:center;gap:6px;}
+    .ay-planprophead>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ay-planclose{background:transparent;border:0;color:var(--ay-text);opacity:.6;cursor:pointer;font-size:10.5px;padding:0 2px;}
+    .ay-planclose:hover{opacity:1;color:var(--ay-accent,#6f97ff);}
+    .ay-planrow.ay-planstep{cursor:default;}
+    .ay-planrow.ay-planstep .ay-planname{white-space:normal;}
+    .ay-planrow.ay-planstep .ay-planmark{width:auto;min-width:1.4em;text-align:right;opacity:.7;}
     .ay-shotbar[hidden]{display:none;}
     .ay-shotchip{background:transparent;color:var(--ay-text);border:1px solid var(--ay-border);border-radius:999px;padding:2px 9px;font-size:11.5px;cursor:pointer;white-space:nowrap;}
     .ay-shotchip:hover{border-color:var(--ay-accent,#6f97ff);}
@@ -2204,8 +2211,8 @@ class AgentChat {
     if (!hasPlan(this._plan)) {
       // Nothing to open. Say so once instead of a button that does nothing.
       this._planOpen = false;
-      this._sys("_No pipeline run in this conversation yet — the plan lists the stages "
-        + "of a hook pipeline once one has started._", { transient: true });
+      this._sys("_No plan in this conversation yet — it shows the plan the agent last "
+        + "wrote here, and the stages of a hook pipeline once one has started._", { transient: true });
       return;
     }
     this._refreshShotBar();
@@ -2217,7 +2224,24 @@ class AgentChat {
     this.planBodyEl.hidden = !open;
     if (!open) { this.planBodyEl.replaceChildren(); return; }
     const rows = [];
-    for (const g of data.groups) {
+    // The plan the agent wrote (asked for, or announced before it started) comes
+    // first: it is what the user opened this for when there is no run yet.
+    const prop = proposalGroup(data);
+    if (prop) {
+      const close = el("button", { className: "ay-planclose", textContent: "✕",
+        title: "Take this plan off the overview (the chat keeps it)" });
+      close.addEventListener("click", (e) => { e.stopPropagation(); this._clearProposal(); });
+      rows.push(el("div", { className: "ay-plangroup ay-planprophead" },
+        [el("span", { textContent: prop.name }), close]));
+      for (const st of prop.steps) {
+        const row = el("div", { className: "ay-planrow ay-planstep", title: st.title }, [
+          el("span", { className: "ay-planmark", textContent: st.mark }),
+          el("span", { className: "ay-planname", textContent: st.text }),
+        ]);
+        rows.push(row);
+      }
+    }
+    for (const g of data.groups || []) {
       // A branch's heading is the way into its conversation.
       const tid = g.kind === "branch" ? g.thread_id : "";
       const head = el(tid ? "button" : "div", {
@@ -2239,6 +2263,17 @@ class AgentChat {
       }
     }
     this.planBodyEl.replaceChildren(...rows);
+  }
+
+  // The ✕ on the written plan: the host forgets it; the chat keeps it.
+  async _clearProposal() {
+    const id = this.threadId;
+    if (!id) return;
+    try {
+      await fetch(backendBase() + "/agentY/threads/" + encodeURIComponent(id) + "/plan/proposal",
+        { method: "DELETE" });
+    } catch (_) {}
+    this._refreshShotBar();
   }
 
   // Put a stage's node in front of the user: selected and in view.

@@ -55,12 +55,50 @@ export function groupLabel(group) {
 
 // Is there a run to show? A conversation with shots but no ledger still gets its
 // chips (see planChips), so the bar can be up with no groups.
-export function hasPlan(data) {
+export function hasRun(data) {
   return !!(data && Array.isArray(data.groups) && data.groups.length);
 }
 
+// The plan the agent last wrote in this conversation (the host keeps it from the
+// reply, or from run_planner): {title, steps: [{text, detail}], source, updated}.
+export function hasProposal(data) {
+  const p = data && data.proposal;
+  return !!(p && Array.isArray(p.steps) && p.steps.length);
+}
+
+// Anything for the plan button to open: a run, a written plan, or both.
+export function hasPlan(data) {
+  return hasRun(data) || hasProposal(data);
+}
+
+export function proposalLine(data) {
+  if (!hasProposal(data)) return "";
+  const p = data.proposal;
+  const n = p.steps.length;
+  const title = String(p.title || "").trim();
+  return n + (n === 1 ? " step" : " steps") + (title ? " — " + title : "");
+}
+
+// The one line on the bar: the run's when there is one, else the written plan's.
 export function planLine(data) {
-  return hasPlan(data) ? String(data.line || "") : "";
+  if (hasRun(data)) return String(data.line || "");
+  return proposalLine(data);
+}
+
+// The written plan as a group of rows, the way the panel lists a run's stages.
+export function proposalGroup(data) {
+  if (!hasProposal(data)) return null;
+  const p = data.proposal;
+  const title = String(p.title || "").trim();
+  return {
+    kind: "proposal",
+    name: title ? "Plan · " + title : (p.source === "planner" ? "Plan (planner)" : "Plan"),
+    steps: p.steps.map((s, i) => ({
+      mark: String(i + 1) + ".",
+      text: String((s && s.text) || ""),
+      title: String((s && s.detail) || (s && s.text) || ""),
+    })),
+  };
 }
 
 // The conversations to offer as chips: the lead, when a branch is on screen (the
@@ -71,10 +109,10 @@ export function planChips(data, currentId) {
   if (!shots.length) return [];
   const chips = [];
   const onBranch = String(currentId || "") !== String(data.lead_id || "");
-  if (onBranch || !hasPlan(data)) {
+  if (onBranch || !hasRun(data)) {
     chips.push({ id: data.lead_id, label: "◆ Lead", title: data.lead_title || "The lead conversation" });
   }
-  if (!hasPlan(data)) {
+  if (!hasRun(data)) {
     for (const sh of shots) {
       chips.push({ id: sh.thread_id, label: (BRANCH_MARK[sh.status] || "·") + " " + sh.shot,
                    title: sh.status + (sh.report ? " — " + String(sh.report).slice(0, 160) : "") });

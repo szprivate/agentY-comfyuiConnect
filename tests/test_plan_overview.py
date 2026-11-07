@@ -17,8 +17,8 @@ NODE = shutil.which("node")
 CHAT = (WEB / "agent_chat.js").read_text(encoding="utf-8")
 
 SCRIPT = """
-import { anyBranchRunning, groupLabel, hasPlan, planChips, planLine, stageLabel, stageMark,
-         stageNote, stageTitle } from %s;
+import { anyBranchRunning, groupLabel, hasPlan, hasRun, planChips, planLine, proposalGroup,
+         stageLabel, stageMark, stageNote, stageTitle } from %s;
 const row = (o) => Object.assign({ id: "8", title: "characters", purpose: "set / sweep parameter",
   state: "pending", round: 0, changed: false, files: 0, text: false, review: "", by: "" }, o);
 const shots = [{ shot: "characters", thread_id: "b1", status: "running", report: "" },
@@ -28,6 +28,10 @@ const plan = { lead_id: "lead", lead_title: "Short film", shots,
   groups: [{ kind: "trunk", name: "Before the branches", stages: [row({ id: "4", state: "approved", text: true })] },
            { kind: "branch", name: "characters", thread_id: "b1", status: "running", stages: [row({ state: "waiting", files: 2 })] }] };
 const bare = { lead_id: "lead", lead_title: "Short film", shots, line: "", groups: [] };
+const proposal = { title: "Short film", source: "reply", updated: 1,
+  steps: [{ text: "Write the screenplay", detail: "about 5 shots" }, { text: "Generate the shots", detail: "" }] };
+const written = Object.assign({}, bare, { proposal });
+const both = Object.assign({}, plan, { proposal });
 console.log(JSON.stringify({
   marks: [stageMark(row({})), stageMark(row({ state: "done" })), stageMark(row({ state: "waiting" })),
           stageMark(row({ state: "approved" })), stageMark(row({ state: "approved", changed: true }))],
@@ -44,6 +48,15 @@ console.log(JSON.stringify({
   chips_no_plan: planChips(bare, "lead").map((c) => c.label),
   chips_no_shots: planChips({ lead_id: "x", shots: [], groups: plan.groups }, "x"),
   running: [anyBranchRunning(plan), anyBranchRunning({ shots: [shots[1]] })],
+  written: {
+    has: [hasPlan(written), hasRun(written), hasPlan({ proposal: { steps: [] } })],
+    line: [planLine(written), planLine(both),
+           planLine({ proposal: { title: "", steps: [{ text: "one" }] } })],
+    group: proposalGroup(written),
+    untitled: proposalGroup({ proposal: { title: "", source: "planner", steps: [{ text: "a" }] } }).name,
+    none: proposalGroup(bare),
+    chips: planChips(written, "lead").map((c) => c.label),
+  },
 }));
 """
 
@@ -97,6 +110,24 @@ class WhatItPrints(unittest.TestCase):
     def test_stop_is_offered_while_a_branch_works(self):
         self.assertEqual(self.got["running"], [True, False])
 
+    def test_a_written_plan_is_a_plan_without_a_run(self):
+        self.assertEqual(self.got["written"]["has"], [True, False, False])
+
+    def test_the_line_is_the_runs_and_else_the_written_plans(self):
+        self.assertEqual(self.got["written"]["line"], [
+            "2 steps — Short film", "1/4 approved · 1 waiting for you · 1 branch running", "1 step"])
+
+    def test_the_written_plan_is_listed_numbered_with_its_detail_on_hover(self):
+        self.assertEqual(self.got["written"]["group"], {
+            "kind": "proposal", "name": "Plan · Short film",
+            "steps": [{"mark": "1.", "text": "Write the screenplay", "title": "about 5 shots"},
+                      {"mark": "2.", "text": "Generate the shots", "title": "Generate the shots"}]})
+        self.assertEqual(self.got["written"]["untitled"], "Plan (planner)")
+        self.assertIsNone(self.got["written"]["none"])
+
+    def test_a_written_plan_does_not_hide_the_shot_chips(self):
+        self.assertEqual(self.got["written"]["chips"], ["◆ Lead", "🟢 characters", "✓ places"])
+
 
 class InThePanel(unittest.TestCase):
     def test_the_plan_button_took_the_auto_graph_buttons_place(self):
@@ -126,13 +157,21 @@ class InThePanel(unittest.TestCase):
         self.assertIn('row.addEventListener("click", () => this._selectCanvasNode(s.id));', render)
         self.assertIn('if (tid) head.addEventListener("click", () => this.openThread(tid));', render)
 
+    def test_the_written_plan_comes_first_and_can_be_closed(self):
+        render = CHAT.split("  _renderPlanBody(data) {", 1)[1].split("\n  }\n", 1)[0]
+        self.assertLess(render.index("proposalGroup(data)"), render.index("for (const g of data.groups || [])"))
+        self.assertIn("this._clearProposal()", render)
+        clear = CHAT.split("  async _clearProposal() {", 1)[1].split("\n  }\n", 1)[0]
+        self.assertIn('"/plan/proposal"', clear)
+        self.assertIn('method: "DELETE"', clear)
+
     def test_nothing_is_approved_from_it(self):
         for part in ("  _renderPlanBody(data) {", "  _selectCanvasNode(id) {", "  _togglePlan() {"):
             body = CHAT.split(part, 1)[1].split("\n  }\n", 1)[0]
             self.assertNotIn("fetch(", body, part)
 
     def test_it_is_kept_current_while_a_run_is_on_screen(self):
-        self.assertIn("if (this._shotLead() || hasPlan(this._plan)) this._refreshShotBar();", CHAT)
+        self.assertIn("if (this._shotLead() || hasRun(this._plan)) this._refreshShotBar();", CHAT)
         done = CHAT.split('      case "done":', 1)[1].split("break;", 1)[0]
         self.assertIn("this._refreshShotBar();", done)
 
