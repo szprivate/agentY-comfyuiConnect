@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 
 CHAT = (pathlib.Path(__file__).resolve().parent.parent / "web" / "agent_chat.js").read_text(encoding="utf-8")
 ORIGIN = "http://agenty.test"
+ARGS = ["--autoplay-policy=no-user-gesture-required"]
 
 
 def _part(start, end):
@@ -36,11 +37,19 @@ SOURCE = "\n".join([
     _part("function comfyBase()", "\n}\n"),
     "const AUDIO_NAME = " + CHAT.split("const AUDIO_NAME = ", 1)[1].split("\n", 1)[0],
     _part("export function isAudioOutput(ev)", "\n}\n").replace("export function", "function"),
+    "let _soundPlaying = null;",
+    "const SND_ICON = " + CHAT.split("const SND_ICON = ", 1)[1].split("\n};\n", 1)[0] + "\n};",
+    _part("function soundTime(t)", "\n}\n"),
+    _part("function soundPlayer(src)", "\n}\n"),
     "const showOutput = function " + _part("  _showOutput(ev) {", "\n  }\n").strip()[len("_showOutput"):] + ";",
     "window.__show = (ev) => showOutput.call(window.__chat, ev);",
 ])
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"></head><body><div id="log"></div>
+# The player's own rules from the panel's stylesheet, so it has the size it has in the panel.
+STYLE = "\n".join(line for line in CHAT.split("\n")
+                  if line.lstrip().startswith((".ay-snd", ".ay-out-audio")))
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><style>#log{width:340px}%s</style></head>
+<body><div id="log"></div>
 <script>
 window.__chat = { logEl: document.getElementById("log"), _scroll() {} };
 %s
@@ -67,8 +76,8 @@ class SoundResults(unittest.TestCase):
         cls.browser = None
         for channel in ("msedge", "chrome", None):
             try:
-                cls.browser = cls.pw.chromium.launch(channel=channel, headless=True) if channel \
-                    else cls.pw.chromium.launch(headless=True)
+                cls.browser = cls.pw.chromium.launch(channel=channel, headless=True, args=ARGS) if channel \
+                    else cls.pw.chromium.launch(headless=True, args=ARGS)
                 break
             except Exception:
                 continue
@@ -86,10 +95,20 @@ class SoundResults(unittest.TestCase):
         url = route.request.url
         path = url[len(ORIGIN):].split("?")[0]
         if path == "/":
-            return route.fulfill(status=200, content_type="text/html", body=PAGE % SOURCE)
+            return route.fulfill(status=200, content_type="text/html", body=PAGE % (STYLE, SOURCE))
         if path == "/view":
             self.views.append(url)
             if ".wav" in url:
+                # Byte ranges, as ComfyUI's /view (aiohttp FileResponse) answers them: without them
+                # the browser cannot move the playhead.
+                rng = (route.request.headers.get("range") or "").replace("bytes=", "")
+                size = len(self.wav)
+                if rng:
+                    a, _, b = rng.partition("-")
+                    a, b = int(a or 0), int(b) if b else size - 1
+                    return route.fulfill(status=206, content_type="audio/wav", body=self.wav[a:b + 1],
+                                         headers={"accept-ranges": "bytes",
+                                                  "content-range": f"bytes {a}-{b}/{size}"})
                 return route.fulfill(status=200, content_type="audio/wav", body=self.wav,
                                      headers={"accept-ranges": "bytes"})
             return route.fulfill(status=404, body="")
@@ -112,8 +131,9 @@ class SoundResults(unittest.TestCase):
 
     def cards(self):
         return self.page.evaluate("""() => [...document.querySelectorAll('#log .ay-out')].map((c) => {
-          const m = c.firstElementChild;
+          const m = c.querySelector('audio') || c.firstElementChild;
           return { tag: m.tagName.toLowerCase(), src: m.getAttribute('src'), controls: !!m.controls,
+                   player: !!c.querySelector('.ay-snd .ay-snd-play'),
                    cls: c.className, label: c.querySelector('.ay-out-label').textContent, file: c.dataset.file }; })""")
 
     def test_a_sound_with_no_loader_chosen_plays_in_the_chat(self):
@@ -122,7 +142,8 @@ class SoundResults(unittest.TestCase):
         cards = self.cards()
         self.assertEqual(len(cards), 1)
         c = cards[0]
-        self.assertEqual((c["tag"], c["controls"]), ("audio", True))
+        # Our own small player around an <audio> with no browser controls.
+        self.assertEqual((c["tag"], c["controls"], c["player"]), ("audio", False, True))
         self.assertIn("ay-out-sound", c["cls"])
         self.assertEqual(c["src"], ORIGIN + "/view?type=input&filename=voice.wav&subfolder=agentY")
         self.assertEqual(c["label"], "voice.wav")
@@ -149,6 +170,70 @@ class SoundResults(unittest.TestCase):
         self.show({"kind": "image", "path": "D:/out/a.png", "filename": "agentY/a.png", "name": "a.png", "index": 1})
         self.show({"kind": "video", "path": "D:/out/b.mp4", "filename": "agentY/b.mp4", "name": "b.mp4", "index": 2})
         self.assertEqual([c["tag"] for c in self.cards()], ["img", "video"])
+
+
+    # -- the player: play/pause, stop, playhead --------------------------------
+
+    def _one(self, name="voice.wav"):
+        self.show({"kind": "file", "path": "D:/out/" + name, "filename": "agentY/" + name, "name": name,
+                   "show": True})
+        self.page.wait_for_function("() => [...document.querySelectorAll('#log audio')].every((a) => a.duration > 0)",
+                                    timeout=10000)
+
+    def state(self, i=0):
+        return self.page.evaluate("""(i) => { const box = document.querySelectorAll('#log .ay-snd')[i];
+          const a = box.querySelector('audio');
+          return { paused: a.paused, t: a.currentTime, d: a.duration, title: box.querySelector('.ay-snd-play').title,
+                   playing: box.classList.contains('playing'), time: box.querySelector('.ay-snd-time').textContent,
+                   fill: parseFloat(box.querySelector('.ay-snd-fill').style.width) || 0 }; }""", i)
+
+    def test_play_pause_and_stop(self):
+        self._one()
+        self.assertEqual(self.state()["time"], "0:00 / 0:01")
+        self.page.click("#log .ay-snd-play")
+        self.page.wait_for_function("() => document.querySelector('#log audio').currentTime > 0.2", timeout=5000)
+        st = self.state()
+        self.assertFalse(st["paused"])
+        self.assertEqual((st["title"], st["playing"]), ("Pause", True))
+        self.assertGreater(st["fill"], 0)
+        self.page.click("#log .ay-snd-play")
+        st = self.state()
+        self.assertTrue(st["paused"])
+        self.assertEqual(st["title"], "Play")
+        self.assertGreater(st["t"], 0.2, "pause keeps the place")
+        self.page.click("#log .ay-snd-stop")
+        st = self.state()
+        self.assertTrue(st["paused"])
+        self.assertEqual((st["t"], st["fill"]), (0, 0), "stop goes back to the start")
+        self.assertEqual(self.errors, [])
+
+    def test_click_on_the_bar_moves_the_playhead(self):
+        self._one()
+        box = self.page.locator("#log .ay-snd-bar").bounding_box()
+        self.page.mouse.click(box["x"] + box["width"] * 0.75, box["y"] + box["height"] / 2)
+        st = self.state()
+        self.assertAlmostEqual(st["t"] / st["d"], 0.75, delta=0.05)
+        self.assertAlmostEqual(st["fill"], 75, delta=5)
+        self.assertTrue(st["paused"], "seeking does not start it")
+        # Dragging follows the pointer.
+        self.page.mouse.move(box["x"] + box["width"] * 0.6, box["y"] + 5)
+        self.page.mouse.down()
+        self.page.mouse.move(box["x"] + box["width"] * 0.25, box["y"] + 5, steps=4)
+        self.page.mouse.up()
+        st = self.state()
+        self.assertAlmostEqual(st["t"] / st["d"], 0.25, delta=0.05)
+        self.assertEqual(self.errors, [])
+
+    def test_one_sound_at_a_time(self):
+        self._one("a.wav")
+        self._one("b.wav")
+        plays = self.page.locator("#log .ay-snd-play")
+        plays.nth(0).click()
+        self.page.wait_for_function("() => !document.querySelectorAll('#log audio')[0].paused", timeout=5000)
+        plays.nth(1).click()
+        self.page.wait_for_function("() => !document.querySelectorAll('#log audio')[1].paused", timeout=5000)
+        self.assertTrue(self.state(0)["paused"], "starting the second pauses the first")
+        self.assertFalse(self.state(1)["paused"])
 
 
 if __name__ == "__main__":

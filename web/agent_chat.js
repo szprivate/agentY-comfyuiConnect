@@ -75,6 +75,115 @@ export function isAudioOutput(ev) {
   return AUDIO_NAME.test(String(ev.filename || ev.name || ev.path || ""));
 }
 
+// A sound's player in the chat: play/pause, stop, a playhead to click or drag,
+// and the time - the small inline player a web page has, drawn in the panel's
+// own colours (the browser's own <audio controls> is a wide grey bar with a
+// volume slider and a menu). The <audio> itself is inside, without controls,
+// so the file is still loaded and decoded by the browser. Starting one sound
+// pauses whichever other one in the panel is playing.
+let _soundPlaying = null;
+const SND_ICON = {
+  play: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" fill="currentColor"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M3 3h10v10H3z" fill="currentColor"/></svg>',
+};
+function soundTime(t) {
+  if (!isFinite(t) || t < 0) t = 0;
+  const m = Math.floor(t / 60), sec = Math.floor(t % 60);
+  return m + ":" + String(sec).padStart(2, "0");
+}
+function soundPlayer(src) {
+  const audio = el("audio", { className: "ay-out-audio", src, preload: "metadata" });
+  const play = el("button", { type: "button", className: "ay-snd-btn ay-snd-play", title: "Play",
+                              innerHTML: SND_ICON.play });
+  const stop = el("button", { type: "button", className: "ay-snd-btn ay-snd-stop", title: "Stop",
+                              innerHTML: SND_ICON.stop });
+  const fill = el("div", { className: "ay-snd-fill" });
+  const head = el("div", { className: "ay-snd-head" });
+  const bar = el("div", { className: "ay-snd-bar", tabIndex: 0, title: "Click or drag to move the playhead" },
+    [el("div", { className: "ay-snd-track" }, [fill]), head]);
+  bar.setAttribute("role", "slider");
+  bar.setAttribute("aria-label", "Playhead");
+  const time = el("span", { className: "ay-snd-time", textContent: "0:00" });
+  const box = el("div", { className: "ay-snd" }, [audio, play, stop, bar, time]);
+
+  let raf = 0;
+  const draw = () => {
+    const d = audio.duration, t = audio.currentTime;
+    const f = isFinite(d) && d > 0 ? Math.min(1, t / d) : 0;
+    fill.style.width = (f * 100) + "%";
+    head.style.left = (f * 100) + "%";
+    time.textContent = isFinite(d) && d > 0 ? soundTime(t) + " / " + soundTime(d) : soundTime(t);
+    bar.setAttribute("aria-valuenow", String(Math.round(f * 100)));
+  };
+  const tick = () => { draw(); raf = audio.paused ? 0 : requestAnimationFrame(tick); };
+  const shown = () => {
+    const on = !audio.paused;
+    play.innerHTML = on ? SND_ICON.pause : SND_ICON.play;
+    play.title = on ? "Pause" : "Play";
+    box.classList.toggle("playing", on);
+  };
+  audio.addEventListener("play", () => {
+    if (_soundPlaying && _soundPlaying !== audio && !_soundPlaying.paused) _soundPlaying.pause();
+    _soundPlaying = audio;
+    shown();
+    if (!raf) raf = requestAnimationFrame(tick);
+  });
+  audio.addEventListener("pause", shown);
+  audio.addEventListener("ended", shown);
+  for (const ev of ["loadedmetadata", "durationchange", "timeupdate", "seeked"]) audio.addEventListener(ev, draw);
+  audio.addEventListener("error", () => { box.classList.add("broken"); time.textContent = "can't play"; });
+
+  const toggle = () => {
+    if (audio.paused) {
+      if (_soundPlaying && _soundPlaying !== audio && !_soundPlaying.paused) _soundPlaying.pause();
+      _soundPlaying = audio;
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+    shown();
+  };
+  play.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+  stop.addEventListener("click", (e) => {
+    e.stopPropagation();
+    audio.pause();
+    audio.currentTime = 0;
+    shown();
+    draw();
+  });
+  const seekTo = (clientX) => {
+    const r = bar.getBoundingClientRect(), d = audio.duration;
+    if (!(r.width > 0) || !isFinite(d) || d <= 0) return;
+    audio.currentTime = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * d;
+    draw();
+  };
+  bar.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { bar.setPointerCapture(e.pointerId); } catch (_) { /* a synthetic event */ }
+    box.classList.add("seeking");
+    seekTo(e.clientX);
+  });
+  bar.addEventListener("pointermove", (e) => { if (box.classList.contains("seeking")) seekTo(e.clientX); });
+  const release = () => box.classList.remove("seeking");
+  bar.addEventListener("pointerup", release);
+  bar.addEventListener("pointercancel", release);
+  bar.addEventListener("keydown", (e) => {
+    const d = audio.duration;
+    if (!isFinite(d) || d <= 0) return;
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (step) { audio.currentTime = Math.max(0, Math.min(d, audio.currentTime + step * Math.max(1, d / 20))); }
+    else if (e.key === "Home") audio.currentTime = 0;
+    else if (e.key === " " || e.key === "Enter") toggle();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    draw();
+  });
+  return box;
+}
+
 // Highest status-line seq the panel has already shown. Persisted so a page
 // reload doesn't re-dump the whole server-side ring buffer.
 const STATUS_SEQ_KEY = "agentY_status_seq";
@@ -1215,7 +1324,21 @@ class AgentChat {
     .ay-out-media{display:block;max-width:100%;max-height:300px;border-radius:5px;background:#000;}
     img.ay-out-media{cursor:zoom-in;}
     .ay-out-sound{width:min(100%,340px);box-sizing:border-box;}
-    .ay-out-audio{display:block;width:100%;height:36px;}
+    .ay-out-audio{display:none;}
+    .ay-snd{display:flex;align-items:center;gap:6px;height:28px;padding:0 2px;user-select:none;}
+    .ay-snd-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border-radius:50%;border:1px solid var(--ay-border);background:var(--ay-bg);color:var(--ay-text);cursor:pointer;}
+    .ay-snd-btn:hover{border-color:var(--ay-accent);color:var(--ay-accent);}
+    .ay-snd-play{width:26px;height:26px;background:var(--ay-accent);border-color:var(--ay-accent);color:#fff;}
+    .ay-snd-play:hover{color:#fff;filter:brightness(1.12);}
+    .ay-snd-play svg{margin-left:1px;}
+    .ay-snd.playing .ay-snd-play svg{margin-left:0;}
+    .ay-snd-bar{position:relative;flex:1;min-width:60px;height:18px;cursor:pointer;touch-action:none;outline:none;}
+    .ay-snd-track{position:absolute;left:0;right:0;top:7px;height:4px;border-radius:2px;background:var(--ay-border);overflow:hidden;}
+    .ay-snd-fill{height:100%;width:0;background:var(--ay-accent);}
+    .ay-snd-head{position:absolute;top:3px;left:0;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:var(--ay-text);box-shadow:0 0 0 2px var(--ay-surface);pointer-events:none;}
+    .ay-snd-bar:focus-visible .ay-snd-head,.ay-snd.seeking .ay-snd-head{background:var(--ay-accent);}
+    .ay-snd-time{flex:0 0 auto;min-width:64px;text-align:right;font-size:11px;color:var(--ay-muted);font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;}
+    .ay-snd.broken .ay-snd-btn,.ay-snd.broken .ay-snd-bar{opacity:.4;pointer-events:none;}
     .ay-out-label{font-size:11px;color:var(--ay-muted);padding:5px 2px 0;font-family:ui-monospace,monospace;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .ay-usage{font-size:11px;color:var(--ay-muted);padding:4px 2px 0;font-family:ui-monospace,monospace;
@@ -2977,7 +3100,7 @@ class AgentChat {
     const src = comfyBase() + "/view?type=input&filename=" + encodeURIComponent(ev.filename.slice(cut + 1))
       + (cut > 0 ? "&subfolder=" + encodeURIComponent(ev.filename.slice(0, cut)) : "");
     const media = audio
-      ? el("audio", { className: "ay-out-audio", src, controls: true, preload: "metadata" })
+      ? soundPlayer(src)
       : ev.kind === "video"
       ? el("video", { className: "ay-out-media", src, controls: true, muted: true, loop: true,
                       preload: "metadata" })
