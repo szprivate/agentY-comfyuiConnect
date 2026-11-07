@@ -115,7 +115,7 @@ export function searchableSelect(select, { placeholder = "Type to filter…", ex
   };
 
   // The list goes where the box is NOW, not where it was built: the agentY panel
-  // is one DOM that moves between the ComfyUI page, the bEpic viewer's shadow root
+  // is one DOM that moves between the ComfyUI page, the ComfyUI Image Viewer's shadow root
   // and the viewer's popout window. Appended to the page's <body> it showed in the
   // main window at the popout's coordinates, and vanished behind the viewer's
   // full-screen mode (which hides everything else in <body>).

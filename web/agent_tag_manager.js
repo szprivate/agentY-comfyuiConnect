@@ -11,7 +11,7 @@ import {
 // agentY tags - the "Manage tags" page.
 //
 // Same look and the same plumbing as "Manage conversations" (agent_conversations.js):
-// opened from the panel's ⋯ menu, from the bEpic viewer's history filter and from
+// opened from the panel's ⋯ menu, from the ComfyUI Image Viewer's history filter and from
 // the `#` menu; mounted beside whatever asked (uiRoot: the viewer's shadow root,
 // the popout's document, or the page), with its stylesheet carried into that root
 // and its listeners on that root's document; every confirmation in the page.
@@ -19,7 +19,7 @@ import {
 // Left: every tag (name, where it lives, how many pictures), sortable, filterable.
 // A click picks one, Ctrl+click adds or takes one away, Shift+click (and Shift+Up /
 // Down) a range; Up / Down / Home / End move through the list.
-// Right: the picked tags' pictures as a grid of thumbnails (/bepic/thumb, loaded as
+// Right: the picked tags' pictures as a grid of thumbnails (/imageviewer/thumb, loaded as
 // they scroll into view, a few at a time, capped), with the actions - for one tag
 // rename / merge / delete, for several merge them into one / delete them.
 //
@@ -49,17 +49,17 @@ export function thumbUrl(path) {
     q = `filename=${encodeURIComponent(file)}&type=input`;
     if (parts.length) q += `&subfolder=${encodeURIComponent(parts.join("/"))}`;
   }
-  const rel = api && typeof api.apiURL === "function" ? api.apiURL(`/bepic/thumb?${q}`) : `/bepic/thumb?${q}`;
+  const rel = api && typeof api.apiURL === "function" ? api.apiURL(`/imageviewer/thumb?${q}`) : `/imageviewer/thumb?${q}`;
   try { return new URL(rel, window.location.href).href; } catch (_) { return rel; }
 }
 
-/** Show `path` in the bEpic viewer: the history item when it is there, else a push. */
+/** Show `path` in the ComfyUI Image Viewer: the history item when it is there, else a push. */
 export async function openInViewer(path) {
-  const v = window.bEpicViewerApi;
+  const v = window.imageViewerApi;
   try { if (v && typeof v.showPath === "function" && v.showPath(path)) return true; } catch (_) {}
   if (!/^([A-Za-z]:)?[\\/]/.test(String(path || ""))) return false;
   try {
-    const url = api && typeof api.apiURL === "function" ? api.apiURL("/bepic/push") : "/bepic/push";
+    const url = api && typeof api.apiURL === "function" ? api.apiURL("/imageviewer/push") : "/imageviewer/push";
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths: [path], tab_name: "agentY", focus: true }) });
     return r.ok;

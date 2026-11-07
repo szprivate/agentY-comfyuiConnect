@@ -244,7 +244,7 @@ function remembered() {
 
 // Every tag the `#` menu would offer, as one list: the scene's `agentY add tag`
 // nodes first, then the project's remembered references the scene does not
-// already name. The bEpic viewer reads this (window.agentYViewerBridge.tags) to
+// already name. The ComfyUI Image Viewer reads this (window.agentYViewerBridge.tags) to
 // list agentY's tags in its history filter, so there is ONE source of tags and
 // the viewer builds no second one. `fresh` skips the 30 s cache, for a menu the
 // user has just opened.

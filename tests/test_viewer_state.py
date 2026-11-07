@@ -1,6 +1,6 @@
-"""What the bEpic viewer shows, and the marks on it: what the page sends, and the routes that read it.
+"""What the ComfyUI Image Viewer shows, and the marks on it: what the page sends, and the routes that read it.
 
-``web/agent_viewer_state.js`` asks the viewer (``window.bEpicViewerApi.viewerState`` /
+``web/agent_viewer_state.js`` asks the viewer (``window.imageViewerApi.viewerState`` /
 ``.annotations``); each chat message carries ``viewer_state`` (null while the viewer is closed), and
 ``/agent/viewer_state`` / ``/agent/viewer_annotations`` relay a live read through the open page. The
 routes run here for real: this module's route code on a private aiohttp app, ComfyUI's server stubbed,

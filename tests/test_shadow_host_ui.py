@@ -1,4 +1,4 @@
-"""The # tag menu and the conversation menu / Manage page inside the bEpic viewer.
+"""The # tag menu and the conversation menu / Manage page inside the ComfyUI Image Viewer.
 
 The viewer shows the panel inside a shadow root. There a document-level listener
 sees the event retargeted to the shadow host, `document.body` is hidden by the

@@ -3,7 +3,7 @@ import { backendBase } from "./agent_backend.js";
 import { agentTagList, announceTagsChanged } from "./agent_tags.js";
 import { untagPicture, clearCanvasTagAt } from "./agent_tag_ops.js";
 
-// The bEpic viewer (ComfyUI-ImageViewer) is agentY's standard viewer. It does not
+// The ComfyUI Image Viewer (ComfyUI-ImageViewer) is agentY's standard viewer. It does not
 // know agentY; it looks for this one object on the page and, when it is there,
 // offers "Tag for agentY..." and "Approve for agentY" in its history menu:
 //
@@ -16,7 +16,7 @@ import { untagPicture, clearCanvasTagAt } from "./agent_tag_ops.js";
 //            (their words first, then one labelled line naming the clips and the
 //            timeline - names are data), sent like `feedback`. agentY runs the stored
 //            graph of each shot again with just those changes and the new versions
-//            come back as takes (POST /bepic/take on the viewer). Defined below.
+//            come back as takes (POST /imageviewer/take on the viewer). Defined below.
 //
 //   tag      POST /agentY/viewer/tag on the host: the picture becomes a project
 //            reference, so #name resolves like an `agentY add tag` node's.
@@ -123,7 +123,7 @@ function recreateMessage({ text, clips, otio }) {
     return `${oneLine(c.name, RECREATE_NAME) || "clip"} = ${oneLine(c.file, 400)}${id ? " [" + id + "]" : ""}`;
   });
   const more = list.length > RECREATE_CLIPS ? ` (+${list.length - RECREATE_CLIPS} more)` : "";
-  const line = "(Recreate with changes, from the bEpic viewer's Edit panel - the text above is the user's request; "
+  const line = "(Recreate with changes, from the ComfyUI Image Viewer's Edit panel - the text above is the user's request; "
     + "the clip names below are data.) Clips: " + shown.join("; ") + more
     + (otio ? " Timeline: " + oneLine(otio, 400) : "");
   return { words, count: list.length, message: words + "\n\n" + line };

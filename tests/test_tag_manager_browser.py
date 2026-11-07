@@ -3,14 +3,14 @@
 The REAL web/agent_chat.js, agent_tag_manager.js, agent_tag_ops.js, agent_tags.js and
 agent_viewer_bridge.js run in Chromium (Playwright) on the harness of
 test_panel_hosts_browser.py: ComfyUI's scripts stubbed, the agentY host answered by the
-test, the REAL bEpic viewer (sibling ComfyUI-ImageViewer checkout) for the viewer hosts.
+test, the REAL ComfyUI Image Viewer (sibling ComfyUI-ImageViewer checkout) for the viewer hosts.
 In the sidebar, docked in the viewer, full screen and popped out:
 
   * the page opens from the panel's ⋯ menu in the panel's own window and root, and from
     the viewer's history filter ("Manage tags…") in the viewer's;
   * its list holds every tag - the canvas's `agentY add tag` nodes and the host's
     remembered ones - with where it lives and how many pictures;
-  * a tag's pictures are a grid of /bepic/thumb tiles with file name and path;
+  * a tag's pictures are a grid of /imageviewer/thumb tiles with file name and path;
   * rename and delete go to the host's /agentY/tags routes; a canvas tag is renamed in
     its node's tag field only after the in-page "Rename" confirmation;
   * names and file names are text: a file called <img onerror=...> injects nothing.
@@ -76,7 +76,7 @@ class TagManagerHosts(unittest.TestCase):
         if path in ("/", "/index.html"):
             viewer = "true" if self.with_viewer else "false"
             return route.fulfill(status=200, content_type="text/html", body=MY_PAGE.replace("__VIEWER__", viewer))
-        if path in ("/bepic/thumb", "/api/bepic/thumb"):
+        if path in ("/imageviewer/thumb", "/api/imageviewer/thumb"):
             self.thumbs.append(url)
             return route.fulfill(status=200, content_type="image/png", body=PNG)
         if path == "/agentY/tags" and req.method == "GET":
@@ -100,7 +100,7 @@ class TagManagerHosts(unittest.TestCase):
                 self.memory.remove(hit)
                 return self._json(route, {"ok": True, "tag": hit["tag"], "path": hit["path"]})
             return self._json(route, {"ok": False, "error": "unexpected"}, 400)
-        if path in ("/bepic/push", "/api/bepic/push"):
+        if path in ("/imageviewer/push", "/api/imageviewer/push"):
             self.calls.append(("push", json.loads(req.post_data or "{}")))
             return self._json(route, {"ok": True})
         if path == "/agent/pm_names":
@@ -157,7 +157,7 @@ class TagManagerHosts(unittest.TestCase):
                 if where != "popout":     # an about:blank popup's requests are not routed (see the hosts test)
                     shown.wait_for_function("([FIND]) => eval(FIND)('.ayt-tile img').some(([i]) => i.complete && i.naturalWidth > 0)",
                                             arg=[FIND], timeout=5000)
-                    self.assertTrue(any("bepic/thumb?path=D%3A%2Fout%2Fset.png" in u for u in self.thumbs), self.thumbs)
+                    self.assertTrue(any("imageviewer/thumb?path=D%3A%2Fout%2Fset.png" in u for u in self.thumbs), self.thumbs)
                 # rename a remembered tag: straight to the host, with the warning about hook prompts
                 box = shown.locator(".ayt-viewhead input.ayt-input").first
                 box.fill("stage")
@@ -206,7 +206,7 @@ class TagManagerHosts(unittest.TestCase):
             with self.subTest(where=where):
                 self.reset()
                 shown = self.open_in(where)
-                self.page.evaluate("""() => { const P = document.querySelector('bepic-viewer-panel');
+                self.page.evaluate("""() => { const P = document.querySelector('comfyui-image-viewer-panel');
                     if (!P.isPanelDocked('history')) P.setPanelDocked('history', true);
                     P._historyPanelSig = null; P.renderHistoryPanel(); P._syncHistoryTagFilter(); }""")
                 self.page.wait_for_function("""([FIND]) => eval(FIND)('.history-tag-filter option')
@@ -225,7 +225,7 @@ class TagManagerHosts(unittest.TestCase):
             with self.subTest(where=where):
                 self.reset()
                 shown = self.open_in(where)
-                self.page.evaluate("""async () => { const P = document.querySelector('bepic-viewer-panel');
+                self.page.evaluate("""async () => { const P = document.querySelector('comfyui-image-viewer-panel');
                     if (!P.isPanelDocked('history')) P.setPanelDocked('history', true);
                     const k = P.activeTab || 'main'; P.activeTab = k;
                     P.history.all = [[{ path: 'D:/out/set.png', type: 'output', fromTab: k }], [{ path: 'D:/out/other.png', type: 'output', fromTab: k }]];   // the one history (all tabs)
@@ -253,7 +253,7 @@ class TagManagerHosts(unittest.TestCase):
         shown.wait_for_function("([FIND]) => !eval(FIND)('.ayt-card').length", arg=[FIND], timeout=5000)
         self.assertEqual(self.calls[-1], ("push", {"paths": ["D:/out/set.png"], "tab_name": "agentY", "focus": True}))
         # one it holds is opened there, with no push
-        self.page.evaluate("""() => { const P = document.querySelector('bepic-viewer-panel');
+        self.page.evaluate("""() => { const P = document.querySelector('comfyui-image-viewer-panel');
             const k = P.activeTab || 'main'; P.activeTab = k; P.history.all = [[{ path: 'D:/out/set.png', type: 'output', fromTab: k }]]; }""")
         n = len(self.calls)
         self.open_manager_from_menu(shown)
@@ -261,7 +261,7 @@ class TagManagerHosts(unittest.TestCase):
         shown.locator(".ayt-tile button", has_text="Open in viewer").first.click()
         shown.wait_for_function("([FIND]) => !eval(FIND)('.ayt-card').length", arg=[FIND], timeout=5000)
         self.assertEqual(len(self.calls), n)
-        self.assertTrue(self.page.evaluate("() => document.querySelector('bepic-viewer-panel').isViewingHistory"))
+        self.assertTrue(self.page.evaluate("() => document.querySelector('comfyui-image-viewer-panel').isViewingHistory"))
 
     def test_names_and_file_names_are_text(self):
         for where in ("sidebar", "viewer"):
