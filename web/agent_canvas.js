@@ -294,7 +294,7 @@ app.registerExtension({
       reply(d.req_id, { selection });
     });
 
-    // What the bEpic viewer shows and the marks on it (agent_viewer_state.js) for
+    // What the ComfyUI Image Viewer shows and the marks on it (agent_viewer_state.js) for
     // GET /agent/viewer_state and /agent/viewer_annotations - get_viewer_state's
     // and get_viewer_annotations' live reads. `installed` tells "closed" apart
     // from "a viewer too old to answer".

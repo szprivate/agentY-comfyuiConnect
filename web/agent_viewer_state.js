@@ -1,6 +1,6 @@
-// What the bEpic viewer is showing, and the marks drawn on it, for the agent.
+// What the ComfyUI Image Viewer is showing, and the marks drawn on it, for the agent.
 //
-// The viewer (ComfyUI-ImageViewer) answers through window.bEpicViewerApi:
+// The viewer (ComfyUI-ImageViewer) answers through window.imageViewerApi:
 //
 //   viewerState()      - open / docked / full screen / popped out, the tab and the
 //                        tab list, the item on screen, the frame, the range picked
@@ -20,7 +20,7 @@
 // /agent/viewer_annotations - get_viewer_state / get_viewer_annotations).
 
 function viewerApi() {
-  return typeof window !== "undefined" ? window.bEpicViewerApi : null;
+  return typeof window !== "undefined" ? window.imageViewerApi : null;
 }
 
 /** The viewer's state, or null when it is not installed, too old, or closed. */

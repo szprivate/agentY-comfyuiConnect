@@ -5,9 +5,9 @@ ComfyUI's scripts/app.js and api.js stubbed and the agentY host answered by the 
 panel is shown in each of its four places:
 
   * sidebar     - ComfyUI's sidebar tab (the page itself);
-  * viewer      - the REAL bEpic viewer (a sibling ComfyUI-ImageViewer checkout), docked
+  * viewer      - the REAL ComfyUI Image Viewer (a sibling ComfyUI-ImageViewer checkout), docked
                   in its shadow root;
-  * fullscreen  - the viewer's full-screen page (?bepic_viewer_only), which hides every
+  * fullscreen  - the viewer's full-screen page (?image_viewer_only), which hides every
                   other child of <body>;
   * popout      - the viewer moved into a window of its own.
 
@@ -24,7 +24,7 @@ The regressions it pins:
     the host answers and the conversation leaving the list, a running one refused.
 
 Needs Playwright with an installed Edge or Chrome (or Playwright's Chromium); the viewer
-hosts also need the ComfyUI-ImageViewer checkout beside this one (or BEPIC_VIEWER_DIR).
+hosts also need the ComfyUI-ImageViewer checkout beside this one (or IMAGE_VIEWER_DIR).
 Run: python -m unittest tests.test_panel_hosts_browser
 """
 import json
@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 HERE = pathlib.Path(__file__).resolve().parent
 WEB = HERE.parent / "web"
-VIEWER = pathlib.Path(os.environ.get("BEPIC_VIEWER_DIR") or HERE.parent.parent / "ComfyUI-ImageViewer") / "js"
+VIEWER = pathlib.Path(os.environ.get("IMAGE_VIEWER_DIR") or HERE.parent.parent / "ComfyUI-ImageViewer") / "js"
 ORIGIN = "http://agenty.test"
 TYPES = {".js": "text/javascript", ".json": "application/json", ".css": "text/css", ".html": "text/html",
          ".svg": "image/svg+xml", ".png": "image/png"}
@@ -94,7 +94,7 @@ try { localStorage.setItem("agentY_backend", location.origin); localStorage.setI
 const VIEWER = __VIEWER__;
 const { app } = await import("/scripts/app.js");
 await import("/extensions/agentY/agent_chat.js");
-if (VIEWER) await import("/extensions/viewer/bEpicViewer.js");
+if (VIEWER) await import("/extensions/viewer/imageViewer.js");
 for (const e of window.__exts) { try { if (e.setup) await e.setup(); } catch (err) { console.warn("setup", e.name, err); } }
 window.__ready = true;
 </script></body></html>"""
@@ -117,7 +117,7 @@ FIND = """(sel) => {
     for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot, where + '>shadow');
   };
   walk(document, 'page');
-  const v = document.querySelector('bepic-viewer-panel');
+  const v = document.querySelector('comfyui-image-viewer-panel');
   const w = v && v.popoutWindow;
   if (w && !w.closed) walk(w.document, 'popout');
   return out;
@@ -212,7 +212,7 @@ class PanelHostsBrowser(unittest.TestCase):
                 return self._json(route, {"error": "not found"}, 404)
             return self._json(route, dict(t, messages=[], panel_html=PANEL_HTML, server_time=1,
                                           messages_after_panel=[]))
-        if path.startswith("/agentY/") or path.startswith("/agent/") or path.startswith("/bepic/") \
+        if path.startswith("/agentY/") or path.startswith("/agent/") or path.startswith("/imageviewer/") \
                 or path.startswith("/api/"):
             # Streams and everything else: an empty answer. Nothing else is under test.
             if path == "/agentY/canvas_probe":
@@ -226,28 +226,28 @@ class PanelHostsBrowser(unittest.TestCase):
     def open_in(self, where):
         """Load the page and show the panel in `where`; returns the Page the panel is drawn in."""
         self.with_viewer = where != "sidebar"
-        if self.with_viewer and not (VIEWER / "bEpicViewer.js").is_file():
+        if self.with_viewer and not (VIEWER / "imageViewer.js").is_file():
             self.skipTest("the ComfyUI-ImageViewer checkout is not beside this one")
         page = self.ctx.new_page()
         page.on("pageerror", lambda e: self.errors.append(str(e)))
-        page.goto(ORIGIN + ("/?bepic_viewer_only=1" if where == "fullscreen" else "/"))
+        page.goto(ORIGIN + ("/?image_viewer_only=1" if where == "fullscreen" else "/"))
         page.wait_for_function("window.__ready === true", timeout=20000)
         if where == "sidebar":
             page.evaluate("() => window.app.extensionManager.toggleSidebarTab('agentY-chat')")
         else:
-            page.wait_for_function("() => window.bEpicViewerApi && window.bEpicViewerApi.openAgentPanel", timeout=20000)
-            page.evaluate("() => window.bEpicViewerApi.openAgentPanel()")
+            page.wait_for_function("() => window.imageViewerApi && window.imageViewerApi.openAgentPanel", timeout=20000)
+            page.evaluate("() => window.imageViewerApi.openAgentPanel()")
         page.wait_for_function("([FIND]) => eval(FIND)('.ay-wrap').some(([e]) => e.getClientRects().length)",
                                arg=[FIND], timeout=20000)
         if where == "fullscreen":
-            self.assertTrue(page.evaluate("() => document.body.classList.contains('bepic-viewer-only')"))
+            self.assertTrue(page.evaluate("() => document.body.classList.contains('comfyui-image-viewer-only')"))
         shown = page
         if where == "popout":
             with self.ctx.expect_page() as pop:
-                page.evaluate("() => document.querySelector('bepic-viewer-panel').toggleUndock()")
+                page.evaluate("() => document.querySelector('comfyui-image-viewer-panel').toggleUndock()")
             shown = pop.value
             shown.wait_for_load_state()
-            page.wait_for_function("() => document.querySelector('bepic-viewer-panel').container.ownerDocument !== document",
+            page.wait_for_function("() => document.querySelector('comfyui-image-viewer-panel').container.ownerDocument !== document",
                                    timeout=10000)
         # the host is up and the first conversation is open
         page.wait_for_function("() => window.agentYCurrentThread && (window.agentYCurrentThread() || {}).id",
@@ -306,7 +306,7 @@ class PanelHostsBrowser(unittest.TestCase):
         # position:fixed under a transformed ancestor is relative to that ancestor, not the viewport.
         shown = self.open_in("viewer")
         # the viewer itself moved by a transform: the list lives in its shadow root now
-        self.page.evaluate("() => { document.querySelector('bepic-viewer-panel').style.transform = 'translate(30px, 40px)'; }")
+        self.page.evaluate("() => { document.querySelector('comfyui-image-viewer-panel').style.transform = 'translate(30px, 40px)'; }")
         shown.locator(".ay-modelbar .ay-mmodel .ay-combo-input").click()
         self.page.wait_for_timeout(200)
         [box] = self.drawn(".ay-modelbar .ay-combo.ay-mmodel")

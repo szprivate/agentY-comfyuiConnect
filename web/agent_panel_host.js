@@ -7,7 +7,7 @@ import { watchDocument } from "./agent_tags.js";
 //
 // There is ONE panel per page (see AgentChat in agent_chat.js): its DOM is built
 // once and re-parented into whichever place shows it. The sidebar tab is one such
-// place; the bEpic viewer (ComfyUI-ImageViewer) offers a second, a dock panel. The
+// place; the ComfyUI Image Viewer (ComfyUI-ImageViewer) offers a second, a dock panel. The
 // panel is MOVED, not copied, so both "views" are trivially the same conversation:
 // the stream, the tool cards, the approval cards, Send and Stop are one set of
 // objects. Nothing about the host, the SSE streams or the canvas side effects is
@@ -19,14 +19,14 @@ import { watchDocument } from "./agent_tags.js";
 //       mountInto(el, { where, back })   move the panel into el (the viewer's body)
 //       toSidebar({ quiet })             give it back to the sidebar tab
 //       where()                          "sidebar" | "viewer"
-//   window.bEpicViewerApi   (the viewer; every use is optional)
+//   window.imageViewerApi   (the viewer; every use is optional)
 //       openAgentPanel() / closeAgentPanel() / extractFrame(item)
 //
 // Also here: drag and drop onto the panel. A file from the desktop, or a picture
 // dragged out of the viewer (history strip, file browser, the frame on screen), ends
 // up in `chat.attachments` as {path, name} - the same shape the paperclip makes.
 
-const BEPIC_TYPE = "application/x-bepic-history";
+const IMAGE_VIEWER_TYPE = "application/x-imageviewer-history";
 const SIDEBAR_TAB = "agentY-chat";
 
 function el(tag, props = {}, children = []) {
@@ -91,7 +91,7 @@ const isAbs = (p) => /^([a-zA-Z]:[\\/]|[\\/]{2}|[\\/])/.test(String(p || ""));
 function fetchUrlOf(p) {
   if (p.url) return p.url;
   if (p.path) {
-    const route = p.external ? "/bepic/view_file" : "/bepic/raw_view";
+    const route = p.external ? "/imageviewer/view_file" : "/imageviewer/raw_view";
     return api.apiURL(`${route}?path=${encodeURIComponent(p.path)}`);
   }
   if (p.filename) {
@@ -121,7 +121,7 @@ async function attachmentOf(chat, item) {
   let it = item;
   if (it.extractFrame != null) {
     // "Frame N of this clip": only the viewer can make that a picture.
-    const viewer = window.bEpicViewerApi;
+    const viewer = window.imageViewerApi;
     if (!viewer || typeof viewer.extractFrame !== "function") {
       chat._sys("❌ The viewer is needed to take a frame out of a clip, and it is not loaded.");
       return null;
@@ -177,14 +177,14 @@ export function installPanelHost(chat) {
     const show = el("button", { textContent: "Show it in the viewer" });
     show.addEventListener("click", () => chat.openInViewer());
     elm.append(el("div", { className: "ay-away" }, [
-      el("div", { textContent: "agentY is open in the bEpic viewer." }), bring, show,
+      el("div", { textContent: "agentY is open in the ComfyUI Image Viewer." }), bring, show,
     ]));
   };
 
   chat.openInViewer = () => {
-    const v = window.bEpicViewerApi;
+    const v = window.imageViewerApi;
     if (!v || typeof v.openAgentPanel !== "function") {
-      chat._sys("⚠️ The bEpic viewer isn't loaded — install ComfyUI-ImageViewer and reload the page.");
+      chat._sys("⚠️ The ComfyUI Image Viewer isn't loaded — install ComfyUI-ImageViewer and reload the page.");
       return;
     }
     v.openAgentPanel();
@@ -203,7 +203,7 @@ export function installPanelHost(chat) {
   // Hand the panel back. The viewer puts its dock panel away, which calls
   // toSidebar({quiet}) below; the rest is making the sidebar visible.
   chat.backToSidebar = () => {
-    const v = window.bEpicViewerApi;
+    const v = window.imageViewerApi;
     if (v && typeof v.closeAgentPanel === "function") { try { v.closeAgentPanel(); } catch (_) {} }
     if (chat._where === "viewer") chat.toSidebar({ quiet: true });   // the viewer is gone: do it ourselves
     openSidebarTab();
@@ -256,7 +256,7 @@ export function installPanelHost(chat) {
 
   // ── drop onto the panel ──
   const wrap = chat.wrap;
-  const accepts = (e) => carries(e, BEPIC_TYPE) || carries(e, "Files");
+  const accepts = (e) => carries(e, IMAGE_VIEWER_TYPE) || carries(e, "Files");
   const over = (e) => {
     if (!accepts(e)) return;
     e.preventDefault();
@@ -276,8 +276,8 @@ export function installPanelHost(chat) {
     e.stopPropagation();
     wrap.classList.remove("ay-drop-hover");
     let payload = null;
-    if (carries(e, BEPIC_TYPE)) {
-      try { payload = JSON.parse(e.dataTransfer.getData(BEPIC_TYPE)); } catch (_) {}
+    if (carries(e, IMAGE_VIEWER_TYPE)) {
+      try { payload = JSON.parse(e.dataTransfer.getData(IMAGE_VIEWER_TYPE)); } catch (_) {}
     }
     if (payload) {
       chat.attachViewerItems(Array.isArray(payload.items) ? payload.items : [payload]);

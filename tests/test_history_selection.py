@@ -1,7 +1,7 @@
 """The history-panel selection: what the page sends, and the route that reads it.
 
-``web/agent_history_selection.js`` reads the bEpic viewer's history strip
-(``window.bEpicViewerApi.historySelection``) and ComfyUI's assets sidebar (the
+``web/agent_history_selection.js`` reads the ComfyUI Image Viewer's history strip
+(``window.imageViewerApi.historySelection``) and ComfyUI's assets sidebar (the
 ``assetSelection`` Pinia store). Its pure parts run under node when it is
 installed; the wiring (each message carries it, the relay answers it) is pinned
 by text.

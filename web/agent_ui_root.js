@@ -2,13 +2,13 @@
 // are mounted, and how an event is read, when the panel is not in the plain page.
 //
 // The panel is ONE DOM, shown either in the ComfyUI sidebar (the page itself) or
-// in the bEpic viewer, whose docked panel lives inside a shadow root (and, popped
+// in the ComfyUI Image Viewer, whose docked panel lives inside a shadow root (and, popped
 // out, in another document). Three things that are true in the page are false
 // there, and each broke something:
 //   * a listener on `document` sees an event from inside a shadow root with its
 //     target RETARGETED to the shadow host, so `e.target` is never the textarea;
 //   * `document.body` is hidden wholesale by the viewer's full-screen mode
-//     (`body > *:not(bepic-viewer-panel) {display:none}`), so anything appended
+//     (`body > *:not(comfyui-image-viewer-panel) {display:none}`), so anything appended
 //     there vanishes with the page;
 //   * a stylesheet in `document.head` does not reach a shadow root.
 // So: read the real target off the composed path, mount next to the thing that

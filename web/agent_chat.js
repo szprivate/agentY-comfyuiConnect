@@ -4267,14 +4267,14 @@ class AgentChat {
       bar.append(el("span", { className: "ay-selmore", textContent: `+${nodes.length - MAX} more` }));
   }
 
-  // What the user picked in a history panel (the bEpic viewer's strip, ComfyUI's
+  // What the user picked in a history panel (the ComfyUI Image Viewer's strip, ComfyUI's
   // assets sidebar), or null - agent_history_selection.js. Never throws: a turn
   // must not fail over a panel that is not there.
   _historySelection() {
     try { return collectHistorySelection(); } catch (_) { return null; }
   }
 
-  // What the bEpic viewer shows (tab, item, frame, range, marks), or null while it
+  // What the ComfyUI Image Viewer shows (tab, item, frame, range, marks), or null while it
   // is closed - agent_viewer_state.js. Never throws, like the selection above.
   _viewerState() {
     try { return collectViewerState(); } catch (_) { return null; }
@@ -5832,7 +5832,7 @@ for (const name of CTX_FIELDS) {
 // keep a single instance and just re-parent its DOM into each new mount point.
 let _AGENTY_CHAT = null;
 
-// What the bEpic viewer (ComfyUI-ImageViewer) calls to show this panel as a dock
+// What the ComfyUI Image Viewer (ComfyUI-ImageViewer) calls to show this panel as a dock
 // panel of its own (agent_panel_host.js). It exists from page load, before the
 // sidebar tab has ever been opened, and builds the panel on first use.
 window.agentYPanelHost = {
@@ -5907,7 +5907,7 @@ window.agentYRunHooks = (text, opts = {}) => {
     : `Running ${hooks.length} agentY hook(s)…`;
 };
 
-// Feedback from the bEpic viewer's annotation tool ("Send to agentY"): the text the
+// Feedback from the ComfyUI Image Viewer's annotation tool ("Send to agentY"): the text the
 // viewer wrote about the marks, and the flattened pictures it saved. It goes in as
 // the user's own next message - the same send() a typed message takes - so a running
 // turn is interjected into, a stopped review is answered, and an idle panel starts

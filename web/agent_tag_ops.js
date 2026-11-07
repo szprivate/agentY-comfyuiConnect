@@ -5,7 +5,7 @@ import {
 } from "./agent_tags.js";
 
 // What can be done to an agentY tag, for the Manage tags page (agent_tag_manager.js)
-// and the bEpic viewer's "Remove tag #name" (agent_viewer_bridge.js).
+// and the ComfyUI Image Viewer's "Remove tag #name" (agent_viewer_bridge.js).
 //
 // A tag lives in one or both of two places, and each is changed where it lives:
 //   * remembered - an entry in the project's memory (one name, one file), made by

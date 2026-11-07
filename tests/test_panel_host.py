@@ -1,8 +1,8 @@
 """Where the agentY panel is shown, and what can be dropped on it.
 
 The panel is ONE DOM, moved between the ComfyUI sidebar and a dock panel of the
-bEpic viewer (ComfyUI-ImageViewer). The two meet in window.agentYPanelHost and
-window.bEpicViewerApi, and a viewer drag carries "application/x-bepic-history", so
+ComfyUI Image Viewer (ComfyUI-ImageViewer). The two meet in window.agentYPanelHost and
+window.imageViewerApi, and a viewer drag carries "application/x-imageviewer-history", so
 the names are pinned here. Run under node when it is installed.
 
     python -m unittest tests.test_panel_host
@@ -31,7 +31,7 @@ class Contract(unittest.TestCase):
         self.assertIn("if (!_AGENTY_CHAT) _AGENTY_CHAT = new AgentChat();\n    _AGENTY_CHAT.mountInto", CHAT.replace("\r\n", "\n"))
 
     def test_a_viewer_drag_is_read_by_the_type_the_viewer_sets(self):
-        self.assertIn('"application/x-bepic-history"', HOST)
+        self.assertIn('"application/x-imageviewer-history"', HOST)
 
     def test_the_viewer_calls_are_the_ones_it_offers(self):
         for name in ("openAgentPanel", "closeAgentPanel", "extractFrame"):

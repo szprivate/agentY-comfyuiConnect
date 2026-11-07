@@ -67,7 +67,7 @@ export function fullSizeSrc(target) {
 // Show a result picture full size OVER the panel, in the panel's own document.
 //
 // It used to be window.open(src). The panel is one DOM that also lives in the
-// bEpic viewer: docked in its shadow root, full-screen, or popped out into a
+// ComfyUI Image Viewer: docked in its shadow root, full-screen, or popped out into a
 // window of its own. The listener runs in the ComfyUI page's realm, so from the
 // popout it called the PAGE's window.open: the picture opened as a tab of the
 // ComfyUI window behind the popout (or not at all where that window's popup

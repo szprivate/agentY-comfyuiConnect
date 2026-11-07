@@ -22,10 +22,10 @@ Four responsibilities:
    selection with every message; this is how the agentY **MCP** server (running
    under Claude, with no page of its own) sees the same thing.
 4. **History selection** - ``/agent/history_selection`` reads, the same way,
-   what the user picked in the bEpic viewer's history strip and in ComfyUI's
+   what the user picked in the ComfyUI Image Viewer's history strip and in ComfyUI's
    assets sidebar (``web/agent_history_selection.js``).
 5. **Viewer state** - ``/agent/viewer_state`` and ``/agent/viewer_annotations``
-   read what the bEpic viewer shows (tab, item, frame, range, compare, camera)
+   read what the ComfyUI Image Viewer shows (tab, item, frame, range, compare, camera)
    and the Annotation tool's marks on it (``web/agent_viewer_state.js``).
 
 The hook is a **V3** node so its ``anchor`` input can *auto-grow*: connect one
@@ -834,7 +834,7 @@ try:
         """Live read of what the user picked in a history panel.
 
         The same round trip as the canvas selection: the page answers from
-        ``web/agent_history_selection.js`` - the bEpic viewer's history strip and
+        ``web/agent_history_selection.js`` - the ComfyUI Image Viewer's history strip and
         ComfyUI's assets sidebar. Relayed as the page sent it; resolving files,
         runs and sidecars is the caller's job (agenty_core.tools.history_selection),
         so the agentY host, which gets the same data with each message, resolves it
@@ -855,13 +855,13 @@ try:
     _NO_PAGE = ("no ComfyUI browser page answered - open ComfyUI in a browser "
                 "(a background tab is fine). If it is open, its agentY extension "
                 "is older than this route; reload the page.")
-    _OLD_VIEWER = ("the bEpic viewer on the page is too old to say what it shows - update "
+    _OLD_VIEWER = ("the ComfyUI Image Viewer on the page is too old to say what it shows - update "
                    "ComfyUI-ImageViewer under custom_nodes and reload the page.")
 
     @_routes.get("/agent/viewer_state")
     @_guarded
     async def _agent_viewer_state(request):  # noqa: ANN001
-        """Live read of what the bEpic viewer shows (``web/agent_viewer_state.js``).
+        """Live read of what the ComfyUI Image Viewer shows (``web/agent_viewer_state.js``).
 
         The same round trip as the history selection. ``state`` is null while the
         viewer is closed; ``installed`` false means no viewer on the page can say."""
@@ -886,7 +886,7 @@ try:
         ``?frame=N`` (a clip): only the marks on that frame; ``?raw=1``: the stored
         marks too, normalised - what get_viewer_annotations draws a mask from.
         Saved marks of any other file are read from disk through the viewer's own
-        ``/bepic/video_annotations`` (its path containment applies there)."""
+        ``/imageviewer/video_annotations`` (its path containment applies there)."""
         try:
             frame = int(request.query.get("frame", "-1"))
         except (TypeError, ValueError):
@@ -1912,7 +1912,8 @@ def _pm_tag_name(stem: str, body: str) -> str:
 def _pm_tag_origin(body: str) -> str:
     """viewer / canvas / agent: who made the entry (tag_memory.origin_of)."""
     text = str(body or "")
-    if "from the bEpic viewer" in text:
+    # "the bEpic viewer": what tags remembered before the viewer was renamed say
+    if "from the ComfyUI Image Viewer" in text or "from the bEpic viewer" in text:
         return "viewer"
     if "`agentY add tag` node tagged" in text:
         return "canvas"

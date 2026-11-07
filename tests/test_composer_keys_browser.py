@@ -2,7 +2,7 @@
 
 The REAL web/agent_tags.js and web/agent_composer_keys.js run in Chromium (Playwright),
 with ComfyUI's scripts/app.js stubbed. Each case runs twice: the box in the page (the
-sidebar) and the box inside a shadow root (the bEpic viewer's docked panel).
+sidebar) and the box inside a shadow root (the ComfyUI Image Viewer's docked panel).
 
 Needs Playwright with an installed Edge or Chrome (or Playwright's Chromium); skipped
 without them. Run: python -m unittest tests.test_composer_keys_browser

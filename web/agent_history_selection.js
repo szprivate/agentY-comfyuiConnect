@@ -2,8 +2,8 @@
 //
 // Two panels keep a history the user can pick from:
 //
-//   the bEpic viewer's history strip (ComfyUI-ImageViewer) - asked through
-//       window.bEpicViewerApi.historySelection(), which answers with the picked
+//   the ComfyUI Image Viewer's history strip (ComfyUI-ImageViewer) - asked through
+//       window.imageViewerApi.historySelection(), which answers with the picked
 //       snapshots' files (multi-selection, a compare pin, or one older snapshot
 //       clicked open). Plain data from the viewer's JS state, so it reads the
 //       same whether the viewer is docked, full screen or popped out - nothing
@@ -34,7 +34,7 @@ function piniaStores() {
 }
 
 /** The viewer's answer, or null when it has none (not installed, nothing picked). */
-export function viewerSelection(api = (typeof window !== "undefined" ? window.bEpicViewerApi : null)) {
+export function viewerSelection(api = (typeof window !== "undefined" ? window.imageViewerApi : null)) {
   try {
     const fn = api && api.historySelection;
     const got = typeof fn === "function" ? fn() : null;

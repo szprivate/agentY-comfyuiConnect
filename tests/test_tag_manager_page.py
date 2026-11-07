@@ -53,7 +53,7 @@ class Rules(unittest.TestCase):
     def test_thumbnails_are_capped_and_lazy(self):
         self.assertIn("GRID_CAP", PAGE)
         self.assertIn("IntersectionObserver", PAGE)
-        self.assertIn("/bepic/thumb?", PAGE)
+        self.assertIn("/imageviewer/thumb?", PAGE)
 
     def test_the_hash_menu_compares_tags_by_their_identity(self):
         body = TAGS.split("export async function agentTagList")[1].split("function primeRemembered")[0]
@@ -131,7 +131,7 @@ class StoreNames(unittest.TestCase):
 
     def test_the_written_name_and_who_made_it(self):
         name, origin = self.ns["_pm_tag_name"], self.ns["_pm_tag_origin"]
-        viewer = "Anna.\npath: D:/a.png\nTagged `#Hero_Face` for agentY from the bEpic viewer's history."
+        viewer = "Anna.\npath: D:/a.png\nTagged `#Hero_Face` for agentY from the ComfyUI Image Viewer's history."
         self.assertEqual((name("hero-face", viewer), origin(viewer)), ("Hero_Face", "viewer"))
         canvas = "x\nRemembered from the `agentY add tag` node tagged `#alley_light` on a canvas."
         self.assertEqual((name("alley-light", canvas), origin(canvas)), ("alley_light", "canvas"))
