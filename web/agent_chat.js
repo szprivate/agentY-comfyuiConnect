@@ -437,6 +437,21 @@ const MODEL_TARGETS = [
   ["all", "All tiers"],
 ];
 
+// The part of `el` that is on screen: its box inside the window and inside the
+// element that shows the panel (the sidebar tab, or the Image Viewer's dock panel,
+// which can be shorter than the conversation and clips it).
+function visibleRect(el, host, win) {
+  const r = el.getBoundingClientRect();
+  let left = Math.max(0, r.left), top = Math.max(0, r.top);
+  let right = Math.min(win.innerWidth, r.right), bottom = Math.min(win.innerHeight, r.bottom);
+  if (host && host.isConnected && host.contains(el)) {
+    const a = host.getBoundingClientRect();
+    left = Math.max(left, a.left); top = Math.max(top, a.top);
+    right = Math.min(right, a.right); bottom = Math.min(bottom, a.bottom);
+  }
+  return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
+}
+
 class AgentChat {
   constructor() {
     // The panel DOM (this.wrap) is built once and kept alive for the life of the
@@ -1418,9 +1433,11 @@ class AgentChat {
        as tall as its content — so the button drifted somewhere down the conversation
        instead of sitting in the middle of the screen. border-box: with its 28px
        padding on top of the panel's width and height it stuck out 56px past the
-       panel's right and bottom edges. */
-    .ay-offline-panel{position:fixed;z-index:200;box-sizing:border-box;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(21,23,28,.86);backdrop-filter:blur(2px);}
-    .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
+       panel's right and bottom edges. The card never gets wider than the panel, and
+       in a panel shorter than the card the overlay scrolls ("safe center" keeps the
+       card's top reachable) instead of the card spilling over the panels around it. */
+    .ay-offline-panel{position:fixed;z-index:200;box-sizing:border-box;display:none;flex-direction:column;align-items:center;justify-content:safe center;gap:14px;padding:16px;overflow:auto;text-align:center;background:rgba(21,23,28,.86);backdrop-filter:blur(2px);}
+    .ay-offline-card{box-sizing:border-box;width:min(340px,100%);flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:12px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;padding:20px 18px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
     .ay-offline-card .ay-offline-icon{font-size:30px;line-height:1;}
     .ay-offline-card .ay-offline-title{font-weight:600;font-size:15px;color:var(--ay-text);}
     .ay-offline-card .ay-offline-msg{font-size:12.5px;color:var(--ay-muted);line-height:1.55;}
@@ -1613,10 +1630,10 @@ class AgentChat {
   _positionOffline() {
     if (!this.offlineEl || !this.wrap || this.offlineEl.style.display === "none") return;
     const win = this.wrap.ownerDocument?.defaultView || window;
-    const r = this.wrap.getBoundingClientRect();
-    const top = Math.max(0, r.top);
-    const bottom = Math.min(win.innerHeight, r.bottom);
-    const h = Math.max(0, bottom - top);
+    const v = visibleRect(this.wrap, this.mountEl, win);
+    const r = { left: v.left, width: Math.max(0, v.right - v.left) };
+    const top = v.top;
+    const h = Math.max(0, v.bottom - v.top);
     // Compare with where the overlay actually IS, not with what was last written:
     // position:fixed is relative to the viewport only when no ancestor is
     // transformed (in the viewer's dock one can be), so move it by the difference.
