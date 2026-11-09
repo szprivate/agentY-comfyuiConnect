@@ -1416,8 +1416,10 @@ class AgentChat {
     /* position:fixed, with its box set from the panel's on-screen rectangle by
        _positionOffline(). Absolute + inset:0 centred the card in the PANEL, which is
        as tall as its content — so the button drifted somewhere down the conversation
-       instead of sitting in the middle of the screen. */
-    .ay-offline-panel{position:fixed;z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(21,23,28,.86);backdrop-filter:blur(2px);}
+       instead of sitting in the middle of the screen. border-box: with its 28px
+       padding on top of the panel's width and height it stuck out 56px past the
+       panel's right and bottom edges. */
+    .ay-offline-panel{position:fixed;z-index:200;box-sizing:border-box;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;background:rgba(21,23,28,.86);backdrop-filter:blur(2px);}
     .ay-offline-card{max-width:340px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--ay-surface);border:1px solid var(--ay-border);border-radius:9px;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.5);}
     .ay-offline-card .ay-offline-icon{font-size:30px;line-height:1;}
     .ay-offline-card .ay-offline-title{font-weight:600;font-size:15px;color:var(--ay-text);}
@@ -1600,15 +1602,50 @@ class AgentChat {
   // every control except its "Start server" button; coming back up hides it.
   // Size/position the fixed overlay onto whatever part of the panel is on screen,
   // so its card is centred in the VIEWPORT rather than in the conversation.
+  //
+  // The panel may live in ANOTHER window: the Image Viewer's undock moves it into a
+  // popout document. There the main window's innerHeight is the wrong clamp, and
+  // neither the main window's resize/scroll listeners nor its ResizeObserver hear
+  // the popout being resized, so the overlay kept the size it had when it was first
+  // shown (too narrow/short, or hanging over the edge). So measure against the
+  // panel's own window, and while the overlay is up follow the panel with that
+  // window's animation frames (cheap: two rect reads, a write only on change).
   _positionOffline() {
     if (!this.offlineEl || !this.wrap || this.offlineEl.style.display === "none") return;
+    const win = this.wrap.ownerDocument?.defaultView || window;
     const r = this.wrap.getBoundingClientRect();
     const top = Math.max(0, r.top);
-    const bottom = Math.min(window.innerHeight, r.bottom);
-    Object.assign(this.offlineEl.style, {
-      left: `${r.left}px`, width: `${r.width}px`,
-      top: `${top}px`, height: `${Math.max(0, bottom - top)}px`,
-    });
+    const bottom = Math.min(win.innerHeight, r.bottom);
+    const h = Math.max(0, bottom - top);
+    // Compare with where the overlay actually IS, not with what was last written:
+    // position:fixed is relative to the viewport only when no ancestor is
+    // transformed (in the viewer's dock one can be), so move it by the difference.
+    const st = this.offlineEl.style;
+    const got = this.offlineEl.getBoundingClientRect();
+    const off = (a, b) => Math.abs(a - b) > 0.5;
+    if (off(got.width, r.width)) st.width = `${r.width}px`;
+    if (off(got.height, h)) st.height = `${h}px`;
+    if (off(got.left, r.left)) st.left = `${(parseFloat(st.left) || 0) + r.left - got.left}px`;
+    if (off(got.top, top)) st.top = `${(parseFloat(st.top) || 0) + top - got.top}px`;
+    this._followOffline(win);
+  }
+
+  // One pending tick at a time. The frame comes from the panel's window; a timer
+  // backs it up because a frame asked of the main window never arrives while that
+  // window is minimised, and the panel can be moved to the popout in between.
+  _followOffline(win) {
+    if (this._offlineTick) return;
+    let raf = 0, timer = 0;
+    const step = () => {
+      try { win.cancelAnimationFrame(raf); } catch (_) { /* window closed */ }
+      clearTimeout(timer);
+      this._offlineTick = null;
+      if (this._hostUp || !this.wrap?.isConnected) return;  // hidden or off screen: stop
+      this._positionOffline();
+    };
+    try { raf = win.requestAnimationFrame(step); } catch (_) { /* window closing */ }
+    timer = setTimeout(step, 250);
+    this._offlineTick = step;
   }
 
   _setHostUp(up) {

@@ -159,6 +159,7 @@ class PanelHostsBrowser(unittest.TestCase):
         self.threads = [{"id": "t1", "title": "Bears"}, {"id": "t2", "title": "Dragons"}]
         self.running = set()
         self.deletes = []
+        self.down = False
         self.ctx = self.browser.new_context(viewport={"width": 1400, "height": 900})
         self.errors = []
         self.ctx.route("**/*", self._serve)
@@ -194,6 +195,8 @@ class PanelHostsBrowser(unittest.TestCase):
         if path == "/agent/host_info":
             return self._json(route, {"ok": True, "agent_server_port": 5000, "session_token": "tok"})
         if path == "/agentY/health":
+            if self.down:
+                return route.fulfill(status=503, body="")
             return self._json(route, {"status": "ok", "pipeline": True, "boot_id": "b",
                                       "running_threads": sorted(self.running)})
         if path == "/agentY/threads" and req.method == "GET":
@@ -418,6 +421,53 @@ class PanelHostsBrowser(unittest.TestCase):
         said = shown.evaluate("([FIND]) => eval(FIND)('.ay-log .ay-system').map(([e]) => e.textContent).join('|')", [FIND])
         self.assertIn("turn is running", said)
 
+
+    # -- 4. the "host offline" overlay ----------------------------------------------------------
+    def _offline_vs_panel(self, shown):
+        return shown.evaluate("""([FIND]) => {
+          const pick = (sel) => eval(FIND)(sel).map(([e]) => e).find((e) => e.getClientRects().length);
+          const o = pick('.ay-offline-panel'), w = pick('.ay-wrap');
+          if (!o || !w) return null;
+          const a = o.getBoundingClientRect(), b = w.getBoundingClientRect(), vh = w.ownerDocument.defaultView.innerHeight;
+          return { o: [a.left, a.top, a.right, a.bottom], w: [b.left, Math.max(0, b.top), b.right, Math.min(vh, b.bottom)] };
+        }""", [FIND])
+
+    def _assert_covers(self, shown, label):
+        def ok():
+            r = self._offline_vs_panel(shown)
+            return r and all(abs(x - y) <= 1 for x, y in zip(r["o"], r["w"]))
+        for _ in range(40):
+            if ok():
+                return
+            shown.wait_for_timeout(50)
+        self.fail(f"{label}: overlay {self._offline_vs_panel(shown)} is not the panel's box")
+
+    def test_offline_overlay_fills_the_panel(self):
+        # The overlay is position:fixed and sized from the panel's rectangle. It had
+        # 28px padding on top of that size (56px past the right and bottom edges),
+        # and in the undocked viewer it kept its first size: the popout's resizes
+        # reach neither the main window's listeners nor its ResizeObserver.
+        for where in ("sidebar", "viewer", "popout"):
+            with self.subTest(where=where):
+                self.down = False
+                shown = self.open_in(where)
+                self.down = True
+                self.page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+                shown.wait_for_function("([FIND]) => eval(FIND)('.ay-offline-panel').some(([e]) => e.getClientRects().length)",
+                                        arg=[FIND], timeout=10000)
+                self._assert_covers(shown, where)
+                if where == "popout":
+                    for size in ({"width": 520, "height": 480}, {"width": 1100, "height": 820}):
+                        shown.set_viewport_size(size)
+                        self._assert_covers(shown, f"popout at {size}")
+                if where == "viewer":
+                    # a transformed ancestor makes position:fixed relative to it
+                    self.page.evaluate("() => { document.querySelector('comfyui-image-viewer-panel').style.transform = 'translate(30px, 40px)'; }")
+                    self._assert_covers(shown, "transformed viewer")
+                self.assertEqual(self.errors, [])
+                self.page.close()
+                if shown is not self.page:
+                    shown.close()
 
 if __name__ == "__main__":
     unittest.main()
