@@ -428,16 +428,35 @@ class PanelHostsBrowser(unittest.TestCase):
           const pick = (sel) => eval(FIND)(sel).map(([e]) => e).find((e) => e.getClientRects().length);
           const o = pick('.ay-offline-panel'), w = pick('.ay-wrap');
           if (!o || !w) return null;
-          const a = o.getBoundingClientRect(), b = w.getBoundingClientRect(), vh = w.ownerDocument.defaultView.innerHeight;
-          return { o: [a.left, a.top, a.right, a.bottom], w: [b.left, Math.max(0, b.top), b.right, Math.min(vh, b.bottom)] };
+          const a = o.getBoundingClientRect(), b = w.getBoundingClientRect(), win = w.ownerDocument.defaultView;
+          // what of the panel is on screen: its box inside the window and inside the
+          // viewer's dock panel (shorter than the conversation, which it clips)
+          const box = [Math.max(0, b.left), Math.max(0, b.top), Math.min(win.innerWidth, b.right), Math.min(win.innerHeight, b.bottom)];
+          const dock = w.closest('.agent-chat-body');
+          if (dock) {
+            const d = dock.getBoundingClientRect();
+            box[0] = Math.max(box[0], d.left); box[1] = Math.max(box[1], d.top);
+            box[2] = Math.min(box[2], d.right); box[3] = Math.min(box[3], d.bottom);
+          }
+          return { o: [a.left, a.top, a.right, a.bottom], w: box };
         }""", [FIND])
 
     def _assert_covers(self, shown, label):
         def ok():
             r = self._offline_vs_panel(shown)
             return r and all(abs(x - y) <= 1 for x, y in zip(r["o"], r["w"]))
+        def card_inside():
+            return shown.evaluate("""([FIND]) => {
+              const [o] = eval(FIND)('.ay-offline-panel').map(([e]) => e).filter((e) => e.getClientRects().length);
+              const c = o.querySelector('.ay-offline-card').getBoundingClientRect(), b = o.getBoundingClientRect();
+              // the card fits across; down, it may scroll inside the overlay, never out of it
+              return c.left >= b.left - 0.5 && c.right <= b.right + 0.5
+                && (o.scrollHeight <= o.clientHeight + 1 ? c.bottom <= b.bottom + 0.5 && c.top >= b.top - 0.5
+                    : getComputedStyle(o).overflowY === 'auto');
+            }""", [FIND])
         for _ in range(40):
             if ok():
+                self.assertTrue(card_inside(), f"{label}: the card spills out of the overlay")
                 return
             shown.wait_for_timeout(50)
         self.fail(f"{label}: overlay {self._offline_vs_panel(shown)} is not the panel's box")
@@ -457,7 +476,8 @@ class PanelHostsBrowser(unittest.TestCase):
                                         arg=[FIND], timeout=10000)
                 self._assert_covers(shown, where)
                 if where == "popout":
-                    for size in ({"width": 520, "height": 480}, {"width": 1100, "height": 820}):
+                    for size in ({"width": 520, "height": 480}, {"width": 1100, "height": 820},
+                                 {"width": 380, "height": 420}):
                         shown.set_viewport_size(size)
                         self._assert_covers(shown, f"popout at {size}")
                 if where == "viewer":
