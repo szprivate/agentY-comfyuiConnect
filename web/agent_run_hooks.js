@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 
-// "Run agentY hooks" — a button next to ComfyUI's Run button that runs the hook
-// nodes on the current graph, so a hook run costs one click instead of switching
+// "Run agentY hooks" — a button under ComfyUI's Run button (beside it while the action
+// bar is docked into the top bar) that runs the hook nodes on the current graph, so a hook run costs one click instead of switching
 // to the sidebar and typing. It sends the same turn a typed "Run this workflow"
 // would (window.agentYRunHooks in agent_chat.js does the work).
 //
@@ -81,6 +81,9 @@ function injectStyles() {
        margin, each half only rounds the side it owns. Same shape ComfyUI's own
        Run split button has, built from tokens so it follows the theme. */
     #${GROUP_ID}{display:inline-flex;align-items:stretch;margin:0 .25rem;}
+    /* Under Run in the floating bar: a row of its own, as wide as the bar. */
+    #${GROUP_ID}.agy-under{display:flex;width:auto;margin:.375rem .25rem .125rem;}
+    #${GROUP_ID}.agy-under #${BTN_ID}{flex:1 1 auto;}
     #${BTN_ID},#${ARROW_ID}{
       display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
       box-sizing:border-box;cursor:pointer;
@@ -162,6 +165,8 @@ function injectStyles() {
     @media (max-width:1200px){
       #${BTN_ID}{padding:0 .5rem;}
       #${BTN_ID} .agy-label{display:none;}
+      /* Under Run it has a row of its own, so the words fit at any width. */
+      #${GROUP_ID}.agy-under #${BTN_ID} .agy-label{display:inline;}
     }
   `;
   document.head.appendChild(s);
@@ -275,7 +280,9 @@ function openMenu(anchor) {
   let left = r.right - w;
   left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
   m.style.left = `${left}px`;
-  m.style.top = `${r.bottom + 4}px`;
+  const h = m.offsetHeight || 120;
+  const below = r.bottom + 4;
+  m.style.top = `${below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 4) : below}px`;
   const first = m.querySelector("button");
   if (first) first.focus();
 }
@@ -387,32 +394,78 @@ function watchHalt() {
   });
 }
 
-// Where to put it: inside the action bar (the floating panel that carries Run),
-// immediately to the LEFT of the first button group. Deliberately anchored to a
-// *group* rather than to a button: Run is a split button, so appending "next to
-// the last button" can land inside its own group and render as part of it.
-// Returns {row, before} for an insertBefore, or null when the bar isn't up yet.
+// Where to put it. The action bar is either a floating panel (dragged anywhere on the
+// canvas) or docked into the top menu bar.
+//  * floating: UNDER Run (Sebastian 2026-11-15), as a full-width row of its own inside
+//    the panel, right after the row that holds Run - the panel stacks its rows, as it
+//    does for its own free-tier line.
+//  * docked: the top bar is one row of fixed height, so there is no "under"; it sits
+//    immediately to the LEFT of the first button group, as before. Anchored to a
+//    *group* rather than to a button: Run is a split button, so appending "next to
+//    the last button" can land inside its own group and render as part of it.
+// Returns {mode, row, before} for an insertBefore, or null when the bar isn't up yet.
+function actionbar() {
+  return document.querySelector(".actionbar") || document.querySelector('[class*="actionbar"]');
+}
+
+function isFloating(bar) {
+  return !!bar && bar.classList.contains("floating-panel");
+}
+
+function runButton(bar) {
+  return bar.querySelector('[data-testid="queue-button"]')
+    || bar.querySelector(`button:not(#${BTN_ID}):not(#${ARROW_ID})`);
+}
+
 function actionbarSlot() {
-  const bar = document.querySelector(".actionbar") || document.querySelector('[class*="actionbar"]');
+  const bar = actionbar();
   if (!bar) return null;
-  const first = bar.querySelector("button");
+  const first = runButton(bar);
   if (!first) return null;
-  // With a group, sit beside the whole group; without one, beside the button
-  // itself — anchoring on its parent instead would drop us out of the row that
-  // lays the buttons out and onto the bar's own frame.
-  const group = first.closest(".comfyui-button-group");
+  // The panel's direct child that holds Run is its row.
+  let row = first;
+  while (row && row.parentElement && row.parentElement !== bar) row = row.parentElement;
+  const rowOk = !!row && row.parentElement === bar;
+  if (isFloating(bar) && rowOk) {
+    return { mode: "under", row: bar, before: row.nextSibling };
+  }
+  if (rowOk && row !== first) {
+    // Docked: in that row, just left of the item that holds Run (its whole split
+    // button and whatever wraps it), so we lay out as a sibling of Run.
+    let item = first;
+    while (item.parentElement && item.parentElement !== row) item = item.parentElement;
+    return { mode: "beside", row, before: item };
+  }
+  // A bar laid out some other way: beside Run's group, or Run itself.
+  const group = first.closest(".comfyui-button-group") || first.closest(".queue-button-group");
   const before = group || first;
-  const row = before.parentElement;
-  if (!row || row === document.body) return null;
-  return { row, before };
+  const parent = before.parentElement;
+  if (!parent || parent === document.body) return null;
+  return { mode: "beside", row: parent, before };
+}
+
+// Is the button where the bar's current state wants it? Docking or undocking can
+// keep the bar element and only change its class, so a button that is still in the
+// page may be in the wrong place.
+function placedRight() {
+  const g = document.getElementById(GROUP_ID);
+  if (!g) return false;
+  const bar = actionbar();
+  if (!bar || !bar.contains(g)) return false;
+  return g.dataset.mode === (isFloating(bar) ? "under" : "beside");
 }
 
 function place() {
-  if (document.getElementById(BTN_ID)) return true;
+  if (placedRight()) return true;
   const slot = actionbarSlot();
   if (!slot) return false;
   injectStyles();
-  slot.row.insertBefore(makeButton(), slot.before);
+  const old = document.getElementById(GROUP_ID);
+  const g = old || makeButton();
+  g.dataset.mode = slot.mode;
+  g.classList.toggle("agy-under", slot.mode === "under");
+  if (slot.before === g) return true;
+  slot.row.insertBefore(g, slot.before);
   return true;
 }
 
@@ -423,11 +476,13 @@ function place() {
 function watch() {
   place();   // usually too early; the observer below covers the real arrival
   const obs = new MutationObserver(() => {
-    if (document.getElementById(BTN_ID)) return;
-    closeMenu();   // the arrow it was hanging off has just been re-rendered away
+    if (placedRight()) return;
+    closeMenu();   // the arrow it was hanging off has just been re-rendered or moved
     place();
   });
-  obs.observe(document.body, { childList: true, subtree: true });
+  // Classes too: docking changes the bar's class, not always its children.
+  obs.observe(document.body, { childList: true, subtree: true,
+                               attributes: true, attributeFilter: ["class"] });
   // Say so once if the bar never turns up, so a frontend that lays its top bar
   // out differently points at the command instead of failing silently.
   setTimeout(() => {
