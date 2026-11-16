@@ -10,6 +10,7 @@ import { anyBranchRunning, groupLabel, hasPlan, hasRun, planChips, planLine, pro
          stageLabel, stageMark, stageNote, stageTitle } from "./agent_plan.js";
 import { normaliseTag, registerTagBox } from "./agent_tags.js";
 import { eventInside, eventTarget } from "./agent_ui_root.js";
+import { splitChoices, choicesHtml, CHOICES_CSS } from "./agent_choices.js";
 import { altWordJump, fullSizeSrc, showFullSize } from "./agent_composer_keys.js";
 import { ProbeLoop, openWorkflows } from "./agent_probe.js";
 import { collectHistorySelection } from "./agent_history_selection.js";
@@ -330,7 +331,15 @@ function viaLabel(via) {
   return { agent, text: model ? `${agent} · ${model}` : agent };
 }
 // Minimal markdown: **bold**, `code`, newlines. Enough for the agent's messages.
+// A ```choices block (agent_choices.js) becomes cards to click.
 function mdToHtml(s) {
+  const parts = splitChoices(s);
+  if (parts.some((p) => p.choice)) {
+    return parts.map((p) => (p.choice ? choicesHtml(p.choice, escapeHtml) : mdPlain(p.text))).join("");
+  }
+  return mdPlain(s);
+}
+function mdPlain(s) {
   let h = escapeHtml(s);
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
   h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -552,6 +561,8 @@ class AgentChat {
     // new window: see showFullSize (from the popout it opened behind the popout).
     ctx.logEl.addEventListener("click", (e) => {
       const t = eventTarget(e);
+      const card = t?.closest?.(".ay-choice[data-answer]");
+      if (card) { this._pickChoice(card); return; }
       const src = fullSizeSrc(t);
       if (src) showFullSize(t, src);
     });
@@ -1246,6 +1257,7 @@ class AgentChat {
     .ay-ask{background:var(--ay-accent-soft);color:var(--ay-text);border:1px solid rgba(111,151,255,.35);border-left:4px solid var(--ay-accent);align-self:stretch;max-width:100%;}
     .ay-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;background:var(--ay-code);padding:2px 5px;border-radius:6px;font-size:12px;}
     .ay-msg code{background:var(--ay-code);border:1px solid var(--ay-border);border-radius:5px;padding:0 4px;font-size:12px;}
+    ${CHOICES_CSS}
     .ay-link{color:var(--ay-accent);text-decoration:underline;}
     .ay-link:hover{color:var(--ay-accent2);}
     /* "Working" marker: an animated "..." shown from the moment a turn starts
@@ -2686,10 +2698,31 @@ class AgentChat {
     this._scroll(true);
   }
   _userMsg(text) {
-    const node = el("div", { className: "ay-msg ay-user", innerHTML: mdToHtml(text) });
+    // Whatever the user says next answers the open question: its cards go quiet.
+    for (const g of this.logEl.querySelectorAll(".ay-choices:not(.answered)")) {
+      g.classList.add("answered");
+      for (const c of g.querySelectorAll(".ay-choice")) c.disabled = true;
+    }
+    const node = el("div", { className: "ay-msg ay-user", innerHTML: mdPlain(text) });
     node.dataset.raw = String(text || "").trim();   // see the "request" event
     this.logEl.append(node);
     this._scroll(true);
+  }
+  // A card of a choices block was clicked: its option is the user's answer,
+  // sent as if typed (a reply that is only its number reads the same to the
+  // agent). The cards of that question go quiet; the panel's saved HTML keeps
+  // which one was picked.
+  _pickChoice(card) {
+    const group = card.closest(".ay-choices");
+    if (!group || group.classList.contains("answered") || card.disabled) return;
+    if (this.streaming) return;   // a turn is running: the question is not open
+    const answer = card.dataset.answer || "";
+    if (!answer) return;
+    group.classList.add("answered");
+    card.classList.add("picked");
+    for (const b of group.querySelectorAll(".ay-choice")) b.disabled = true;
+    this.input.value = answer;
+    this.send();
   }
   _assistantMsg(text) {
     this.logEl.append(el("div", { className: "ay-msg ay-assistant", innerHTML: mdToHtml(text) }));
