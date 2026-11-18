@@ -173,6 +173,29 @@ async function discover() {
 // health poll, which decides whether to show "host is down" — can wait for it.
 export const backendReady = discover();
 
+// A TAB IS ALSO OLDER THAN THE PORT.
+//
+// backendReady asks ComfyUI once, at load. Open ComfyUI first and start the host
+// afterwards on another port (`--port 5003` because something else holds 5001)
+// and the answer the tab got is the PREVIOUS host's port: the new one registers
+// itself a moment later, but nothing told this tab. The health poll then dialled
+// the old address forever and the panel never woke up, while ComfyUI itself knew
+// the right port all along.
+//
+// So whoever decides "the host is down" asks again first. Rate-limited with the
+// token refresh (it is the same request), and true only when the address really
+// moved, so the caller knows a second look is worth it.
+/** Ask ComfyUI for the host's port again. True when backendBase() changed. */
+export async function rediscoverBackend() {
+  const before = backendBase();
+  try {
+    await refreshToken();
+  } catch (_) {
+    return false;
+  }
+  return backendBase() !== before;
+}
+
 /** The host's session token, once discovery has run. "" before that, or if the
  *  host has never started on this machine. */
 export function backendToken() {
