@@ -243,6 +243,24 @@ class AFreshTabCanStillAuthenticate(unittest.TestCase):
 
 
 
+class AFreshTabFollowsANewPort(unittest.TestCase):
+    """A tab is also older than the host's PORT. ComfyUI open first, the host
+    started afterwards on `--port 5003`: the port the tab read at load is the
+    previous host's, and the panel never woke up. The "is it up" check must ask
+    ComfyUI again before it says no."""
+
+    CHAT = (WEB / "agent_chat.js").read_text(encoding="utf-8")
+    BACKEND = (WEB / "agent_backend.js").read_text(encoding="utf-8")
+
+    def test_the_backend_can_be_asked_again(self):
+        self.assertIn("export async function rediscoverBackend()", self.BACKEND)
+
+    def test_a_failed_health_check_rediscovers_before_saying_down(self):
+        body = self.CHAT.split("async _hostReachable() {", 1)[1][:900]
+        self.assertIn("await rediscoverBackend()", body)
+        self.assertIn("this._healthAnswers()", body)
+
+
 class CanvasPatchAckTest(unittest.TestCase):
     """The panel must say what became of a canvas patch (source-level: there is no
     JavaScript engine in the test setup, so this reads the file)."""

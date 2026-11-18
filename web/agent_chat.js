@@ -17,7 +17,7 @@ import { collectHistorySelection } from "./agent_history_selection.js";
 import { collectViewerState } from "./agent_viewer_state.js";
 import { openConversationManager, renameConversation, deleteConversations,
          searchConversations } from "./agent_conversations.js";
-import { backendBase, backendReady, hostRefusal } from "./agent_backend.js";
+import { backendBase, backendReady, hostRefusal, rediscoverBackend } from "./agent_backend.js";
 import { openTagManager } from "./agent_tag_manager.js";
 import { searchableSelect } from "./agent_combo.js";
 import { formatUsage } from "./agent_usage.js";
@@ -740,6 +740,14 @@ class AgentChat {
     // is not even a refused connection but AirPlay's 403, so the panel would
     // settle into showing a healthy agent as offline. Resolves once, then free.
     await backendReady;
+    if (await this._healthAnswers()) return true;
+    // Not answering where we last looked. The host may be up on a port this tab
+    // has never heard of (started after the page loaded, on a new --port): ask
+    // ComfyUI, and look once more only if the address actually moved.
+    return (await rediscoverBackend()) && (await this._healthAnswers());
+  }
+
+  async _healthAnswers() {
     try {
       const cid = panelClientId();
       const r = await fetch(backendBase() + "/agentY/health" + (cid
